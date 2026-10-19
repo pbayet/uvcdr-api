@@ -1,0 +1,31 @@
+# Dépendances
+node_modules/
+
+# Logs (rotation gérée par winston-daily-rotate-file, mais on ne les commit jamais)
+logs/
+
+# Fichiers temporaires d'upload (purgés automatiquement, ne doivent jamais être commités)
+tmp/
+.tmp/
+.temp/
+
+# Fichiers stockés définitivement (attachments) - ne pas commiter les uploads utilisateurs
+uploads/
+
+# Variables d'environnement (secrets réels)
+.env
+config/env/development.env
+config/env/production.env
+
+# Tests
+coverage/
+loadtest/reports/
+
+# Divers
+*.log
+.DS_Store
+
+# Fichiers locaux (diagnostic, audit, schéma)
+diag-pwd.mjs
+AUDIT_~1.DOC
+TABLES.sql

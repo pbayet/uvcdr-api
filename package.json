@@ -1,0 +1,72 @@
+{
+  "name": "uvcdr-api",
+  "version": "1.1.0",
+  "description": "API UVCDR - reconstruction ciblée (module ticketing) suite à l'audit technique du 02/07/2026",
+  "main": "app.js",
+  "type": "module",
+  "scripts": {
+    "pm2:prod": "pm2 start ecosystem.prod.config.cjs && npm run pm2:logs:prod",
+    "pm2:logs:prod": "pm2 logs \"UVCDR API PROD\"",
+    "pm2:dev": "pm2 start ecosystem.dev.config.cjs && npm run pm2:logs:dev",
+    "pm2:logs:dev": "pm2 logs \"UVCDR API DEV\"",
+    "reinstall": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue; Remove-Item -Force package-lock.json -ErrorAction SilentlyContinue\" && npm install",
+    "start": "node app.js",
+    "dev": "nodemon app.js",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "load-test": "node loadtest/run.js"
+  },
+  "author": "Paul Bayet",
+  "license": "ISC",
+  "dependencies": {
+    "@azure/msal-node": "^6.0.0",
+    "argon2": "^0.44.0",
+    "cors": "^2.8.5",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "express-rate-limit": "^7.4.1",
+    "fast-xml-parser": "^5.10.1",
+    "jsonwebtoken": "^9.0.2",
+    "jszip": "^3.10.2",
+    "ldapjs": "^3.0.7",
+    "ms": "^2.1.3",
+    "mssql": "^4.2.0",
+    "multer": "^2.1.1",
+    "nodemailer": "^9.0.3",
+    "sharp": "^0.35.5",
+    "ulid": "^3.0.2",
+    "winston": "^3.18.3",
+    "winston-daily-rotate-file": "^5.0.0",
+    "ws": "^8.21.0",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@vitest/coverage-v8": "^5.0.3",
+    "autocannon": "^2.0.1",
+    "eslint": "^10.6.0",
+    "globals": "^15.13.0",
+    "nodemon": "^3.1.14",
+    "supertest": "^7.1.1",
+    "vitest": "^5.0.3"
+  },
+  "eslintConfig": {
+    "env": {
+      "node": true,
+      "es2022": true
+    },
+    "extends": [
+      "eslint:recommended"
+    ],
+    "parserOptions": {
+      "ecmaVersion": "latest",
+      "sourceType": "module"
+    },
+    "rules": {
+      "no-unused-vars": "warn",
+      "no-console": "warn"
+    }
+  }
+}

@@ -1,0 +1,70 @@
+<!--
+  Template : information
+  Usage : information générique ne rentrant pas dans les autres catégories
+  (annonce, changement de planning, message de service...).
+
+  Données :
+    - APP_NAME (optionnel)
+    - TITLE (requis)                : ex. "Maintenance planifiée"
+    - MESSAGE (requis)
+    - DETAILS_ROWS_HTML (optionnel)
+    - ACTION_URL / ACTION_LABEL (optionnels)
+    - NOTICES_HTML (optionnel)      : voir renderNoticeList() dans mail.service.js -- messages d'erreur/alerte/succes additionnels
+    - CONTACTS_HTML (optionnel)     : voir renderContactList() dans mail.service.js
+-->
+<div style="font-family: Arial, sans-serif; color: #111111; line-height: 1.6; max-width: 600px; margin: 0 auto; border: 1px solid #d9d9d9; padding: 20px; border-radius: 10px; background-color: #ffffff;">
+  {{#if APP_NAME}}
+  <p style="margin: 0 0 10px 0; text-align: center; font-size: 0.75em; letter-spacing: 0.06em; text-transform: uppercase; color: #9ca3af; font-weight: bold;">{{APP_NAME}}</p>
+  {{/if}}
+
+  <h2 style="color: #2563eb; font-size: 1.5em; text-align: center; margin: 0 0 14px 0;">{{TITLE}}</h2>
+
+  <p style="font-size: 1em; margin: 0 0 12px 0;">Bonjour,</p>
+
+  <p style="font-size: 1em; margin: 0 0 18px 0; white-space: pre-line;">{{MESSAGE}}</p>
+
+  {{#if NOTICES_HTML}}
+  <div style="margin: 0 0 18px 0;">
+    {{NOTICES_HTML}}
+  </div>
+  {{/if}}
+
+  {{#if DETAILS_ROWS_HTML}}
+  <div style="background: #eff6ff; padding: 16px; border-radius: 8px; border: 1px solid #bfdbfe; color: #111111; margin: 0 0 18px 0;">
+    <p style="margin: 0 0 10px 0; font-weight: bold; color: #1d4ed8;">Détails</p>
+    <ul style="margin: 0; padding: 0; list-style: none;">
+      {{DETAILS_ROWS_HTML}}
+    </ul>
+  </div>
+  {{/if}}
+
+  {{#if ACTION_URL}}
+  <p style="margin: 0 0 18px 0; text-align: center;">
+    <a
+      href="{{ACTION_URL}}"
+      style="display: inline-block; background-color: #2563eb; color: #ffffff; text-decoration: none; padding: 12px 20px; border-radius: 8px; font-weight: bold; border: 1px solid #1d4ed8;"
+      target="_blank"
+      rel="noopener"
+      >{{ACTION_LABEL}}</a
+    >
+  </p>
+  {{/if}}
+
+  {{#if CONTACTS_HTML}}
+  <div style="background: #ffffff; border: 1px solid #e3e3e3; border-radius: 8px; padding: 14px; margin: 0 0 18px 0; color: #111111;">
+    <p style="margin: 0 0 8px 0; font-weight: bold;">Besoin d'aide ?</p>
+    <p style="margin: 0 0 8px 0;">Vous pouvez contacter :</p>
+    <ul style="margin: 0; padding-left: 18px;">
+      {{CONTACTS_HTML}}
+    </ul>
+  </div>
+  {{/if}}
+
+  <p style="font-size: 1em; margin: 0 0 6px 0;">Cordialement,</p>
+
+  <hr style="border: none; border-top: 1px solid #d9d9d9; margin: 18px 0;" />
+
+  <p style="font-size: 0.9em; color: #555555; text-align: center; margin: 0;">
+    Ce message a été généré automatiquement. Veuillez ne pas y répondre.
+  </p>
+</div>

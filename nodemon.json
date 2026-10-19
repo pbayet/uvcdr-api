@@ -1,0 +1,18 @@
+{
+  "$comment": "Mêmes exclusions que ignore_watch (ecosystem.dev.config.cjs) : fichiers générés à l'exécution (génération VINIDOC, uploads, logs).",
+  "watch": ["."],
+  "ext": "js,mjs,cjs,json",
+  "ignore": [
+    "node_modules/",
+    "assets/",
+    "logs/",
+    "uploads/",
+    "temp/",
+    "tmp/",
+    "tests/",
+    "loadtest/",
+    "api.http",
+    "*.test.js"
+  ],
+  "delay": 500
+}

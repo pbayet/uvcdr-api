@@ -1,0 +1,69 @@
+<!--
+  Template : welcome
+  Usage : bienvenue / création de compte utilisateur.
+
+  Données :
+    - APP_NAME (optionnel)
+    - TITLE (requis)                : ex. "Bienvenue sur Ticketing UVCDR"
+    - MESSAGE (requis)
+    - LOGIN (optionnel)             : identifiant du compte, affiché dans un encart
+    - ACTION_URL / ACTION_LABEL (optionnels) : ex. lien d'activation / première connexion
+    - NOTICES_HTML (optionnel)      : voir renderNoticeList() dans mail.service.js -- messages d'erreur/alerte/succes additionnels
+    - CONTACTS_HTML (optionnel)     : voir renderContactList() dans mail.service.js
+-->
+<div style="font-family: Arial, sans-serif; color: #111111; line-height: 1.6; max-width: 600px; margin: 0 auto; border: 1px solid #d9d9d9; padding: 20px; border-radius: 10px; background-color: #ffffff;">
+  {{#if APP_NAME}}
+  <p style="margin: 0 0 10px 0; text-align: center; font-size: 0.75em; letter-spacing: 0.06em; text-transform: uppercase; color: #9ca3af; font-weight: bold;">{{APP_NAME}}</p>
+  {{/if}}
+
+  <h2 style="color: #0f766e; font-size: 1.5em; text-align: center; margin: 0 0 14px 0;">{{TITLE}}</h2>
+
+  <p style="font-size: 1em; margin: 0 0 12px 0;">Bonjour,</p>
+
+  <p style="font-size: 1em; margin: 0 0 18px 0; white-space: pre-line;">{{MESSAGE}}</p>
+
+  {{#if NOTICES_HTML}}
+  <div style="margin: 0 0 18px 0;">
+    {{NOTICES_HTML}}
+  </div>
+  {{/if}}
+
+  {{#if LOGIN}}
+  <div style="background: #f0fdfa; padding: 16px; border-radius: 8px; border: 1px solid #99f6e4; color: #111111; margin: 0 0 18px 0;">
+    <p style="margin: 0 0 10px 0; font-weight: bold; color: #115e59;">Identifiant</p>
+    <div style="font-family: 'Courier New', Courier, monospace; font-size: 1.05em; padding: 12px; border-radius: 6px; background: #ffffff; border: 1px solid #99f6e4; color: #111111; word-break: break-word;">
+      {{LOGIN}}
+    </div>
+  </div>
+  {{/if}}
+
+  {{#if ACTION_URL}}
+  <p style="margin: 0 0 18px 0; text-align: center;">
+    <a
+      href="{{ACTION_URL}}"
+      style="display: inline-block; background-color: #0f766e; color: #ffffff; text-decoration: none; padding: 12px 20px; border-radius: 8px; font-weight: bold; border: 1px solid #115e59;"
+      target="_blank"
+      rel="noopener"
+      >{{ACTION_LABEL}}</a
+    >
+  </p>
+  {{/if}}
+
+  {{#if CONTACTS_HTML}}
+  <div style="background: #ffffff; border: 1px solid #e3e3e3; border-radius: 8px; padding: 14px; margin: 0 0 18px 0; color: #111111;">
+    <p style="margin: 0 0 8px 0; font-weight: bold;">Besoin d'aide ?</p>
+    <p style="margin: 0 0 8px 0;">Vous pouvez contacter :</p>
+    <ul style="margin: 0; padding-left: 18px;">
+      {{CONTACTS_HTML}}
+    </ul>
+  </div>
+  {{/if}}
+
+  <p style="font-size: 1em; margin: 0 0 6px 0;">Cordialement,</p>
+
+  <hr style="border: none; border-top: 1px solid #d9d9d9; margin: 18px 0;" />
+
+  <p style="font-size: 0.9em; color: #555555; text-align: center; margin: 0;">
+    Ce message a été généré automatiquement. Veuillez ne pas y répondre.
+  </p>
+</div>

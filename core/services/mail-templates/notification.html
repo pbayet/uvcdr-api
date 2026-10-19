@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{{TITLE}}</title>
+  </head>
+  <body
+    style="
+      margin: 0;
+      padding: 0;
+      background-color: #f4f5f7;
+      font-family: Arial, Helvetica, sans-serif;
+    "
+  >
+    <table
+      role="presentation"
+      width="100%"
+      cellpadding="0"
+      cellspacing="0"
+      style="background-color: #f4f5f7; padding: 24px 0"
+    >
+      <tr>
+        <td align="center">
+          <table
+            role="presentation"
+            width="600"
+            cellpadding="0"
+            cellspacing="0"
+            style="
+              background-color: #ffffff;
+              border-radius: 8px;
+              overflow: hidden;
+            "
+          >
+            <tr>
+              <td style="background-color: #1f2937; padding: 20px 32px">
+                <span style="color: #ffffff; font-size: 18px; font-weight: bold"
+                  >Union des Vignerons</span
+                >
+              </td>
+            </tr>
+            <tr>
+              <td style="padding: 32px">
+                <h1 style="margin: 0 0 16px 0; font-size: 20px; color: #111827">
+                  {{TITLE}}
+                </h1>
+                <p
+                  style="
+                    margin: 0 0 24px 0;
+                    font-size: 14px;
+                    line-height: 1.6;
+                    color: #374151;
+                    white-space: pre-line;
+                  "
+                >
+                  {{MESSAGE}}
+                </p>
+
+                {{#if NOTICES_HTML}}
+                <div style="margin: 0 0 24px 0">{{NOTICES_HTML}}</div>
+                {{/if}} {{#if DETAILS_ROWS_HTML}}
+                <div
+                  style="
+                    background: #f2fbf0;
+                    padding: 16px;
+                    border-radius: 8px;
+                    border: 1px solid #b8d9b2;
+                    color: #111111;
+                    margin: 0 0 18px 0;
+                  "
+                >
+                  <p
+                    style="
+                      margin: 0 0 10px 0;
+                      font-weight: bold;
+                      color: #0f2f0c;
+                    "
+                  >
+                    Détails
+                  </p>
+                  <ul style="margin: 0; padding: 0; list-style: none">
+                    {{DETAILS_ROWS_HTML}}
+                  </ul>
+                </div>
+
+                {{/if}} {{#if ACTION_URL}}
+                <!-- Bouton d'action optionnel : si ACTION_URL/ACTION_LABEL ne sont pas
+                     fournis, renderTemplate() retire ces placeholders et le lien pointe
+                     vers "#" (à masquer côté template si non utilisé). -->
+                <table role="presentation" cellpadding="0" cellspacing="0">
+                  <tr>
+                    <td style="border-radius: 6px; background-color: #2563eb">
+                      <a
+                        href="{{ACTION_URL}}"
+                        style="
+                          display: inline-block;
+                          padding: 12px 20px;
+                          font-size: 14px;
+                          color: #ffffff;
+                          text-decoration: none;
+                          font-weight: bold;
+                        "
+                      >
+                        {{ACTION_LABEL}}
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+                {{/if}}
+              </td>
+            </tr>
+            <tr>
+              <td
+                style="
+                  padding: 16px 32px;
+                  background-color: #f9fafb;
+                  border-top: 1px solid #e5e7eb;
+                "
+              >
+                <p style="margin: 0; font-size: 12px; color: #9ca3af">
+                  Cet email a été envoyé automatiquement par l'application
+                  {{APP_NAME}} — merci de ne pas y répondre.
+                </p>
+              </td>
+            </tr>
+          </table>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>

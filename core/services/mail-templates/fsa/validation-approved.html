@@ -1,0 +1,180 @@
+<div
+  style="
+    font-family: Arial, sans-serif;
+    color: #111111;
+    line-height: 1.6;
+    max-width: 600px;
+    margin: 0 auto;
+    border: 1px solid #d8c3cd;
+    border-radius: 6px;
+    background-color: #ffffff;
+    overflow: hidden;
+  "
+>
+  <!-- HEADER -->
+  <div
+    style="
+      background-color: #2d8532;
+      padding: 28px 28px 24px 28px;
+      text-align: center;
+    "
+  >
+    {{#if APP_NAME}}
+    <p
+      style="
+        margin: 0 0 14px 0;
+        font-size: 0.75em;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #d3ead4;
+        font-weight: bold;
+      "
+    >
+      {{APP_NAME}}
+    </p>
+    {{/if}}
+
+    <h2 style="margin: 0 0 14px 0; font-size: 1.4em; color: #ffffff">
+      {{TITLE}}
+    </h2>
+
+    {{#if DOSSIER_CODE}}
+    <span
+      title="Numéro de dossier : {{DOSSIER_CODE}}"
+      style="
+        display: inline-block;
+        padding: 5px 16px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.14);
+        border: 1px solid rgba(255, 255, 255, 0.4);
+        color: #ffffff;
+        font-family: &quot;Courier New&quot;, Courier, monospace;
+        font-weight: bold;
+        font-size: 0.85em;
+        letter-spacing: 0.03em;
+        cursor: pointer;
+        user-select: all;
+      "
+    >
+      {{DOSSIER_CODE}}
+    </span>
+    {{/if}}
+  </div>
+
+  <!-- CONTENT -->
+  <div style="padding: 24px 28px">
+    <p style="font-size: 1em; margin: 0 0 12px 0">Bonjour,</p>
+
+    <p style="font-size: 1em; margin: 0 0 20px 0; white-space: pre-line">
+      {{MESSAGE}}
+    </p>
+
+    {{#if NOTICES_HTML}}
+    <div style="margin: 0 0 18px 0">{{NOTICES_HTML}}</div>
+    {{/if}}
+
+    <!-- TITRE DU DOSSIER -->
+    {{#if NOMDOS}}
+    <div style="margin: 0 0 14px 0">
+      <p
+        style="
+          margin: 0 0 6px 0;
+          font-size: 0.72em;
+          font-weight: bold;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: #64748b;
+        "
+      >
+        Titre du dossier :
+      </p>
+
+      <p
+        style="
+          margin: 0;
+          font-size: 1.1em;
+          font-weight: bold;
+          color: #1e293b;
+          line-height: 1.45;
+        "
+      >
+        {{NOMDOS}}
+      </p>
+    </div>
+    {{/if}}
+
+    <!-- DETAILS -->
+    {{#if DETAILS_ROWS_HTML}}
+    <div
+      style="
+        background-color: #f8fafc;
+        padding: 18px 18px 8px 18px;
+        border-radius: 4px;
+        border: 1px solid #e2e8f0;
+        margin: 0 0 22px 0;
+      "
+    >
+      {{DETAILS_ROWS_HTML}}
+    </div>
+    {{/if}}
+
+    <!-- COMMENTAIRE DU VALIDEUR -->
+    {{#if NOTES_HTML}}
+    <div style="margin: 0 0 22px 0">{{NOTES_HTML}}</div>
+    {{/if}}
+
+    <!-- ACTION -->
+    {{#if ACTION_URL}}
+    <p style="margin: 0 0 22px 0; text-align: center">
+      <a
+        href="{{ACTION_URL}}"
+        style="
+          display: inline-block;
+          background-color: #2d8532;
+          color: #ffffff;
+          text-decoration: none;
+          padding: 12px 22px;
+          border-radius: 4px;
+          font-weight: bold;
+          border: 1px solid #2d8532;
+        "
+        target="_blank"
+        rel="noopener"
+      >
+        {{ACTION_LABEL}}
+      </a>
+    </p>
+    {{/if}}
+
+    <!-- CONTACTS -->
+    {{#if CONTACTS_HTML}}
+    <div
+      style="
+        background: #ffffff;
+        border: 1px solid #e3e3e3;
+        border-radius: 4px;
+        padding: 14px;
+        margin: 0 0 18px 0;
+        color: #111111;
+      "
+    >
+      <p style="margin: 0 0 8px 0; font-weight: bold">Besoin d'aide ?</p>
+
+      <p style="margin: 0 0 8px 0">Vous pouvez contacter :</p>
+
+      <ul style="margin: 0; padding-left: 18px">
+        {{CONTACTS_HTML}}
+      </ul>
+    </div>
+    {{/if}}
+
+    <p style="font-size: 1em; margin: 0 0 6px 0">Cordialement,</p>
+
+    <hr style="border: none; border-top: 1px solid #d9d9d9; margin: 18px 0" />
+
+    <p style="font-size: 0.9em; color: #555555; text-align: center; margin: 0">
+      Ce message a été généré automatiquement par FSA UVCDR. Veuillez ne pas y
+      répondre.
+    </p>
+  </div>
+</div>

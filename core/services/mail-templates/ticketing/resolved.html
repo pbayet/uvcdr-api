@@ -1,0 +1,243 @@
+<!--
+  Template : ticketing/resolved
+  Usage : Ticket passé en statut "Résolu" : une solution a été apportée et
+  attend la validation du demandeur (cf. STATUS_MAIL_CONFIG.RSLV).
+  Portée : variante de core/services/mail-templates/validation-approved.html adaptée à
+  l'application Ticketing UVCDR — même contrat de données que le template
+  générique, avec en plus un badge dédié au numéro de ticket (TICKET_CODE).
+  Utilisé par modules/ticketing/controllers.js (notifyTicketEvent, cf.
+  STATUS_MAIL_CONFIG / DEFAULT_STATUS_MAIL_CONFIG).
+  Style aligné sur core/services/mail-templates/ticketing/creation.html
+  (bandeau d'en-tête plein, badge et bloc "Détails" en table HTML plutôt
+  qu'en div inline-block — cf. renderDetailGroups() dans mail.service.js).
+
+  Données :
+    - APP_NAME (optionnel)          : nom de l'application (affiché en en-tête)
+    - TICKET_CODE (optionnel)       : numéro du ticket (ex. "TCK-000123"), affiché en badge sous le titre
+    - TITLE (requis)                : ex. "Ticket TCK-000123 résolu"
+    - MESSAGE (requis)              : texte principal
+    - TCKTITLE (optionnel)          : titre du ticket, affiché en évidence au-dessus de la description
+    - DESCRIPTION (optionnel)       : description libre du ticket, affichée en citation
+    - DETAILS_ROWS_HTML (optionnel) : voir renderDetailGroups() dans mail.service.js (liste segmentée par thème)
+    - ACTION_URL / ACTION_LABEL (optionnels) : bouton d'action
+    - NOTICES_HTML (optionnel)      : voir renderNoticeList() dans mail.service.js -- messages d'erreur/alerte/succes additionnels
+    - CONTACTS_HTML (optionnel)     : voir renderContactList() dans mail.service.js
+-->
+<div
+  style="
+    font-family: Arial, sans-serif;
+    color: #111111;
+    line-height: 1.6;
+    max-width: 600px;
+    margin: 0 auto;
+    border: 1px solid #a4d3a7;
+    border-radius: 6px;
+    background-color: #ffffff;
+    overflow: hidden;
+  "
+>
+  <!-- HEADER -->
+  <div
+    style="
+      background-color: #2d8532;
+      padding: 28px 28px 24px 28px;
+      text-align: center;
+    "
+  >
+    {{#if APP_NAME}}
+    <p
+      style="
+        margin: 0 0 14px 0;
+        font-size: 0.75em;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #a4d3a7;
+        font-weight: bold;
+      "
+    >
+      {{APP_NAME}}
+    </p>
+    {{/if}}
+
+    <h2 style="margin: 0 0 14px 0; font-size: 1.4em; color: #ffffff">
+      {{TITLE}}
+    </h2>
+
+    {{#if TICKET_CODE}}
+    <span
+      title="Code du ticket : {{TICKET_CODE}}"
+      style="
+        display: inline-block;
+        padding: 5px 16px;
+        border-radius: 4px;
+        background: rgba(255, 255, 255, 0.14);
+        border: 1px solid rgba(255, 255, 255, 0.4);
+        color: #ffffff;
+        font-family: &quot;Courier New&quot;, Courier, monospace;
+        font-weight: bold;
+        font-size: 0.85em;
+        letter-spacing: 0.03em;
+        cursor: pointer;
+        user-select: all;
+      "
+    >
+      {{TICKET_CODE}}
+    </span>
+    {{/if}}
+  </div>
+
+  <!-- CONTENT -->
+  <div style="padding: 24px 28px">
+    <p style="font-size: 1em; margin: 0 0 12px 0">Bonjour,</p>
+
+    <p style="font-size: 1em; margin: 0 0 20px 0; white-space: pre-line">
+      {{MESSAGE}}
+    </p>
+
+    {{#if NOTICES_HTML}}
+    <div style="margin: 0 0 18px 0">{{NOTICES_HTML}}</div>
+    {{/if}}
+
+    <!-- INFORMATIONS PRINCIPALES -->
+    {{#if TCKTITLE}}
+    <div style="margin: 0 0 14px 0">
+      <p
+        style="
+          margin: 0 0 6px 0;
+          font-size: 0.72em;
+          font-weight: bold;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: #64748b;
+        "
+      >
+        Titre :
+      </p>
+
+      <p
+        style="
+          margin: 0;
+          font-size: 1.1em;
+          font-weight: bold;
+          color: #1e293b;
+          line-height: 1.45;
+        "
+      >
+        {{TCKTITLE}}
+      </p>
+    </div>
+    {{/if}} {{#if DESCRIPTION}}
+    <div style="margin: 0 0 22px 0">
+      <p
+        style="
+          margin: 0 0 6px 0;
+          font-size: 0.72em;
+          font-weight: bold;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: #64748b;
+        "
+      >
+        Description :
+      </p>
+
+      <div
+        style="
+          margin: 0;
+          padding: 12px 16px;
+          background-color: #ebf5eb;
+          border-left: 3px solid #2d8532;
+          border-radius: 0 4px 4px 0;
+          font-size: 0.95em;
+          font-style: italic;
+          color: #334155;
+          white-space: pre-line;
+        "
+      >
+        {{DESCRIPTION}}
+      </div>
+    </div>
+    {{/if}}
+
+    <!-- DETAILS -->
+    {{#if DETAILS_ROWS_HTML}}
+    <div
+      style="
+        background-color: #ebf5eb;
+        padding: 18px 18px 8px 18px;
+        border-radius: 4px;
+        border: 1px solid #a4d3a7;
+        margin: 0 0 22px 0;
+      "
+    >
+      <p
+        style="
+          margin: 0 0 12px 0;
+          font-size: 0.72em;
+          font-weight: bold;
+          text-transform: uppercase;
+          letter-spacing: 0.05em;
+          color: #2d8532;
+        "
+      >
+        Résolution proposée
+      </p>
+      {{DETAILS_ROWS_HTML}}
+    </div>
+    {{/if}}
+
+    <!-- ACTION -->
+    {{#if ACTION_URL}}
+    <p style="margin: 0 0 22px 0; text-align: center">
+      <a
+        href="{{ACTION_URL}}"
+        style="
+          display: inline-block;
+          background-color: #2d8532;
+          color: #ffffff;
+          text-decoration: none;
+          padding: 12px 22px;
+          border-radius: 4px;
+          font-weight: bold;
+          border: 1px solid #2d8532;
+        "
+        target="_blank"
+        rel="noopener"
+      >
+        {{ACTION_LABEL}}
+      </a>
+    </p>
+    {{/if}}
+
+    <!-- CONTACTS -->
+    {{#if CONTACTS_HTML}}
+    <div
+      style="
+        background: #ffffff;
+        border: 1px solid #e3e3e3;
+        border-radius: 4px;
+        padding: 14px;
+        margin: 0 0 18px 0;
+        color: #111111;
+      "
+    >
+      <p style="margin: 0 0 8px 0; font-weight: bold">Besoin d'aide ?</p>
+
+      <p style="margin: 0 0 8px 0">Vous pouvez contacter :</p>
+
+      <ul style="margin: 0; padding-left: 18px">
+        {{CONTACTS_HTML}}
+      </ul>
+    </div>
+    {{/if}}
+
+    <p style="font-size: 1em; margin: 0 0 6px 0">Cordialement,</p>
+
+    <hr style="border: none; border-top: 1px solid #d9d9d9; margin: 18px 0" />
+
+    <p style="font-size: 0.9em; color: #555555; text-align: center; margin: 0">
+      Ce message a été généré automatiquement par Ticketing UVCDR. Veuillez ne
+      pas y répondre.
+    </p>
+  </div>
+</div>
