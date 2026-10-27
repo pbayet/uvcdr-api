@@ -215,7 +215,7 @@ export async function upsertCave({
             CDFRX3  = @CDFRX3,
             SIRET   = @SIRET,
             CODACCI = @CODACCI,
-            UPDDAT  = SYSDATETIME(),
+            UPDDAT  = SYSUTCDATETIME(),
             UPDUSR  = @CREUSR
         OUTPUT inserted.ID INTO @Output
         WHERE ID = @CAVEID;
@@ -240,7 +240,7 @@ export async function upsertCave({
             @TYPID,
             @CDFRX3,
             @CODACCI,
-            SYSDATETIME(),
+            SYSUTCDATETIME(),
             @CREUSR
         );
     END
@@ -302,7 +302,7 @@ export async function delsertMails(CAVEID, MAILS, CREUSR) {
             j.PRIMAIL,
             j.ACTIF,
             @CREUSR,
-            SYSDATETIME()
+            SYSUTCDATETIME()
         FROM OPENJSON(@MAILS)
         WITH
         (
@@ -454,7 +454,7 @@ export async function setDeclaration({
     query: `
     SET NOCOUNT ON;
 
-    DECLARE @Now DATETIME2 = SYSDATETIME();
+    DECLARE @Now DATETIME2 = SYSUTCDATETIME();
     DECLARE @OldNumdos TABLE (NUMDOS NVARCHAR(50) PRIMARY KEY);
 
     BEGIN TRY
@@ -600,7 +600,7 @@ export async function setRectification({
               @SourceNUMDOS, VRSDEC, REFMAR, REFINTR, DATMRC, DEBMRV, FINMRV, REMARQ,
               CAVEID, REFVRAC, DESA1, DESA2, APPL, COUL, QTEMRV, TYPO, SPECTYPO,
               QAL, DECLQST, VALID, @MLOPER, DERREL, BADIMLS, NULL, @CREUSR,
-              GETDATE(), NULL, NULL
+              SYSUTCDATETIME(), NULL, NULL
           FROM dbo.DECENT
           WHERE NUMDOS = @SourceNUMDOS;
 
@@ -627,7 +627,7 @@ export async function setRectification({
                   ) AS j
               )
               INSERT dbo.DECLIGING (NUMDOS, CODING, REMARQ, CREUSR, CREDAT, UPDUSR, UPDDAT)
-              SELECT @newNUMDOS, J.Code, NULLIF(J.Remarque, N''), @CREUSR, GETDATE(), NULL, NULL
+              SELECT @newNUMDOS, J.Code, NULLIF(J.Remarque, N''), @CREUSR, SYSUTCDATETIME(), NULL, NULL
               FROM J;
           END;
 
@@ -644,7 +644,7 @@ export async function setRectification({
                   ) AS j
               )
               INSERT dbo.DECLIGCEP (NUMDOS, CODCEP, POURC, REMARQ, CREUSR, CREDAT, UPDUSR, UPDDAT)
-              SELECT @newNUMDOS, J.Code, J.Pourc, NULLIF(J.Remarque, N''), @CREUSR, GETDATE(), NULL, NULL
+              SELECT @newNUMDOS, J.Code, J.Pourc, NULLIF(J.Remarque, N''), @CREUSR, SYSUTCDATETIME(), NULL, NULL
               FROM J;
           END;
 
@@ -697,7 +697,7 @@ export async function setRelaunch(NUMDOS) {
     moduleUrl: import.meta.url,
     query: `
       UPDATE DECENT
-      SET DERREL = SYSDATETIME()
+      SET DERREL = SYSUTCDATETIME()
       WHERE NUMDOS = @NUMDOS
     `,
     inputs: {
@@ -743,7 +743,7 @@ export async function setRelaunchQuest(NUMDOS) {
     moduleUrl: import.meta.url,
     query: `
       UPDATE DECENT
-      SET DERRELQST = SYSDATETIME()
+      SET DERRELQST = SYSUTCDATETIME()
       WHERE NUMDOS = @NUMDOS
     `,
     inputs: {
@@ -827,7 +827,7 @@ export async function setMrvIngredients({
                   J.Code,
                   NULLIF(J.Remarque, N''),
                   @CREUSR,
-                  GETDATE(),
+                  SYSUTCDATETIME(),
                   NULL,
                   NULL
               FROM J;
@@ -871,7 +871,7 @@ export async function setMrvIngredients({
                   J.Pourc,
                   NULLIF(J.Remarque, N''),
                   @CREUSR,
-                  GETDATE(),
+                  SYSUTCDATETIME(),
                   NULL,
                   NULL
               FROM J;
@@ -959,7 +959,7 @@ export async function refreshDeclarationFromErp({
         SPECTYPO = @SPECTYPO,
         QAL      = @QAL,
         UPDUSR   = @UPDUSR,
-        UPDDAT   = SYSDATETIME()
+        UPDDAT   = SYSUTCDATETIME()
       WHERE NUMDOS = @NUMDOS
     `,
     inputs: {
@@ -986,7 +986,7 @@ export async function validDeclaration(NUMDOS) {
     moduleUrl: import.meta.url,
     query: `
       UPDATE DECENT
-      SET VALDAT = SYSDATETIME()
+      SET VALDAT = SYSUTCDATETIME()
       WHERE NUMDOS = @NUMDOS
     `,
     inputs: {
@@ -1040,7 +1040,7 @@ export async function upsertResponsesSubmit({ SUBID, REFEXT, STATUS }) {
     AND EXISTS (SELECT 1 FROM QUESTSUBMIT WHERE SUBID = @SUBID OR REFEXT = @REFEXT)
     BEGIN
         UPDATE QUESTSUBMIT
-        SET REFEXT = @REFEXT, SUBDAT = SYSDATETIME(), STATUS = @STATUS
+        SET REFEXT = @REFEXT, SUBDAT = SYSUTCDATETIME(), STATUS = @STATUS
         OUTPUT inserted.SUBID INTO @Output
         WHERE SUBID = @SUBID OR REFEXT = @REFEXT;
     END
@@ -1048,7 +1048,7 @@ export async function upsertResponsesSubmit({ SUBID, REFEXT, STATUS }) {
     BEGIN
         INSERT INTO QUESTSUBMIT (REFEXT, SUBDAT, STATUS)
         OUTPUT inserted.SUBID INTO @Output
-        VALUES (@REFEXT, SYSDATETIME(), @STATUS);
+        VALUES (@REFEXT, SYSUTCDATETIME(), @STATUS);
     END
 
     SELECT SUBID FROM @Output;
@@ -1101,7 +1101,7 @@ export async function delsertResponses(SUBID, answers) {
         )
         SELECT
             @SUBID, j.QSTCOD, j.PRTQSTCOD, j.ROWCOD, j.ASWRTYP, j.VALTXT,
-            j.VALBIT, j.VALNUM, NULL, j.VALJSON, SYSDATETIME()
+            j.VALBIT, j.VALNUM, NULL, j.VALJSON, SYSUTCDATETIME()
         FROM OPENJSON(@ANSWERS)
         WITH
         (
@@ -1152,7 +1152,7 @@ export async function patchIngredient({
       ? `
         UPDATE CEPLIST
         SET CEPAGE = @LIBEL, REMARQ = @REMARK, AVISUV1 = @AVISUV1,
-            AVISUV2 = @AVISUV2, ACTIF = @ACTIF, UPDDAT = GETDATE()
+            AVISUV2 = @AVISUV2, ACTIF = @ACTIF, UPDDAT = SYSUTCDATETIME()
         WHERE CODE = @CODE;
 
         SELECT * FROM V_INGREDIENTS WHERE CODE = @CODE;
@@ -1160,7 +1160,7 @@ export async function patchIngredient({
       : `
         UPDATE INGLIST
         SET INGRED = @LIBEL, REMARQ = @REMARK, AVISUV1 = @AVISUV1,
-            AVISUV2 = @AVISUV2, ACTIF = @ACTIF, UPDDAT = GETDATE()
+            AVISUV2 = @AVISUV2, ACTIF = @ACTIF, UPDDAT = SYSUTCDATETIME()
         WHERE CODE = @CODE;
 
         SELECT * FROM V_INGREDIENTS WHERE CODE = @CODE;

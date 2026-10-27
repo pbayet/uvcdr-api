@@ -58,9 +58,15 @@ export const gestsMustValidateByNumDosSchema = z.object({
   numdos: z.string().trim().min(1, "numdos est obligatoire."),
 });
 
+export const relaunchTestQuerySchema = z.object({
+  numges: z.string().trim().min(1, "numges est obligatoire.").max(15),
+});
+
 /* ─────────────────────────────────────────────
    FSA — POST / DUPLICATE
 ───────────────────────────────────────────── */
+
+const nomenclatureIgnoreCodeSchema = z.array(z.string());
 
 export const fsaCreateSchema = z.object({
   PFICOD: z.string().trim().nullish(),
@@ -71,6 +77,7 @@ export const fsaCreateSchema = z.object({
   NUMDEM: z.string().trim().nullish(),
   INNO: z.coerce.boolean().optional().default(false),
   NOTDOS: z.string().trim().nullish(),
+  IGNNOMCOD: nomenclatureIgnoreCodeSchema.default([]),
 });
 
 export const fsaDuplicateSchema = z.object({

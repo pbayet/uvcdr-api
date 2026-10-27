@@ -9,7 +9,7 @@
     "pm2:logs:prod": "pm2 logs \"UVCDR API PROD\"",
     "pm2:dev": "pm2 start ecosystem.dev.config.cjs && npm run pm2:logs:dev",
     "pm2:logs:dev": "pm2 logs \"UVCDR API DEV\"",
-    "reinstall": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue; Remove-Item -Force package-lock.json -ErrorAction SilentlyContinue\" && npm install",
+    "reinstall": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"Remove-Item -Recurse -Force node_modules -ErrorAction SilentlyContinue; Remove-Item -Force package-lock.json -ErrorAction SilentlyContinue\" && npm install --legacy-peer-deps",
     "start": "node app.js",
     "dev": "nodemon app.js",
     "lint": "eslint .",

@@ -75,6 +75,7 @@ import { logger } from "../../config/logger.config.js";
 
 const IS_PROD = process.env.NODE_ENV === "production";
 const DOMAIN = process.env.DOMAIN;
+const ADMIN_DOMAIN = process.env.ADMIN_DOMAIN;
 const DEV_FALLBACK_RECIPIENT = process.env.BASE_RECIPIENT_EMAIL;
 
 function getUserIdentity(req) {
@@ -841,7 +842,9 @@ export async function setMrvIngredients(req) {
 
   // Correctif : `badIngres.length >= 0` était toujours vrai (y compris à 0),
   // ce qui déclenchait l'alerte "ingrédient à surveiller" à chaque appel.
-  const badIngres = (INGRES ?? []).filter((i) => Number(i.AVISUV1) === 3);
+  const badIngres = (INGRES ?? []).filter(
+    (i) => Number(i.AVISUV1) === 3 || Number(i.AVISUV1) === 2,
+  );
 
   if (DONE && badIngres.length > 0) {
     await notifyDeclcavEvent({

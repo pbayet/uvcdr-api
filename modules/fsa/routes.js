@@ -36,6 +36,24 @@ router.get("/mail-templates/test", async (req, res, next) => {
   }
 });
 
+/* ─────────────────────────────────────────────
+   DEV — Relance quotidienne pour un gestionnaire donné (?numges=XXX), cf.
+   controllers.testDailyRelaunch. Désactivée en production pour ne pas
+   déclencher de vraies relances hors planification.
+───────────────────────────────────────────── */
+router.get("/relaunch/test", async (req, res, next) => {
+  if (IS_PROD) {
+    const err = new Error("Route de test désactivée en production.");
+    err.status = 403;
+    return next(err);
+  }
+  try {
+    res.json(await controllers.testDailyRelaunch(req));
+  } catch (err) {
+    next(err);
+  }
+});
+
 /* -------------------------------------------------------------------------- */
 /*                                    GETS                                    */
 /* -------------------------------------------------------------------------- */

@@ -6,6 +6,8 @@ import * as usersmanagerService from "../usersmanager/services.js";
 import * as usersmanagerUtils from "../usersmanager/utils.js";
 import * as dwhbiService from "../dwhbi/services.js";
 import * as dwhbiUtils from "../dwhbi/utils.js";
+import * as functionsUtils from "../../core/utils/functions.utils.js";
+
 import {
   sendTemplatedMail,
   renderDetailGroups,
@@ -609,9 +611,14 @@ export async function testFsaMailTemplates(req) {
  * Planifiée par routes.js via core/utils/scheduler.utils.js (scheduleDailyTask).
  * Relance chaque email ayant un ou plusieurs dossiers en attente de
  * validation (statut EAV), en regroupant les NUMDOS par destinataire.
+ *
+ * `NUMGES` (optionnel) restreint la relance aux dossiers que ce gestionnaire
+ * doit valider — utilisé par testDailyRelaunch() (GET /fsa/relaunch/test)
+ * pour voir ce que reçoit un gestionnaire donné. Renvoie les groupes
+ * { EMAIL, NUMDOS[] } relancés.
  */
-export async function dailyRelaunch() {
-  const valEmails = await services.getValEmails();
+export async function dailyRelaunch(NUMGES = null) {
+  const valEmails = await services.getValEmails(null, NUMGES);
 
   if (!valEmails.length) {
     throw new Error("DATA_NOT_FOUND");
@@ -632,13 +639,17 @@ export async function dailyRelaunch() {
     }, {}),
   );
 
+  console.log(valEmails, dossiersByEmail);
+
   for (const group of dossiersByEmail) {
     await notifyFsaEvent({
       template: "fsa/reminder",
       subject: "Relance dossier(s) FSA en attente de validation",
       message:
         "Un ou plusieurs dossiers FSA sont en attente de votre validation.",
-      recipient: group.EMAIL,
+      // notifyFsaEvent() redirige déjà vers BASE_RECIPIENT_EMAIL hors prod :
+      // on passe le vrai destinataire pour qu'il apparaisse dans l'encart dev.
+      recipient: IS_PROD ? group.EMAIL : BASE_RECIPIENT_EMAIL,
       dossiers: group.NUMDOS.map((numdos) => ({
         code: numdos,
         url: `${DOMAIN}/fsa/folders/${numdos}/0`,
@@ -648,7 +659,27 @@ export async function dailyRelaunch() {
     });
   }
 
-  return true;
+  return dossiersByEmail;
+}
+
+/**
+ * Route de test manuelle (dev/staging uniquement, cf. IS_PROD dans
+ * routes.js) : exécute dailyRelaunch() pour un seul gestionnaire
+ * (`?numges=<NUMGES>`). Les mails partent vers BASE_RECIPIENT_EMAIL (cf.
+ * notifyFsaEvent), avec l'encart listant les destinataires réels.
+ */
+export async function testDailyRelaunch(req) {
+  const { numges } = v.relaunchTestQuerySchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  const groups = await dailyRelaunch(numges);
+
+  return {
+    numges,
+    to: BASE_RECIPIENT_EMAIL,
+    recipients: groups,
+  };
 }
 
 /* -------------------------------------------------------------------------- */
@@ -794,8 +825,19 @@ export async function getSettings() {
 /* -------------------------------------------------------------------------- */
 
 export async function postFsa(req) {
-  const { PFICOD, NUMDOSBAS, NOMDOS, TYPDOS, NUMGES, NUMDEM, INNO, NOTDOS } =
-    v.fsaCreateSchema.parse((await requestUtils.getRequestParams(req)).params);
+  const {
+    PFICOD,
+    NUMDOSBAS,
+    NOMDOS,
+    TYPDOS,
+    NUMGES,
+    NUMDEM,
+    INNO,
+    NOTDOS,
+    IGNNOMCOD,
+  } = v.fsaCreateSchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
 
   const { CREUSR, USRID } = getUserIdentity(req);
 
@@ -824,7 +866,9 @@ export async function postFsa(req) {
     const formattedPfiNommenclature =
       await dwhbiUtils.formatNomenclature(pfiNommenclature);
 
-    NOMENCLATURE = formattedPfiNommenclature;
+    NOMENCLATURE = formattedPfiNommenclature.filter(
+      (n) => !IGNNOMCOD.includes(n.CPNITMREF),
+    );
     PRODUCT = {
       TCLCOD: NOMENCLATURE[0].CODCAT,
       CATNOM: NOMENCLATURE[0].LLCAT,

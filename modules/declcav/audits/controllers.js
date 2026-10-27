@@ -25,8 +25,7 @@ import { logger } from "../../../config/logger.config.js";
 const APP_CODE = process.env.DB_APP_CODE_DECLCAV || "DCLING";
 const ENTITYTYPE_AUDIT = "AUDIT"; // ATTACHMENTS.ENTITYTYPE ; ENTITYID = CAVEID
 const DOMAIN = process.env.DOMAIN;
-
-const DEV_FALLBACK_RECIPIENT = process.env.BASE_RECIPIENT_EMAIL;
+const ADMIN_DOMAIN = process.env.ADMIN_DOMAIN;
 
 const params = async (req) => (await requestUtils.getRequestParams(req)).params;
 
@@ -103,13 +102,9 @@ async function notifyAudit(
   audit,
   { template, subject, message, toQuality = false, notices = [] },
 ) {
-  // const recipient = toQuality
-  //   ? process.env.AUDITS_QUALITY_EMAIL
-  //   : await caveRecipients(audit.CAVEID).catch(() => "");
-
   const recipient = toQuality
     ? process.env.AUDITS_QUALITY_EMAIL
-    : DEV_FALLBACK_RECIPIENT;
+    : await caveRecipients(audit.CAVEID).catch(() => "");
 
   await notifyDeclcavEvent({
     template,

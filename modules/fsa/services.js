@@ -710,7 +710,7 @@ export async function getGestsMustValidateByNumDos(NUMDOS) {
   return result.recordset ?? [];
 }
 
-export async function getValEmails(NUMDOS = null) {
+export async function getValEmails(NUMDOS = null, NUMGES = null) {
   const result = await runQuery({
     moduleUrl: import.meta.url,
     query: `
@@ -736,6 +736,23 @@ export async function getValEmails(NUMDOS = null) {
             AND e.DELETED = 0
             AND cs.CODETA = 'EAV'
             AND (@NUMDOS IS NULL OR s.NUMDOS = @NUMDOS)
+            AND (@NUMGES IS NULL OR s.NUMGES = @NUMGES)
+            -- Direction (NUMGES = 'DG') : relancée uniquement quand c'est la
+            -- dernière validation obligatoire restante, i.e. aucun autre
+            -- service obligatoire n'est encore en attente sur le dossier.
+            AND (
+              s.NUMGES <> 'DG'
+              OR NOT EXISTS (
+                SELECT 1
+                FROM dbo.vw_FsaServicesMustValidate AS o
+                LEFT JOIN dbo.vw_FsaValidations AS ov
+                    ON ov.GES_SERVGES = o.SERVGES
+                    AND ov.NUMDOS = o.NUMDOS
+                WHERE o.NUMDOS = s.NUMDOS
+                  AND o.SERVGES <> s.SERVGES
+                  AND ov.GES_NUMGES IS NULL
+              )
+            )
       ) AS r
       INNER JOIN dbo.FSAGES g ON g.NUMGES = r.NUMGES
       INNER JOIN dbo.FSAGES_UTILISATEURS gu ON gu.GESID = g.GESID
@@ -746,7 +763,10 @@ export async function getValEmails(NUMDOS = null) {
       INNER JOIN USERSMANAGER.dbo.V_Users u ON u.USRID = gu.USRID
       ORDER BY r.NUMDOS;
     `,
-    inputs: { NUMDOS: { type: sql.VarChar(50), value: NUMDOS } },
+    inputs: {
+      NUMDOS: { type: sql.VarChar(50), value: NUMDOS },
+      NUMGES: { type: sql.VarChar(15), value: NUMGES },
+    },
   });
 
   return result.recordset;
