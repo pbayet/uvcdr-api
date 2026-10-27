@@ -18,6 +18,17 @@ import {
   formatGrapes,
   upgradeSnapshot,
   formatTemperature,
+  loremText,
+  sortArticleSheets,
+  articleSheetStatus,
+  cleanText,
+  cleanSheetTexts,
+  articleFromRow,
+  logisticsText,
+  logisticsFields,
+  LOGISTICS_TEST_TAGS,
+  previewMergeData,
+  PREVIEW_DEFAULT_LENGTH,
   textLength,
   rowverToHex,
   hexToRowver,
@@ -433,5 +444,203 @@ describe("modules/vinidoc/utils :: checkAgainstTemplate", () => {
   it("OK quand toutes les contraintes sont respectées", () => {
     const report = checkAgainstTemplate({ TEMP: "8-10°C" }, [tags[2]]);
     expect(report).toMatchObject({ OK: true, ERRORS: [] });
+  });
+});
+
+describe("loremText", () => {
+  it("ne dépasse jamais la longueur demandée et finit proprement", () => {
+    for (const n of [1, 12, 80, 250, 1000]) {
+      const t = loremText(n);
+      expect(t.length).toBeLessThanOrEqual(n);
+      expect(t.length).toBeGreaterThan(n * 0.5);
+      expect(t).not.toMatch(/\s$/);
+    }
+  });
+
+  it("vide pour une longueur nulle ou absente", () => {
+    expect(loremText(0)).toBe("");
+    expect(loremText(null)).toBe("");
+  });
+});
+
+describe("previewMergeData", () => {
+  const tags = [
+    { TAGTYP: "TEXT", TAGNAM: "DEGUST", MAXLEN: 250 },
+    { TAGTYP: "TEXT", TAGNAM: "TEMP", MAXLEN: null },
+    { TAGTYP: "BADGE", TAGNAM: "BIOHVE" },
+  ];
+
+  it("remplit chaque balise texte à sa longueur max (défaut sinon)", () => {
+    const { text } = previewMergeData(tags);
+    expect(Object.keys(text)).toEqual(["DEGUST", "TEMP"]);
+    expect(text.DEGUST.length).toBeLessThanOrEqual(250);
+    expect(text.DEGUST.length).toBeGreaterThan(200);
+    expect(text.TEMP).toBe("8-10°C");
+  });
+
+  it("faux texte par défaut sans longueur max, sinon tronqué à la longueur max", () => {
+    const { text } = previewMergeData([
+      { TAGTYP: "TEXT", TAGNAM: "TERROIR", MAXLEN: null },
+      { TAGTYP: "TEXT", TAGNAM: "LOG.EANBTL", MAXLEN: 5 },
+    ]);
+    expect(text.TERROIR.length).toBeLessThanOrEqual(PREVIEW_DEFAULT_LENGTH);
+    expect(text.TERROIR.length).toBeGreaterThan(40);
+    expect(text["LOG.EANBTL"]).toBe("3 123");
+  });
+
+  it("affiche couleur, échelles et logo combiné", () => {
+    const { badges } = previewMergeData(tags);
+    expect(badges.COULEUR_ROUGE).toBe(true);
+    expect(badges.INTENSITE_BOUCHE_EQ_3).toBe(true);
+    expect(badges.BIOHVE).toBe(true);
+    expect(badges.HVE).toBe(false);
+  });
+});
+
+describe("articles PFI", () => {
+  // Ligne réelle de services.getArticle (PFI01140), valeurs de test comprises.
+  const row = {
+    COD_ARTICLE: "PFI01140",
+    LIBELLE: "MEDC 14 RG 075 INSALV MGR 13.5 ",
+    LIBELLE_COURT: "VDE CUVEE SALVARE IGP MEDITERRANEE - RGE - 75 CL",
+    MILLESIME: 2014,
+    STATUT: "Non renouvelé",
+    CODVRACS: "VHL03217",
+    EANBTL: "4985908835151",
+    EANCASE: " ",
+    UNITCASE: 6,
+    UNITPAL: 720,
+    LVLPAL: 5,
+    BTLWGT: 1.25,
+    BTL_LONGUEUR: 30,
+    BTL_LARGEUR: 7.5,
+    BTL_HAUTEUR: 0,
+    CASE_LONGUEUR: 24.5,
+    CASE_LARGEUR: 16,
+    CASE_HAUTEUR: 30.5,
+    CASEWGT: 8,
+    PALHGT: 160,
+    PALWGT: 900,
+  };
+
+  it("articleFromRow : libellés nettoyés, codes vrac en liste", () => {
+    expect(articleFromRow(row)).toEqual({
+      COD_ARTICLE: "PFI01140",
+      LIBELLE: "MEDC 14 RG 075 INSALV MGR 13.5",
+      LIBELLE_COURT: "VDE CUVEE SALVARE IGP MEDITERRANEE - RGE - 75 CL",
+      MILLESIME: 2014,
+      STATUT: "Non renouvelé",
+      CODVRACS: ["VHL03217"],
+    });
+    expect(articleFromRow({ ...row, CODVRACS: null, MILLESIME: 0 })).toMatchObject({
+      CODVRACS: [],
+      MILLESIME: null,
+    });
+  });
+
+  it("logisticsText : balises {{LOG.*}} au format français", () => {
+    expect(logisticsText(row)).toEqual({
+      "LOG.BTLDIM": "7,5 x 30",
+      "LOG.BTLWGT": "1,25 kg",
+      "LOG.CASEDIM": "16 x 24,5 x 30,5",
+      "LOG.CASEPAL": "120",
+      "LOG.CASEWGT": "8 kg",
+      "LOG.EANBTL": "4985908835151",
+      "LOG.EANCASE": "",
+      "LOG.LVLPAL": "5",
+      "LOG.PALHGT": "160 cm",
+      "LOG.PALWGT": "900 kg",
+      "LOG.UNITCASE": "6",
+      "LOG.UNITPAL": "720",
+    });
+  });
+
+  it("logisticsText : données absentes → valeurs vides", () => {
+    const text = logisticsText({ COD_ARTICLE: "PFI00001" });
+    expect(Object.values(text).every((v) => v === "")).toBe(true);
+    expect(logisticsText(null)).toEqual({});
+  });
+
+  it("logisticsFields : libellés courts et valeurs de test signalées", () => {
+    const fields = logisticsFields(row);
+    expect(fields).toHaveLength(12);
+    expect(fields.find((f) => f.TAG === "LOG.EANBTL")).toEqual({
+      TAG: "LOG.EANBTL",
+      LABEL: "EAN bouteille",
+      VALUE: "4985908835151",
+      TEST: false,
+    });
+    expect(fields.filter((f) => f.TEST).map((f) => f.TAG)).toEqual(LOGISTICS_TEST_TAGS);
+  });
+});
+
+describe("cleanText", () => {
+  it("ramène retours à la ligne, tabulations et espaces multiples à une espace", () => {
+    expect(cleanText("  Fruits  rouges\r\n\r\nnotes\tépicées  ")).toBe(
+      "Fruits rouges notes épicées",
+    );
+  });
+
+  it("remplace les espaces insécables et supprime les caractères invisibles", () => {
+    expect(cleanText("Belle\u00A0\u202Fbouche\u200B ronde\uFEFF\u00AD")).toBe(
+      "Belle bouche ronde",
+    );
+  });
+
+  it("retire les espaces avant , . ) et après ( mais garde la typographie ; : ! ?", () => {
+    expect(cleanText("Rouge , rond . ( servir frais )")).toBe(
+      "Rouge, rond. (servir frais)",
+    );
+    expect(cleanText("Accords : viande ; fromage ! Pourquoi ?")).toBe(
+      "Accords : viande ; fromage ! Pourquoi ?",
+    );
+  });
+
+  it("vide → null, non-chaîne inchangée, texte propre inchangé", () => {
+    expect(cleanText(" \r\n\t\u200B ")).toBeNull();
+    expect(cleanText(null)).toBeNull();
+    expect(cleanText(42)).toBe(42);
+    expect(cleanText("13,5 % vol.")).toBe("13,5 % vol.");
+  });
+});
+
+describe("cleanSheetTexts", () => {
+  it("nettoie champs communs et traductions, sans toucher au reste", () => {
+    const out = cleanSheetTexts({
+      CODVRAC: "VHL1",
+      APPELL: " CDR \n",
+      DESCVRAC: null,
+      INTARO: 3,
+      TRANSLATIONS: {
+        fr: { DEGUST: "Nez\n\nfruité ", GARDE: "2 ans", MODUSR: "x" },
+      },
+    });
+    expect(out).toEqual({
+      CODVRAC: "VHL1",
+      APPELL: "CDR",
+      DESCVRAC: null,
+      INTARO: 3,
+      TRANSLATIONS: { fr: { DEGUST: "Nez fruité", GARDE: "2 ans", MODUSR: "x" } },
+    });
+  });
+});
+
+describe("fiche utilisée pour un article PFI", () => {
+  const article = { CODVRACS: ["VHL1"], MILLESIME: 2024 };
+  const sheets = [
+    { SHTID: 1, CODVRAC: "VHL1", MILLESIME: 2025, STATUS: "VALIDATED", LASTVER: 2 },
+    { SHTID: 2, CODVRAC: "VHL1", MILLESIME: 2024, STATUS: "SUBMITTED", LASTVER: 0 },
+    { SHTID: 3, CODVRAC: "VHL9", MILLESIME: 2024, STATUS: "VALIDATED", LASTVER: 1 },
+  ];
+
+  it("sortArticleSheets : même millésime d'abord, ordre conservé sinon", () => {
+    expect(sortArticleSheets(sheets, 2024).map((s) => s.SHTID)).toEqual([2, 3, 1]);
+    expect(sortArticleSheets(sheets, null).map((s) => s.SHTID)).toEqual([1, 2, 3]);
+  });
+
+  it("articleSheetStatus : statut de la fiche du millésime, parmi ses codes vrac", () => {
+    expect(articleSheetStatus(article, sheets)).toBe("SUBMITTED");
+    expect(articleSheetStatus({ ...article, MILLESIME: 2030 }, sheets)).toBe("VALIDATED");
+    expect(articleSheetStatus({ CODVRACS: ["VHL0"], MILLESIME: null }, sheets)).toBeNull();
   });
 });

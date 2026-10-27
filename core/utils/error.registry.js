@@ -734,6 +734,26 @@ export const ERROR_REGISTRY = {
     HTTP_RESPONSE_CODE: 500,
   },
 
+  VINIDOC_ARTICLE_NOT_FOUND: {
+    CODE: 1720,
+    MESSAGE: { en: "Article not found", fr: "Article introuvable" },
+    DESCRIPTION: {
+      en: "This finished-product article (PFI) does not exist in the data warehouse.",
+      fr: "Cet article produit fini (PFI) n'existe pas dans l'entrepôt de données.",
+    },
+    HTTP_RESPONSE_CODE: 404,
+  },
+
+  "VINIDOC_ARTICLE_SHEET_MISMATCH_[CODVRAC]": {
+    CODE: 1721,
+    MESSAGE: { en: "Article and sheet do not match", fr: "Article et fiche incompatibles" },
+    DESCRIPTION: {
+      en: "The bulk wine code of the sheet (\"[CODVRAC]\") is not a component of this article.",
+      fr: "Le code vrac de la fiche (« [CODVRAC] ») n'est pas un composant de cet article.",
+    },
+    HTTP_RESPONSE_CODE: 400,
+  },
+
   INTERNAL_ERROR: {
     CODE: 9999,
     MESSAGE: { en: "Internal server error", fr: "Erreur interne du serveur" },

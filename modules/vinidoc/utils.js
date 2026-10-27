@@ -129,9 +129,9 @@ export const SCALES = {
  * balises du modèle PowerPoint du POC (fiche-template.pptx).
  *   TRANSLATED : valeur dépendant de la langue demandée.
  *   FIELD      : champ de traduction (SHEETTRANS) dont la balise est issue.
- *   AVAILABLE  : false = pas encore de donnée en base (balise reconnue mais
- *                rendue vide) — cas des données logistiques, qui ne font
- *                pas partie des données œnologiques saisies dans VINIDOC.
+ *   AVAILABLE  : false = pas de donnée sur la fiche (balise reconnue, rendue
+ *                vide sans article) — cas des données logistiques, issues de
+ *                l'article PFI choisi à la génération (DWH, cf. logisticsText).
  */
 export const TEXT_FIELDS = [
   {
@@ -182,7 +182,7 @@ export const TEXT_FIELDS = [
     ["LOG.UNITPAL", "Bouteilles par palette"], // ancien : LOGISTICS.UNITSPERPALLET
   ].map(([TAG, LABEL]) => ({
     TAG,
-    LABEL: `${LABEL} (logistique — non alimenté)`,
+    LABEL: `${LABEL} (logistique — article PFI choisi à la génération)`,
     TRANSLATED: false,
     AVAILABLE: false,
   })),
@@ -357,6 +357,7 @@ export function formatSheet(row, translations = []) {
     ECHFRU: row.ECHFRU ?? null,
     TEMPMIN: num(row.TEMPMIN),
     TEMPMAX: num(row.TEMPMAX),
+    DEFTPLID: row.DEFTPLID ?? null,
     STATUS: row.STATUS,
     LASTVER: row.LASTVER ?? 0,
     CREUSR: row.CREUSR,
@@ -393,6 +394,7 @@ export const omitKeys = (obj, keys) =>
   );
 
 const WORKFLOW_KEYS = [
+  "DEFTPLID", // préférence de génération, pas du contenu validé
   "STATUS",
   "LASTVER",
   "ROWVER",
@@ -499,6 +501,234 @@ export function buildMergeData(sheet, lng, color = {}) {
   }
 
   return { text, badges };
+}
+
+/* ───────────────────────── Aperçu des modèles ───────────────────────── */
+
+const LOREM =
+  "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor " +
+  "incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, quis nostrud " +
+  "exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat. Duis aute irure " +
+  "dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur. ";
+
+/** Longueur du texte fictif d'une balise sans longueur max. */
+export const PREVIEW_DEFAULT_LENGTH = 80;
+
+/** Valeurs courtes d'exemple (balises non rédigées : température, logistique). */
+const PREVIEW_SAMPLES = {
+  TEMP: "8-10°C",
+  "LOG.BTLDIM": "75 x 300 mm",
+  "LOG.BTLWGT": "1,3 kg",
+  "LOG.CASEDIM": "240 x 160 x 310 mm",
+  "LOG.CASEPAL": "100",
+  "LOG.CASEWGT": "8 kg",
+  "LOG.EANBTL": "3 123456 789012",
+  "LOG.EANCASE": "3 123456 789029",
+  "LOG.LVLPAL": "5",
+  "LOG.PALHGT": "1,60 m",
+  "LOG.PALWGT": "800 kg",
+  "LOG.UNITCASE": "6",
+  "LOG.UNITPAL": "600",
+};
+
+/** Longueur du faux texte des balises courtes sans longueur max. */
+const PREVIEW_LENGTHS = { APPELLATION: 40 };
+
+/** Faux texte d'au plus `length` caractères, coupé à la fin d'un mot. */
+export function loremText(length) {
+  if (!(length > 0)) return "";
+  const source = LOREM.repeat(Math.ceil(length / LOREM.length) + 1);
+  let out = source.slice(0, length).trimEnd();
+  const lastSpace = out.lastIndexOf(" ");
+  if (out.length === length && lastSpace > length * 0.6) out = out.slice(0, lastSpace);
+  out = out.replace(/[,.]$/, "");
+  return out.length < length ? `${out}.` : out;
+}
+
+/**
+ * Données de fusion fictives pour l'aperçu d'un modèle : chaque balise texte
+ * reçoit du faux texte à sa longueur max (pire cas), sinon
+ * PREVIEW_DEFAULT_LENGTH — sauf les valeurs courtes (température,
+ * logistique), remplacées par un exemple réaliste ; blocs conditionnels d'un vin rouge aux échelles à
+ * 3, logos HVE + BIO. Les images du modèle sont conservées.
+ */
+export function previewMergeData(templateTags = []) {
+  const text = Object.fromEntries(
+    templateTags
+      .filter((t) => t.TAGTYP === "TEXT")
+      .map((t) => {
+        const sample = PREVIEW_SAMPLES[t.TAGNAM];
+        if (sample) return [t.TAGNAM, sample.slice(0, t.MAXLEN ?? sample.length)];
+        const length = t.MAXLEN ?? PREVIEW_LENGTHS[t.TAGNAM] ?? PREVIEW_DEFAULT_LENGTH;
+        return [t.TAGNAM, loremText(length)];
+      }),
+  );
+  const { badges } = buildMergeData(
+    { COLCOD: "ROUGE", INTARO: 3, INTBOU: 3, ECHFRU: 3 },
+    "fr",
+  );
+  return {
+    text,
+    badges: { ...badges, ...certificationBadges({ HVE: true, BIO: true }, templateTags) },
+  };
+}
+
+/* ───────────────────────── Nettoyage des textes œnologiques ───────────────────────── */
+
+/** Champs texte nettoyés : traductions (SHEETTRANS) et champs communs (SHEETS). */
+export const CLEANED_TRANSLATION_FIELDS = [
+  "LIBELLE",
+  "TERROIR",
+  "VINIF",
+  "DEGUST",
+  "GARDE",
+  "CEPAGES",
+  "ACCORDS",
+  "ACCEXPL",
+];
+export const CLEANED_SHEET_FIELDS = ["APPELL", "DESCVRAC"];
+
+// Caractères invisibles : espaces de largeur nulle, joiners, BOM, tiret
+// conditionnel, caractères de contrôle (hors blancs, traités à part).
+const INVISIBLE = /[\u200B-\u200D\u2060\uFEFF\u00AD\u0000-\u0008\u000E-\u001F\u007F]/g;
+// Blancs : retours à la ligne, tabulations, espaces insécables et Unicode.
+const WHITESPACE = /[\s\u00A0\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]+/g;
+
+/**
+ * Nettoie un texte saisi (copier-coller Word, PDF...) : caractères invisibles
+ * supprimés, retours à la ligne / tabulations / espaces multiples ramenés à
+ * une espace, espaces retirées avant « , . ) » et après « ( » (conservées
+ * devant « ; : ! ? », typographie française), début et fin rognés.
+ * Chaîne vide → null ; non-chaîne renvoyée telle quelle.
+ */
+export function cleanText(value) {
+  if (typeof value !== "string") return value;
+  const out = value
+    .normalize("NFC")
+    .replace(INVISIBLE, "")
+    .replace(WHITESPACE, " ")
+    .replace(/ +([,.)])/g, "$1")
+    .replace(/\( +/g, "(")
+    .trim();
+  return out === "" ? null : out;
+}
+
+/**
+ * Nettoie les champs texte d'une fiche (communs + traductions) — forme
+ * formatSheet() ou instantané validé. Renvoie une copie.
+ */
+export function cleanSheetTexts(sheet) {
+  if (!sheet) return sheet;
+  const out = { ...sheet };
+  for (const f of CLEANED_SHEET_FIELDS) if (f in out) out[f] = cleanText(out[f]);
+  if (out.TRANSLATIONS) {
+    out.TRANSLATIONS = Object.fromEntries(
+      Object.entries(out.TRANSLATIONS).map(([lng, t]) => {
+        const tr = { ...t };
+        for (const f of CLEANED_TRANSLATION_FIELDS) if (f in tr) tr[f] = cleanText(tr[f]);
+        return [lng, tr];
+      }),
+    );
+  }
+  return out;
+}
+
+/* ───────────────────────── Articles PFI (DWH) ───────────────────────── */
+
+/**
+ * Données logistiques encore absentes du DWH : la requête
+ * (services.getArticle) renvoie des VALEURS DE TEST, signalées au front.
+ */
+export const LOGISTICS_TEST_TAGS = ["LOG.CASEWGT", "LOG.PALHGT", "LOG.PALWGT"];
+
+const fr = (value, digits = 1) =>
+  new Intl.NumberFormat("fr-FR", { maximumFractionDigits: digits }).format(value);
+
+const positive = (v) => (Number(v) > 0 ? Number(v) : null);
+
+/** Dimensions non nulles, « 16 x 24,5 x 30,5 ». */
+const dims = (...values) =>
+  values.map(positive).filter((v) => v != null).map((v) => fr(v)).join(" x ");
+
+const withUnit = (v, unit, digits = 1) =>
+  positive(v) == null ? "" : `${fr(v, digits)} ${unit}`;
+
+const integer = (v) => (positive(v) == null ? "" : fr(v, 0));
+
+/** Article PFI (ligne de services.searchArticles / getArticle) → objet API. */
+export function articleFromRow(row) {
+  if (!row) return null;
+  return {
+    COD_ARTICLE: row.COD_ARTICLE,
+    LIBELLE: row.LIBELLE?.trim() || null,
+    LIBELLE_COURT: row.LIBELLE_COURT?.trim() || null,
+    MILLESIME: positive(row.MILLESIME),
+    STATUT: row.STATUT ?? null,
+    CODVRACS: row.CODVRACS ? row.CODVRACS.split(",") : [],
+  };
+}
+
+/**
+ * Valeurs des balises logistiques ({{LOG.*}}) d'un article PFI.
+ * Dimensions en cm sans unité (l'unité figure dans l'en-tête du modèle) :
+ * bouteille « diamètre x hauteur », carton « largeur x longueur x hauteur ».
+ * Cartons par palette = bouteilles par palette / bouteilles par carton.
+ */
+export function logisticsText(row) {
+  if (!row) return {};
+  const unitCase = positive(row.UNITCASE);
+  const unitPal = positive(row.UNITPAL);
+  const btl = [row.BTL_LONGUEUR, row.BTL_LARGEUR, row.BTL_HAUTEUR]
+    .map(positive)
+    .filter((v) => v != null)
+    .sort((a, b) => a - b);
+  return {
+    "LOG.BTLDIM": dims(...btl),
+    "LOG.BTLWGT": withUnit(row.BTLWGT, "kg", 2),
+    "LOG.CASEDIM": dims(row.CASE_LARGEUR, row.CASE_LONGUEUR, row.CASE_HAUTEUR),
+    "LOG.CASEPAL":
+      unitCase && unitPal ? fr(unitPal / unitCase, unitPal % unitCase ? 1 : 0) : "",
+    "LOG.CASEWGT": withUnit(row.CASEWGT, "kg", 2),
+    "LOG.EANBTL": row.EANBTL?.trim() ?? "",
+    "LOG.EANCASE": row.EANCASE?.trim() ?? "",
+    "LOG.LVLPAL": integer(row.LVLPAL),
+    "LOG.PALHGT": withUnit(row.PALHGT, "cm"),
+    "LOG.PALWGT": withUnit(row.PALWGT, "kg"),
+    "LOG.UNITCASE": integer(unitCase),
+    "LOG.UNITPAL": integer(unitPal),
+  };
+}
+
+/**
+ * Fiches des codes vrac d'un article, celles de son millésime d'abord (ordre
+ * d'origine conservé sinon) : la première est celle utilisée à la génération.
+ */
+export function sortArticleSheets(sheets = [], MILLESIME = null) {
+  const rank = (s) => (MILLESIME != null && s.MILLESIME === MILLESIME ? 0 : 1);
+  return [...sheets].sort((a, b) => rank(a) - rank(b));
+}
+
+/**
+ * Statut de la fiche utilisée pour un article (cf. sortArticleSheets), ou
+ * null sans fiche. VALIDATED = validée par le marketing (génération depuis
+ * la dernière version validée).
+ */
+export function articleSheetStatus(article, sheets = []) {
+  const own = sheets.filter((s) => article.CODVRACS.includes(s.CODVRAC));
+  const [sheet] = sortArticleSheets(own, article.MILLESIME);
+  if (!sheet) return null;
+  return sheet.STATUS;
+}
+
+/** Balises logistiques pour l'affichage : libellé, valeur, valeur de test. */
+export function logisticsFields(row) {
+  const text = logisticsText(row);
+  return TEXT_FIELDS.filter((f) => f.TAG.startsWith("LOG.")).map((f) => ({
+    TAG: f.TAG,
+    LABEL: f.LABEL.replace(/ \(.*\)$/, ""),
+    VALUE: text[f.TAG] ?? "",
+    TEST: LOGISTICS_TEST_TAGS.includes(f.TAG),
+  }));
 }
 
 /** Longueur "visible" (points de code, \r\n compté pour 1). */

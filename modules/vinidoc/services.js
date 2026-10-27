@@ -173,7 +173,7 @@ export async function listSheets({ SEARCH, STATUS, COLCOD, MILLESIME, GENERABLE,
     query: `
       SELECT
         s.SHTID, s.CODVRAC, s.MILLESIME, s.APPELL, s.COLCOD, s.DESCVRAC,
-        s.STATUS, s.LASTVER, s.MODUSR, s.MODDAT, s.SUBUSR, s.SUBDAT,
+        s.STATUS, s.LASTVER, s.MODUSR, s.MODDAT, s.SUBUSR, s.SUBDAT, s.DEFTPLID,
         d.LIBELLE,
         (SELECT STRING_AGG(t.LNGCOD, ',') WITHIN GROUP (ORDER BY t.LNGCOD)
            FROM dbo.SHEETTRANS t WHERE t.SHTID = s.SHTID) AS LANGUAGES,
@@ -398,6 +398,34 @@ export async function updateSheet({ SHTID, ROWVER, sheet, USR, RIGHTS }) {
       ROWVER: p.rowver(ROWVER),
       USR: p.str(254, USR),
       ...EDIT_RIGHTS_INPUTS(RIGHTS),
+    },
+  });
+  return result.recordset[0];
+}
+
+/**
+ * Modèle PowerPoint par défaut (préférence de génération, hors contenu
+ * validé) : le statut de la fiche est inchangé. DEFTPLID null = aucun.
+ */
+export async function setDefaultTemplate({ SHTID, ROWVER, DEFTPLID, USR }) {
+  const result = await run({
+    query: tx(`
+      ${LOCK_SHEET}
+      IF @DEFTPLID IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM dbo.TEMPLATES WHERE TPLID = @DEFTPLID AND ISDEL = 0)
+        THROW 50174, 'Modèle introuvable.', 1;
+
+      UPDATE dbo.SHEETS
+      SET DEFTPLID = @DEFTPLID, MODUSR = @USR, MODDAT = SYSUTCDATETIME()
+      WHERE SHTID = @SHTID;
+
+      ${RETURN_STATE}
+    `),
+    inputs: {
+      SHTID: p.int(SHTID),
+      ROWVER: p.rowver(ROWVER),
+      DEFTPLID: p.int(DEFTPLID),
+      USR: p.str(254, USR),
     },
   });
   return result.recordset[0];
@@ -820,12 +848,12 @@ export async function getTextTagLimits(LNGCOD = null) {
 /* ═════════════════════════════ Générations ═════════════════════════════ */
 
 /** VERNUM null = générée depuis la saisie en cours (fiche non validée). */
-export async function insertGeneration({ SHTID, VERNUM, TPLID, TPLFILECODE, LNGCOD, FORMAT, HVE = false, BIO = false, FILECODE, USR }) {
+export async function insertGeneration({ SHTID, VERNUM, TPLID, TPLFILECODE, LNGCOD, FORMAT, HVE = false, BIO = false, COD_ARTICLE = null, FILECODE, USR }) {
   const result = await run({
     query: `
-      INSERT INTO dbo.GENERATIONS (SHTID, VERNUM, TPLID, TPLFILECODE, LNGCOD, FORMAT, HVE, BIO, FILECODE, CREUSR)
+      INSERT INTO dbo.GENERATIONS (SHTID, VERNUM, TPLID, TPLFILECODE, LNGCOD, FORMAT, HVE, BIO, COD_ARTICLE, FILECODE, CREUSR)
       OUTPUT INSERTED.GENID, INSERTED.CREDAT
-      VALUES (@SHTID, @VERNUM, @TPLID, @TPLFILECODE, @LNGCOD, @FORMAT, @HVE, @BIO, @FILECODE, @USR);
+      VALUES (@SHTID, @VERNUM, @TPLID, @TPLFILECODE, @LNGCOD, @FORMAT, @HVE, @BIO, @COD_ARTICLE, @FILECODE, @USR);
     `,
     inputs: {
       SHTID: p.int(SHTID),
@@ -836,6 +864,7 @@ export async function insertGeneration({ SHTID, VERNUM, TPLID, TPLFILECODE, LNGC
       FORMAT: p.vstr(4, FORMAT),
       HVE: p.bit(HVE),
       BIO: p.bit(BIO),
+      COD_ARTICLE: p.str(30, COD_ARTICLE),
       FILECODE: p.vstr(50, FILECODE),
       USR: p.str(254, USR),
     },
@@ -850,7 +879,7 @@ export async function listGenerations({ SHTID, TPLID, LIMIT = 100 }) {
         g.GENID, g.SHTID, s.CODVRAC, s.MILLESIME, g.VERNUM,
         CASE WHEN g.VERNUM IS NULL THEN 'CURRENT' ELSE 'VALIDATED' END AS SOURCE,
         g.TPLID, t.TPLNAM,
-        g.LNGCOD, g.FORMAT, g.HVE, g.BIO, g.FILECODE, g.CREUSR, g.CREDAT,
+        g.LNGCOD, g.FORMAT, g.HVE, g.BIO, g.COD_ARTICLE, g.FILECODE, g.CREUSR, g.CREDAT,
         a.ORIGINALNAME, a.RELATIVEPATH, a.SIZEBYTES
       FROM dbo.GENERATIONS g
       INNER JOIN dbo.SHEETS s ON s.SHTID = g.SHTID
@@ -861,6 +890,162 @@ export async function listGenerations({ SHTID, TPLID, LIMIT = 100 }) {
       ORDER BY g.CREDAT DESC, g.GENID DESC;
     `,
     inputs: { SHTID: p.int(SHTID), TPLID: p.int(TPLID), LIMIT: p.int(LIMIT) },
+  });
+  return result.recordset;
+}
+
+/* ═════════════════════════════ Articles PFI (DWH) ═════════════════════════════ */
+// Base DWH_BI (connexion "dwhbi", cf. config/db) : articles produits finis
+// (PFI), nomenclature (composants BOU / CAB / PAL / VHL) et matières sèches.
+
+const dwh = (options) => run({ dbConnectionName: "dwhbi", ...options });
+
+/** Codes vrac (composants VHL) de l'article `a`, séparés par des virgules. */
+const VHL_CODES = `(
+  SELECT STRING_AGG(v.L_ARTICLE_COMPOSANT, ',') WITHIN GROUP (ORDER BY v.L_ARTICLE_COMPOSANT)
+  FROM (
+    SELECT DISTINCT n.L_ARTICLE_COMPOSANT
+    FROM dbo.DB_ARTICLES_NOMENCLATURE n
+    WHERE n.E_ARTICLE_COMPOSE = a.COD_ARTICLE AND n.L_CATEG_COMPOSANT = 'VHL'
+  ) v
+)`;
+
+/** Dimensions extérieures (cm, arrondies au 0,5) du composant `categ` de l'article `a`. */
+const COMPONENT = (categ, alias) => `
+  OUTER APPLY (
+    SELECT TOP (1)
+      ROUND(m.[NUM_LONGUEUR_EXTÉRIEURE] * 2, 0) / 2.0 AS LONGUEUR,
+      ROUND(m.[NUM_LARGEUR_EXTÉRIEURE] * 2, 0) / 2.0 AS LARGEUR,
+      ROUND(m.[NUM_HAUTEUR_EXTÉRIEURE] * 2, 0) / 2.0 AS HAUTEUR
+    FROM dbo.DB_ARTICLES_NOMENCLATURE n
+    INNER JOIN dbo.DB_ARTICLES_MATIERES_SECHES m ON m.COD_ARTICLE = n.L_ARTICLE_COMPOSANT
+    WHERE n.E_ARTICLE_COMPOSE = a.COD_ARTICLE AND n.L_CATEG_COMPOSANT = '${categ}'
+  ) ${alias}`;
+
+/**
+ * Recherche d'articles PFI. `CODVRACS` = codes vrac des fiches œnologiques
+ * (base VINIDOC, que le DWH ne connaît pas) :
+ *   - sans recherche : seuls les PFI dont un code vrac a une fiche ;
+ *   - avec recherche : tous les PFI correspondants (code, libellés,
+ *     désignation du vrac, code vrac), ceux qui ont une fiche d'abord —
+ *     l'utilisateur voit que le PFI existe mais que son vrac n'a pas de fiche.
+ * HASSHEET = un code vrac de l'article a une fiche. Les 30 articles sont
+ * choisis AVANT d'agréger leurs codes vrac (une requête monobloc dépassait
+ * le délai de 15 s sur le DWH).
+ */
+export async function searchArticles({ SEARCH, LIMIT = 30, CODVRACS = [] }) {
+  const like = SEARCH ? `%${SEARCH.replace(/[[%_]/g, "[$&]")}%` : null;
+  const result = await dwh({
+    query: `
+      SET NOCOUNT ON;
+      DECLARE @V TABLE (CODVRAC nvarchar(30) PRIMARY KEY);
+      INSERT INTO @V (CODVRAC) SELECT DISTINCT value FROM OPENJSON(@CODVRACS);
+
+      WITH eligible AS (
+        -- PFI dont un code vrac a une fiche œnologique
+        SELECT DISTINCT n.E_ARTICLE_COMPOSE AS COD_ARTICLE
+        FROM dbo.DB_ARTICLES_NOMENCLATURE n
+        INNER JOIN @V v ON v.CODVRAC = n.L_ARTICLE_COMPOSANT
+        WHERE n.L_CATEG_COMPOSANT = 'VHL' AND n.E_ARTICLE_COMPOSE LIKE 'PFI%'
+      ),
+      found AS (
+        SELECT e.COD_ARTICLE FROM eligible e WHERE @SEARCH IS NULL
+        UNION
+        SELECT a.COD_ARTICLE
+        FROM dbo.DB_ARTICLES a
+        WHERE @SEARCH IS NOT NULL
+          AND a.COD_ARTICLE LIKE 'PFI%'
+          AND (
+            a.COD_ARTICLE LIKE @SEARCH
+            OR a.DES_ARTICLE_1 LIKE @SEARCH
+            OR a.DES_ARTICLE_COURT LIKE @SEARCH
+            OR a.DES_VRACS LIKE @SEARCH
+          )
+        UNION
+        SELECT n.E_ARTICLE_COMPOSE
+        FROM dbo.DB_ARTICLES_NOMENCLATURE n
+        WHERE @SEARCH IS NOT NULL
+          AND n.L_CATEG_COMPOSANT = 'VHL'
+          AND n.L_ARTICLE_COMPOSANT LIKE @SEARCH
+          AND n.E_ARTICLE_COMPOSE LIKE 'PFI%'
+      ),
+      a AS (
+        SELECT TOP (@LIMIT)
+          art.COD_ARTICLE, art.DES_ARTICLE_1, art.DES_ARTICLE_COURT, art.MILLESIME, art.STATUT_ARTICLE,
+          CASE WHEN e.COD_ARTICLE IS NULL THEN 0 ELSE 1 END AS HASSHEET
+        FROM dbo.DB_ARTICLES art
+        INNER JOIN found f ON f.COD_ARTICLE = art.COD_ARTICLE
+        LEFT JOIN eligible e ON e.COD_ARTICLE = art.COD_ARTICLE
+        ORDER BY HASSHEET DESC, CASE art.STATUT_ARTICLE WHEN 'Actif' THEN 0 ELSE 1 END, art.COD_ARTICLE DESC
+      )
+      SELECT
+        a.COD_ARTICLE, a.DES_ARTICLE_1 AS LIBELLE, a.DES_ARTICLE_COURT AS LIBELLE_COURT,
+        a.MILLESIME, a.STATUT_ARTICLE AS STATUT, a.HASSHEET, ${VHL_CODES} AS CODVRACS
+      FROM a
+      ORDER BY a.HASSHEET DESC, CASE a.STATUT_ARTICLE WHEN 'Actif' THEN 0 ELSE 1 END, a.COD_ARTICLE DESC;
+    `,
+    inputs: {
+      SEARCH: p.str(400, like),
+      LIMIT: p.int(LIMIT),
+      CODVRACS: p.json(CODVRACS),
+    },
+  });
+  return result.recordset;
+}
+
+/** Codes vrac distincts des fiches œnologiques (non supprimées). */
+export async function listSheetCodvracs() {
+  const result = await run({
+    query: `SELECT DISTINCT CODVRAC FROM dbo.SHEETS WHERE ISDEL = 0;`,
+  });
+  return result.recordset.map((r) => r.CODVRAC);
+}
+
+/**
+ * Article PFI et ses données logistiques, en une ligne (cf. utils.logisticsText).
+ * Poids bouteille = POIDS_ARTICLE (bouteille pleine, kg) ; dimensions issues
+ * des matières sèches des composants BOU (bouteille) et CAB (carton).
+ */
+export async function getArticle(COD_ARTICLE) {
+  const result = await dwh({
+    query: `
+      SELECT TOP (1)
+        a.COD_ARTICLE, a.DES_ARTICLE_1 AS LIBELLE, a.DES_ARTICLE_COURT AS LIBELLE_COURT,
+        a.MILLESIME, a.STATUT_ARTICLE AS STATUT, ${VHL_CODES} AS CODVRACS,
+        a.CODE_EAN AS EANBTL,
+        a.EAN_CARTON AS EANCASE,
+        a.COEF_CARTON AS UNITCASE,
+        a.COEF_PALETTE AS UNITPAL,
+        a.NB_COUCHES AS LVLPAL,
+        a.POIDS_ARTICLE AS BTLWGT,
+        bou.LONGUEUR AS BTL_LONGUEUR, bou.LARGEUR AS BTL_LARGEUR, bou.HAUTEUR AS BTL_HAUTEUR,
+        cab.LONGUEUR AS CASE_LONGUEUR, cab.LARGEUR AS CASE_LARGEUR, cab.HAUTEUR AS CASE_HAUTEUR,
+        -- ⚠ VALEURS DE TEST : données absentes du DWH pour l'instant
+        -- (cf. utils.LOGISTICS_TEST_TAGS), à remplacer par les vraies colonnes.
+        CAST(8.0 AS decimal(9, 2)) AS CASEWGT,  -- poids carton plein (kg)
+        CAST(160 AS decimal(9, 1)) AS PALHGT,   -- hauteur palette chargée (cm)
+        CAST(900 AS decimal(9, 1)) AS PALWGT    -- poids palette chargée (kg)
+      FROM dbo.DB_ARTICLES a
+      ${COMPONENT("BOU", "bou")}
+      ${COMPONENT("CAB", "cab")}
+      WHERE a.COD_ARTICLE = @COD_ARTICLE;
+    `,
+    inputs: { COD_ARTICLE: p.str(30, COD_ARTICLE) },
+  });
+  return result.recordset[0] ?? null;
+}
+
+/** Fiches (non supprimées) des codes vrac donnés. */
+export async function findSheetsByCodvrac(CODVRACS = []) {
+  if (!CODVRACS.length) return [];
+  const result = await run({
+    query: `
+      SELECT SHTID, CODVRAC, MILLESIME, APPELL, COLCOD, STATUS, LASTVER
+      FROM dbo.SHEETS
+      WHERE ISDEL = 0 AND CODVRAC IN (SELECT value FROM OPENJSON(@CODVRACS))
+      ORDER BY CODVRAC, MILLESIME DESC;
+    `,
+    inputs: { CODVRACS: p.json(CODVRACS) },
   });
   return result.recordset;
 }

@@ -164,6 +164,7 @@ Réponses au format standard `{ success, data }` ; erreurs `{ success:false, err
 | GET | `/sheets/:SHTID` | — | 200 fiche + `TRANSLATIONS` + `EVENTS` + `VERSIONS` |
 | PUT | `/sheets/:SHTID` | champs communs + `ROWVER` | 200 état |
 | DELETE | `/sheets/:SHTID` | `ROWVER`, `COMMENT?` | 200 |
+| PUT | `/sheets/:SHTID/default-template` | `DEFTPLID` (null = aucun), `ROWVER` — statut inchangé, hors instantanés validés | 200 état |
 | PUT | `/sheets/:SHTID/translations/:LNGCOD` | `LIBELLE, TERROIR, VINIF, DEGUST, GARDE, CEPAGES, ACCORDS, ACCEXPL, ROWVER` | 200 état |
 | DELETE | `/sheets/:SHTID/translations/:LNGCOD` | `ROWVER` | 200 état |
 | POST | `/sheets/:SHTID/submit` | `ROWVER`, `COMMENT?` | 200 état |
@@ -203,6 +204,9 @@ POST /api/vinidoc/sheets
 | PUT | `/templates/:TPLID` | `TPLNAM, DESCR, LNGCOD, ACTIVE, ROWVER` | 200 |
 | PUT | `/templates/:TPLID/file` | multipart : `file` | 200 + `ADDEDTAGS` / `REMOVEDTAGS` |
 | PUT | `/templates/:TPLID/tags` | `{ TAGS: [{ TAGNAM, TAGTYP?, MAXLEN?, REQUIRED? }] }` | 200 |
+| GET | `/templates/:TPLID/preview` | — | 200 `{ TPLID, URL, ORIGINALNAME, CACHED }` : PDF du modèle rempli de faux texte (longueur max de chaque balise), mis en cache dans `uploads/<APP_CODE>/previews` tant que le fichier et les longueurs max sont inchangés |
+| GET | `/articles` | `SEARCH?`, `LIMIT?` (≤ 50) | 200 articles PFI du DWH : sans `SEARCH`, uniquement ceux **ayant une fiche œnologique** (un de leurs codes vrac VHL) ; avec `SEARCH`, tous les PFI correspondants, ceux avec fiche d'abord. `HASSHEET` = une fiche existe pour l'un de ses codes vrac ; `SHEETSTATUS` = statut de la fiche utilisée (même millésime d'abord ; `VALIDATED` = validée par le marketing, null sans fiche) |
+| GET | `/articles/:COD_ARTICLE` | — | 200 article + `SHEETS` (fiches de ses codes vrac, même millésime d'abord) + `LOGISTICS` (balises `{{LOG.*}}`, `TEST` = valeur de test) |
 | DELETE | `/templates/:TPLID` | — | 200 (suppression logique) |
 
 ### Génération
@@ -228,6 +232,28 @@ revalider (une troncature produirait un contenu non validé par le marketing).
 `vinidoc.sheet.created|updated|submitted|validated|rejected|deleted`,
 `vinidoc.template.created|updated|deleted` — événements légers (IDs + statut),
 le front re-fetch.
+
+## Nettoyage des textes œnologiques
+
+À chaque enregistrement (création, champs communs, traductions, import), les
+textes œnologiques sont nettoyés par les schémas zod (`utils.cleanText`) :
+retours à la ligne et tabulations → espace, espaces multiples / insécables
+ramenées à une espace, caractères invisibles supprimés (espace de largeur
+nulle, BOM, tiret conditionnel, contrôle), espaces retirées avant `, . )` et
+après `(` (conservées devant `; : ! ?`), début et fin rognés ; vide → `null`.
+Champs : `APPELL`, `DESCVRAC` et les 8 champs traduits (`LIBELLE`, `TERROIR`,
+`VINIF`, `DEGUST`, `GARDE`, `CEPAGES`, `ACCORDS`, `ACCEXPL`). Les commentaires
+(workflow, modèles) ne sont pas concernés.
+
+Données saisies avant ce nettoyage : script ponctuel (fiches, traductions et
+instantanés des versions validées), simulation par défaut :
+
+```bash
+node modules/vinidoc/scripts/clean-oenology-texts.js            # simulation
+node modules/vinidoc/scripts/clean-oenology-texts.js --apply    # écriture (sauvegarde JSON dans tmp/, une transaction)
+```
+
+Option `--sans-versions` : ne pas modifier les versions validées.
 
 ## Erreurs (famille 1700)
 

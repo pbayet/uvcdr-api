@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { ulid } from "ulid";
@@ -38,6 +39,9 @@ const UPLOAD_ROOT = process.env.UPLOAD_PATH || "uploads";
 const TMP_ROOT = process.env.UPLOAD_TMP_PATH || "tmp";
 const PPTX_MIME =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+
+/** Aperçus PDF des modèles, servis en statique : <UPLOAD_ROOT>/<APP_CODE>/previews. */
+const PREVIEW_DIR = "previews";
 
 const ENTITY_TEMPLATE = "TEMPLATE"; // ATTACHMENTS.ENTITYID = TEMPLATES.TPLKEY
 const ENTITY_GENERATION = "GENERATION"; // ATTACHMENTS.ENTITYID = SHTID
@@ -295,6 +299,26 @@ export async function updateSheet(req) {
   return sheetState(state);
 }
 
+/**
+ * Modèle PowerPoint par défaut, présélectionné à la génération. Préférence
+ * hors contenu validé : statut inchangé, aucune revalidation nécessaire.
+ */
+export async function setDefaultTemplate(req) {
+  utils.assertVinidocApp(req);
+  utils.getSheetEditRights(req);
+  const { SHTID } = v.sheetIdParam.parse(req.params);
+  const { ROWVER, DEFTPLID } = v.sheetDefaultTemplateSchema.parse(await input(req));
+
+  const state = await services.setDefaultTemplate({
+    SHTID,
+    ROWVER,
+    DEFTPLID,
+    USR: utils.getActor(req),
+  });
+  emitSheet("vinidoc.sheet.updated", state);
+  return sheetState(state);
+}
+
 export async function saveTranslation(req) {
   utils.assertVinidocApp(req);
   const RIGHTS = utils.getSheetEditRights(req);
@@ -484,10 +508,72 @@ function groupTagsByTemplate(rows) {
  *   SOURCE=VALIDATED : dernière version validée (ce qui est généré pour une fiche validée)
  *   TPLID absent     : tous les modèles actifs compatibles avec la langue
  */
+/* ═════════════════════════════ Articles PFI (DWH) ═════════════════════════════ */
+
+/** Article PFI ou erreur 404. */
+async function getArticleOrThrow(COD_ARTICLE) {
+  const row = await services.getArticle(COD_ARTICLE);
+  if (!row) throw new Error("VINIDOC_ARTICLE_NOT_FOUND");
+  return row;
+}
+
+/**
+ * Balises logistiques {{LOG.*}} de l'article, dont un code vrac doit être
+ * celui de la fiche ; {} sans article.
+ */
+async function articleMergeText(COD_ARTICLE, CODVRAC) {
+  if (!COD_ARTICLE) return {};
+  const row = await getArticleOrThrow(COD_ARTICLE);
+  if (!utils.articleFromRow(row).CODVRACS.includes(CODVRAC)) {
+    throw new Error(`VINIDOC_ARTICLE_SHEET_MISMATCH_[${CODVRAC}]`);
+  }
+  return utils.logisticsText(row);
+}
+
+/**
+ * Recherche d'articles PFI (DWH) : sans recherche, seuls les PFI dont un code
+ * vrac a une fiche œnologique ; avec recherche, tous les PFI correspondants,
+ * HASSHEET indiquant ceux qui ont une fiche (cf. services.searchArticles) et
+ * SHEETSTATUS le statut de la fiche utilisée (VALIDATED = validée).
+ */
+export async function searchArticles(req) {
+  utils.assertVinidocApp(req);
+  const filters = v.articleSearchQuery.parse(await input(req));
+  const CODVRACS = await services.listSheetCodvracs();
+  const rows = await services.searchArticles({ ...filters, CODVRACS });
+  const articles = rows.map(utils.articleFromRow);
+  // Statut de la fiche qui serait utilisée (badge « non validée » au front).
+  const sheets = await services.findSheetsByCodvrac([
+    ...new Set(articles.flatMap((a) => a.CODVRACS)),
+  ]);
+  return articles.map((a, i) => ({
+    ...a,
+    HASSHEET: !!rows[i].HASSHEET,
+    SHEETSTATUS: utils.articleSheetStatus(a, sheets),
+  }));
+}
+
+/**
+ * Article PFI : codes vrac, fiches correspondantes (même millésime d'abord)
+ * et données logistiques ({{LOG.*}}, dont des valeurs de test signalées).
+ */
+export async function getArticle(req) {
+  utils.assertVinidocApp(req);
+  const { COD_ARTICLE } = v.articleParam.parse(req.params);
+  const row = await getArticleOrThrow(COD_ARTICLE);
+  const article = utils.articleFromRow(row);
+  const sheets = await services.findSheetsByCodvrac(article.CODVRACS);
+  return {
+    ...article,
+    SHEETS: utils.sortArticleSheets(sheets, article.MILLESIME),
+    LOGISTICS: utils.logisticsFields(row),
+  };
+}
+
 export async function checkSheet(req) {
   utils.assertVinidocApp(req);
   const { SHTID } = v.sheetIdParam.parse(req.params);
-  const { LNGCOD, TPLID, SOURCE } = v.checkSchema.parse(await input(req));
+  const { LNGCOD, TPLID, SOURCE, COD_ARTICLE } = v.checkSchema.parse(await input(req));
 
   let data;
   let VERNUM = null;
@@ -513,7 +599,10 @@ export async function checkSheet(req) {
   }
 
   const color = await services.getColorTrans(data.COLCOD, LNGCOD);
-  const { text } = utils.buildMergeData(data, LNGCOD, color);
+  const text = {
+    ...utils.buildMergeData(data, LNGCOD, color).text,
+    ...(await articleMergeText(COD_ARTICLE, data.CODVRAC)),
+  };
 
   const TEMPLATES = templates.map((t) => ({
     TPLID: t.TPLID,
@@ -721,6 +810,100 @@ export async function setTemplateTags(req) {
   return formatTemplate(await services.getTemplate(TPLID));
 }
 
+/* ───────────────────────── Aperçu ───────────────────────── */
+
+/** Conversions en cours, par fichier d'aperçu (deux demandes simultanées → une seule conversion). */
+const previewJobs = new Map();
+
+const previewPrefix = (TPLID) => `tpl-${TPLID}-`;
+
+/** Supprime les aperçus d'un modèle, sauf `keep` (nom de fichier). */
+async function removeTemplatePreviews(TPLID, keep = null) {
+  const dir = path.join(UPLOAD_ROOT, APP_CODE, PREVIEW_DIR);
+  const files = await fsp.readdir(dir).catch(() => []);
+  await Promise.all(
+    files
+      .filter((f) => f.startsWith(previewPrefix(TPLID)) && f !== keep)
+      .map((f) => fsp.rm(path.join(dir, f), { force: true }).catch(() => {})),
+  );
+}
+
+/** Rend le modèle avec des données fictives puis le convertit en PDF (sauf s'il existe déjà). */
+async function buildTemplatePreview(template, absPath) {
+  const exists = await fsp.access(absPath).then(() => true, () => false);
+  if (exists) return true;
+
+  await fsp.mkdir(TMP_ROOT, { recursive: true });
+  const workDir = await fsp.mkdtemp(path.join(TMP_ROOT, "vinidoc-preview-"));
+  try {
+    let tpl;
+    try {
+      tpl = await OoxmlTemplate.load(path.join(UPLOAD_ROOT, template.RELATIVEPATH));
+    } catch (err) {
+      if (err.code === "ENOENT")
+        throw new Error("VINIDOC_TEMPLATE_FILE_MISSING", { cause: err });
+      throw err;
+    }
+    await tpl.render(utils.previewMergeData(template.TAGS));
+    const pptxPath = path.join(workDir, "apercu.pptx");
+    await tpl.save(pptxPath);
+    const pdfPath = await convertPptxToPdf(pptxPath, workDir);
+
+    await fsp.mkdir(path.dirname(absPath), { recursive: true });
+    await fsp.copyFile(pdfPath, absPath);
+    // Aperçus d'une version précédente (autre fichier, autres longueurs max).
+    await removeTemplatePreviews(template.TPLID, path.basename(absPath));
+    return false;
+  } finally {
+    await fsp.rm(workDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+/**
+ * Aperçu PDF d'un modèle rempli de faux texte (cf. utils.previewMergeData).
+ * Mis en cache : reconverti seulement si le fichier ou les longueurs max
+ * des balises changent. Tout utilisateur VINIDOC (modèles inactifs inclus).
+ */
+export async function previewTemplate(req) {
+  utils.assertVinidocApp(req);
+  const { TPLID } = v.templateIdParam.parse(req.params);
+  const template = await services.getTemplate(TPLID);
+  if (!template) throw new Error("VINIDOC_TEMPLATE_NOT_FOUND");
+  if (!template.RELATIVEPATH) throw new Error("VINIDOC_TEMPLATE_FILE_MISSING");
+
+  const signature = crypto
+    .createHash("sha1")
+    .update(
+      JSON.stringify([
+        template.FILECODE,
+        (template.TAGS ?? []).map((t) => [t.TAGTYP, t.TAGNAM, t.MAXLEN]),
+      ]),
+    )
+    .digest("hex")
+    .slice(0, 12);
+  const relativePath = path.posix.join(
+    APP_CODE,
+    PREVIEW_DIR,
+    `${previewPrefix(TPLID)}${signature}.pdf`,
+  );
+  const absPath = path.join(UPLOAD_ROOT, relativePath);
+
+  if (!previewJobs.has(absPath)) {
+    previewJobs.set(
+      absPath,
+      buildTemplatePreview(template, absPath).finally(() => previewJobs.delete(absPath)),
+    );
+  }
+  const CACHED = await previewJobs.get(absPath);
+
+  return {
+    TPLID,
+    URL: fileUrl(relativePath),
+    ORIGINALNAME: `Aperçu - ${template.TPLNAM}.pdf`,
+    CACHED,
+  };
+}
+
 export async function deleteTemplate(req) {
   utils.assertVinidocApp(req);
   utils.assertCanManageTemplates(req);
@@ -729,6 +912,7 @@ export async function deleteTemplate(req) {
     TPLID,
     USR: utils.getActor(req),
   });
+  await removeTemplatePreviews(TPLID);
   broadcastToAll({ type: "vinidoc.template.deleted", payload: { TPLID } });
   return result;
 }
@@ -767,13 +951,13 @@ async function getGenerationSource(SHTID) {
  * Génère la fiche technique (version validée, ou saisie en cours si la fiche
  * n'est pas validée — voir getGenerationSource).
  * multipart : SHTID, TPLID, LNGCOD, FORMAT (pdf|pptx, défaut pdf),
+ *             COD_ARTICLE? (article PFI : balises {{LOG.*}}),
  *             HVE?, BIO? (affichage des logos, défaut false), photo? (image)
  */
 export async function generate(req) {
   utils.assertVinidocApp(req);
-  const { SHTID, TPLID, LNGCOD, FORMAT, HVE, BIO } = v.generateSchema.parse(
-    await input(req),
-  );
+  const { SHTID, TPLID, LNGCOD, FORMAT, HVE, BIO, COD_ARTICLE } =
+    v.generateSchema.parse(await input(req));
 
   const [source, template] = await Promise.all([
     getGenerationSource(SHTID),
@@ -793,6 +977,10 @@ export async function generate(req) {
 
   const color = await services.getColorTrans(snapshot.COLCOD, LNGCOD);
   const merge = utils.buildMergeData(snapshot, LNGCOD, color);
+  merge.text = {
+    ...merge.text,
+    ...(await articleMergeText(COD_ARTICLE, snapshot.CODVRAC)),
+  };
   const report = utils.checkAgainstTemplate(merge.text, template.TAGS);
   if (!report.OK) throw constraintsError(report.ERRORS);
 
@@ -849,6 +1037,7 @@ export async function generate(req) {
         FORMAT,
         HVE,
         BIO,
+        COD_ARTICLE: COD_ARTICLE ?? null,
         FILECODE: saved.FILECODE,
         USR,
       });
@@ -872,6 +1061,7 @@ export async function generate(req) {
       FORMAT,
       HVE,
       BIO,
+      COD_ARTICLE: COD_ARTICLE ?? null,
       FILECODE: saved.FILECODE,
       ORIGINALNAME: saved.ORIGINALNAME,
       URL: saved.URLPATH,

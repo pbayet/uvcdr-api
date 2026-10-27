@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { TAG_MAXLEN_MAX, TAG_MAXLEN_MIN } from "./utils.js";
+import { TAG_MAXLEN_MAX, TAG_MAXLEN_MIN, cleanText } from "./utils.js";
 
 /* ─────────────────────────────────────────────
    VINIDOC — Schémas zod
@@ -13,6 +13,16 @@ const emptyToNull = (v) => (typeof v === "string" && v.trim() === "" ? null : v)
 /** Texte optionnel ; "" ou null → null (= effacer la valeur). */
 const optText = (max) =>
   z.preprocess(emptyToNull, z.string().trim().max(max, `${max} caractères maximum.`).nullish());
+
+/**
+ * Texte œnologique optionnel, nettoyé (cf. utils.cleanText : retours à la
+ * ligne, espaces en trop, caractères invisibles) ; vide → null.
+ */
+const cleanedText = (max) =>
+  z.preprocess(
+    (v) => (typeof v === "string" ? cleanText(v) : v),
+    z.string().max(max, `${max} caractères maximum.`).nullish(),
+  );
 
 const optInt = (schema) => z.preprocess(emptyToNull, schema.nullish());
 
@@ -36,12 +46,29 @@ const boolish = z.preprocess(
   z.boolean(),
 );
 
+/** Code article X3 (ex. PFI01140). */
+export const articleCode = z
+  .string()
+  .trim()
+  .toUpperCase()
+  .min(1)
+  .max(30)
+  .regex(/^[A-Z0-9_.-]+$/, "Code article invalide (ex. PFI01140).");
+
+const optArticle = z.preprocess(emptyToUndefined, articleCode.optional());
+
 /* ───────────────────────────── Paramètres ───────────────────────────── */
 
 export const sheetIdParam = z.object({ SHTID: positiveInt });
 export const sheetLngParam = z.object({ SHTID: positiveInt, LNGCOD: lngCode });
 export const sheetVersionParam = z.object({ SHTID: positiveInt, VERNUM: positiveInt });
 export const templateIdParam = z.object({ TPLID: positiveInt });
+export const articleParam = z.object({ COD_ARTICLE: articleCode });
+
+export const articleSearchQuery = z.object({
+  SEARCH: z.preprocess(emptyToUndefined, z.string().trim().max(100).optional()),
+  LIMIT: z.coerce.number().int().min(1).max(50).default(30),
+});
 
 /* ───────────────────────────── Fiches ───────────────────────────── */
 
@@ -59,14 +86,14 @@ export const sheetListQuery = z.object({
 });
 
 const translationFields = {
-  LIBELLE: optText(200),
-  TERROIR: optText(4000),
-  VINIF: optText(4000),
-  DEGUST: optText(4000),
-  GARDE: optText(100),
-  CEPAGES: optText(1000),
-  ACCORDS: optText(1000),
-  ACCEXPL: optText(4000),
+  LIBELLE: cleanedText(200),
+  TERROIR: cleanedText(4000),
+  VINIF: cleanedText(4000),
+  DEGUST: cleanedText(4000),
+  GARDE: cleanedText(100),
+  CEPAGES: cleanedText(1000),
+  ACCORDS: cleanedText(1000),
+  ACCEXPL: cleanedText(4000),
 };
 
 export const translationSchema = z.object(translationFields);
@@ -80,9 +107,12 @@ const sheetCommonFields = {
     .max(30)
     .regex(/^[A-Z0-9_.-]+$/, "Code vrac : lettres, chiffres, '-', '_' ou '.' uniquement."),
   MILLESIME: optInt(z.coerce.number().int().min(1900).max(2200)),
-  APPELL: z.string().trim().min(1, "Appellation obligatoire.").max(100),
+  APPELL: z.preprocess(
+    (v) => (typeof v === "string" ? (cleanText(v) ?? "") : v),
+    z.string().min(1, "Appellation obligatoire.").max(100),
+  ),
   COLCOD: z.string().trim().toUpperCase().min(1, "Couleur obligatoire.").max(10),
-  DESCVRAC: optText(100),
+  DESCVRAC: cleanedText(100),
   INTARO: optInt(scale),
   INTBOU: optInt(scale),
   ECHFRU: optInt(scale),
@@ -113,6 +143,12 @@ export const sheetUpdateSchema = z
   .object({ ...sheetCommonFields, ROWVER: rowver })
   .superRefine(refineSheet);
 
+/** Modèle PowerPoint par défaut ; null (ou "") = aucun. */
+export const sheetDefaultTemplateSchema = z.object({
+  DEFTPLID: optInt(positiveInt),
+  ROWVER: rowver,
+});
+
 export const translationUpsertSchema = translationSchema.extend({ ROWVER: rowver });
 
 export const rowverOnlySchema = z.object({ ROWVER: rowver });
@@ -138,6 +174,8 @@ export const rejectSchema = z.object({
 /** Contrôle des longueurs avant génération (ou pendant la saisie). */
 export const checkSchema = z.object({
   LNGCOD: lngCode,
+  // Article PFI : balises logistiques {{LOG.*}} (vides sinon).
+  COD_ARTICLE: optArticle,
   TPLID: z.preprocess(emptyToUndefined, positiveInt.optional()),
   // VALIDATED = dernière version validée (ce qui sera généré) ;
   // CURRENT = données en cours de saisie (aide à la rédaction).
@@ -186,6 +224,8 @@ export const generateSchema = z.object({
   SHTID: positiveInt,
   TPLID: positiveInt,
   LNGCOD: lngCode,
+  // Article PFI dont le code vrac est celui de la fiche : balises {{LOG.*}}.
+  COD_ARTICLE: optArticle,
   FORMAT: z.preprocess(
     (v) => (typeof v === "string" ? v.trim().toLowerCase() : v),
     z.enum(["pptx", "pdf"]).default("pdf"),

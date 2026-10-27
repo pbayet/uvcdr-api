@@ -122,3 +122,27 @@ describe("modules/vinidoc/validators :: modèles & génération", () => {
     expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, LNGCOD: "fr", HVE: "oui" }).success).toBe(false);
   });
 });
+
+describe("nettoyage des textes œnologiques", () => {
+  it("traductions : retours à la ligne et espaces en trop supprimés, vide → null", () => {
+    const r = translationUpsertSchema.parse({
+      ROWVER,
+      DEGUST: "  Robe  rubis.\n\nNez  de fruits rouges . ",
+      GARDE: " \n ",
+    });
+    expect(r.DEGUST).toBe("Robe rubis. Nez de fruits rouges.");
+    expect(r.GARDE).toBeNull();
+  });
+
+  it("appellation nettoyée, toujours obligatoire", () => {
+    expect(sheetCreateSchema.parse({ ...base, APPELL: " Côtes  du\nRhône " }).APPELL).toBe(
+      "Côtes du Rhône",
+    );
+    expect(sheetCreateSchema.safeParse({ ...base, APPELL: " \n\u200B " }).success).toBe(false);
+  });
+
+  it("longueur max contrôlée après nettoyage", () => {
+    const r = translationUpsertSchema.safeParse({ ROWVER, GARDE: `${"a".repeat(100)}\n\n   ` });
+    expect(r.success).toBe(true);
+  });
+});

@@ -310,6 +310,22 @@ BEGIN
 END
 GO
 
+/* Migration (modèle PowerPoint par défaut d'une fiche) ──────────────────────
+   Préférence de génération, hors contenu validé : présélectionné dans le
+   formulaire de génération, modifiable sans repasser la fiche en brouillon
+   et absent des instantanés SHEETVERS. */
+IF COL_LENGTH(N'dbo.SHEETS', N'DEFTPLID') IS NULL
+  ALTER TABLE dbo.SHEETS ADD DEFTPLID int NULL
+    CONSTRAINT FK_SHEETS_TEMPLATES REFERENCES dbo.TEMPLATES (TPLID);
+GO
+
+/* Migration (génération à partir d'un article PFI) ─────────────────────────
+   Article produit fini (DWH) choisi à la génération : alimente les balises
+   logistiques {{LOG.*}} ; NULL = génération sans article. */
+IF COL_LENGTH(N'dbo.GENERATIONS', N'COD_ARTICLE') IS NULL
+  ALTER TABLE dbo.GENERATIONS ADD COD_ARTICLE nvarchar(30) NULL;
+GO
+
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_GENERATIONS_SHTID')
   CREATE INDEX IX_GENERATIONS_SHTID ON dbo.GENERATIONS (SHTID, CREDAT DESC);
 GO
