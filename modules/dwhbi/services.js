@@ -73,6 +73,75 @@ export async function getClients(DEMA) {
   return result.recordset;
 }
 
+/** Motif LIKE « contient » avec échappement des jokers saisis (%, _, [). */
+function toLike(SEARCH) {
+  const s = String(SEARCH ?? "").trim();
+  return s ? `%${s.replace(/[[%_]/g, "[$&]")}%` : null;
+}
+
+/**
+ * Recherche de clients (select à chargement distant) : les LIMIT premiers
+ * clients dont le code ou la raison sociale contient SEARCH, ou le client
+ * BPCNUM (valeur déjà choisie). Même périmètre que getClients : les clients
+ * du gestionnaire DEMA s'il en a, sinon tous. Une ligne par contact.
+ */
+export async function searchClients({ DEMA, SEARCH, BPCNUM, LIMIT = 30 }) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    DECLARE @HASDEMA BIT = CASE WHEN EXISTS (
+      SELECT 1 FROM DB_CLIENTS c
+      WHERE c.COD_GESTIONNAIRE <> '' AND c.RAIS_SOC_CLIENT <> ''
+        AND c.COD_GESTIONNAIRE = @DEMA
+    ) THEN 1 ELSE 0 END;
+
+    WITH found AS (
+      SELECT TOP (@LIMIT) c.COD_CLIENT, c.RAIS_SOC_CLIENT
+      FROM DB_CLIENTS AS c
+      WHERE
+        c.COD_GESTIONNAIRE <> ''
+        AND c.RAIS_SOC_CLIENT <> ''
+        AND (@BPCNUM IS NOT NULL OR @HASDEMA = 0 OR c.COD_GESTIONNAIRE = @DEMA)
+        AND (@BPCNUM IS NULL OR c.COD_CLIENT = @BPCNUM)
+        AND (@SEARCH IS NULL OR c.COD_CLIENT LIKE @SEARCH OR c.RAIS_SOC_CLIENT LIKE @SEARCH)
+        AND EXISTS (
+          SELECT 1 FROM DB_ADRESSES_TIERS AS t
+          WHERE t.COD_TIERS = c.COD_CLIENT AND t.INTITULE_ADRESSE <> ''
+        )
+      ORDER BY c.RAIS_SOC_CLIENT
+    )
+    SELECT
+      c.COD_CLIENT AS BPCNUM,
+      c.RAIS_SOC_CLIENT AS BPCNAM,
+      c.ACTIVITE AS NOMACT,
+      c.COD_ACTIVITE AS CODACT,
+      c.COD_PAYS_CLIENT AS CLIPAY,
+      c.PAYS_CLIENT AS CLIPAYN,
+      c.COD_GESTIONNAIRE AS GESCOD,
+      tc.CLE_ADRESSE AS CLICCON,
+      tc.INTITULE_ADRESSE AS CLINAM,
+      tc.MAIL_1 AS CLIMAIL,
+      tc.TELEPHONE_1 AS CLITEL
+    FROM
+      found AS f
+      INNER JOIN DB_CLIENTS AS c ON c.COD_CLIENT = f.COD_CLIENT
+      INNER JOIN DB_ADRESSES_TIERS AS tc ON tc.COD_TIERS = c.COD_CLIENT
+    WHERE
+      tc.INTITULE_ADRESSE <> ''
+    ORDER BY
+      BPCNAM, CLINAM;
+    `,
+    inputs: {
+      DEMA: { type: sql.NVarChar, value: DEMA ?? "" },
+      SEARCH: { type: sql.NVarChar, value: toLike(SEARCH) },
+      BPCNUM: { type: sql.NVarChar, value: BPCNUM || null },
+      LIMIT: { type: sql.Int, value: LIMIT },
+    },
+  });
+
+  return result.recordset;
+}
+
 export async function getPays() {
   const result = await runQuery({
     moduleUrl: import.meta.url,
@@ -133,6 +202,77 @@ export async function getVrac() {
         )
     `,
     errorIfEmpty: "DATA_NOT_FOUND",
+  });
+
+  return result.recordset;
+}
+
+/**
+ * Champs de DB_ARTICLES interrogeables par searchVrac : colonnes code /
+ * libellé et filtre propre au champ. Liste blanche : FIELD n'est jamais
+ * injecté tel quel dans la requête.
+ */
+const VRAC_FIELDS = {
+  MRQ: { code: "a.BV_COD_MARQUE", label: "a.BV_MARQUE" },
+  GAM: { code: "a.BV_COD_GAM_DOM", label: "a.BV_GAMME_DOMAINE" },
+  APP: { code: "a.BV_COD_APPELL", label: "a.BV_APPELLATION" },
+  COU: { code: "a.BV_COD_COUL", label: "a.BV_COULEUR" },
+  CEP: { code: "a.BV_COD_CEP", label: "a.BV_CEPAGE" },
+  // Château / Domaine sont proposés à part (CODCHADOM côté front).
+  QAL: {
+    code: "a.BV_COD_QUAL_VRAC",
+    label: "a.BV_QUALITE_VRAC",
+    where: "a.BV_QUALITE_VRAC NOT IN (N'Sans', N'Domaine', N'Château')",
+  },
+  TYPO: { code: "a.BV_COD_TYPO", label: "a.BV_TYPOLOGIE" },
+  SPTY: { code: "a.BV_COD_SPEC_TYPO", label: "a.BV_SPEC_TYPOLOGIE" },
+  MILL: {
+    code: "CAST(a.MILLESIME AS NVARCHAR(10))",
+    label: "CAST(a.MILLESIME AS NVARCHAR(10))",
+    where: "a.MILLESIME > 2000",
+    desc: true,
+  },
+};
+
+export const VRAC_FIELD_NAMES = Object.keys(VRAC_FIELDS);
+
+/**
+ * Recherche des valeurs distinctes d'un champ des articles vrac actifs
+ * (select à chargement distant) : les LIMIT premières valeurs dont le code
+ * ou le libellé contient SEARCH, ou la valeur CODE (déjà choisie).
+ */
+export async function searchVrac({ FIELD, SEARCH, CODE, LIMIT = 50 }) {
+  const f = VRAC_FIELDS[FIELD];
+  if (!f) throw new Error(`Champ vrac inconnu : ${FIELD}`);
+
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    SELECT TOP (@LIMIT)
+        ${f.code} AS CODE,
+        MIN(${f.label}) AS LABEL
+    FROM
+        DB_ARTICLES AS a
+    WHERE
+        a.STATUT_ARTICLE = 'Actif'
+        AND (
+            a.COD_ARTICLE LIKE 'PFI%'
+            OR a.COD_ARTICLE LIKE 'BIB%'
+            OR a.COD_ARTICLE LIKE 'TBO%'
+        )
+        AND ${f.code} IS NOT NULL
+        AND ${f.code} <> ''
+        ${f.where ? `AND ${f.where}` : ""}
+        AND (@CODE IS NULL OR ${f.code} = @CODE)
+        AND (@SEARCH IS NULL OR ${f.code} LIKE @SEARCH OR ${f.label} LIKE @SEARCH)
+    GROUP BY ${f.code}
+    ORDER BY ${f.desc ? "CODE DESC" : "LABEL"}
+    `,
+    inputs: {
+      SEARCH: { type: sql.NVarChar, value: toLike(SEARCH) },
+      CODE: { type: sql.NVarChar, value: CODE || null },
+      LIMIT: { type: sql.Int, value: LIMIT },
+    },
   });
 
   return result.recordset;
@@ -224,6 +364,95 @@ export async function getMsNomenclature(CODCATCOM, FMT, BASQTY) {
       BASQTY: { type: sql.Int, value: BASQTY },
     },
     errorIfEmpty: "DATA_NOT_FOUND",
+  });
+
+  return result.recordset;
+}
+
+/** Composants matières sèches possibles pour une catégorie / format / coef. */
+const MS_NOMENCLATURE_FROM = `
+      FROM
+          DB_ARTICLES_NOMENCLATURE AS nom
+          INNER JOIN DB_ARTICLES AS a1 ON a1.COD_ARTICLE = nom.L_ARTICLE_COMPOSANT
+          INNER JOIN DB_ARTICLES AS a2 ON a2.COD_ARTICLE = nom.L_ARTICLE_COMPOSE
+          INNER JOIN DB_CATEG_ARTICLES c1 on c1.COD_CATEG = a1.COD_CATEG
+      WHERE
+          nom.L_CATEG_COMPOSANT IS NOT NULL
+          AND (
+              nom.L_CATEG_COMPOSE = @CODCATCOM
+              OR (
+                  @CODCATCOM = 'PFI'
+                  AND nom.L_CATEG_COMPOSE IN ('TBO', 'MAF')
+              )
+          )
+          AND a2.BV_COD_FORMAT = @FMT
+          AND a2.COEF_CARTON = @BASQTY
+          AND a1.STATUT_ARTICLE = 'Actif'
+          AND c1.CATEGORIE_NIV1 = 'MATIERES SECHES'
+`;
+
+/** Catégories d'articles proposées pour une catégorie / format / coef. */
+export async function getMsNomenclatureCategories(CODCATCOM, FMT, BASQTY) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+      SELECT
+          DISTINCT
+          nom.L_CATEG_COMPOSANT AS CODCAT,
+          c1.DESIGN_CATEG_X3 AS LCAT
+      ${MS_NOMENCLATURE_FROM}
+      ORDER BY
+          CODCAT
+    `,
+    inputs: {
+      CODCATCOM: { type: sql.NVarChar, value: CODCATCOM },
+      FMT: { type: sql.NVarChar, value: FMT },
+      BASQTY: { type: sql.Int, value: BASQTY },
+    },
+  });
+
+  return result.recordset;
+}
+
+/**
+ * Recherche d'articles d'une catégorie CODCAT (select à chargement distant) :
+ * les LIMIT premiers dont le code ou la désignation contient SEARCH, ou
+ * l'article ITMREF (valeur déjà choisie).
+ */
+export async function searchMsNomenclature({
+  CODCATCOM,
+  FMT,
+  BASQTY,
+  CODCAT,
+  SEARCH,
+  ITMREF,
+  LIMIT = 50,
+}) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+      SELECT
+          DISTINCT TOP (@LIMIT)
+          a1.COD_ARTICLE AS ITMREF,
+          a1.DES_ARTICLE_2 AS LITM,
+          nom.L_CATEG_COMPOSANT AS CODCAT,
+          c1.DESIGN_CATEG_X3 AS LCAT
+      ${MS_NOMENCLATURE_FROM}
+          AND nom.L_CATEG_COMPOSANT = @CODCAT
+          AND (@ITMREF IS NULL OR a1.COD_ARTICLE = @ITMREF)
+          AND (@SEARCH IS NULL OR a1.COD_ARTICLE LIKE @SEARCH OR a1.DES_ARTICLE_2 LIKE @SEARCH)
+      ORDER BY
+          LITM
+    `,
+    inputs: {
+      CODCATCOM: { type: sql.NVarChar, value: CODCATCOM },
+      FMT: { type: sql.NVarChar, value: FMT },
+      BASQTY: { type: sql.Int, value: BASQTY },
+      CODCAT: { type: sql.NVarChar, value: CODCAT },
+      SEARCH: { type: sql.NVarChar, value: toLike(SEARCH) },
+      ITMREF: { type: sql.NVarChar, value: ITMREF || null },
+      LIMIT: { type: sql.Int, value: LIMIT },
+    },
   });
 
   return result.recordset;

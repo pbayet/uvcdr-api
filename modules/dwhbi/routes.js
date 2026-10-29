@@ -24,6 +24,23 @@ router.get(
   },
 );
 
+/**
+ * Routes « /search » : recherche côté serveur pour les selects à
+ * chargement distant (seuls les LIMIT premiers résultats sont renvoyés),
+ * à côté des routes historiques qui chargent toute la liste.
+ */
+router.get(
+  "/clients/search",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.searchClients(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.get(
   "/pays",
   authMiddlewares.authVerifyMiddleware,
@@ -49,6 +66,18 @@ router.get(
 );
 
 router.get(
+  "/vrac/search",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.searchVrac(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get(
   "/ms/containers",
   authMiddlewares.authVerifyMiddleware,
   async (req, res, next) => {
@@ -66,6 +95,30 @@ router.get(
   async (req, res, next) => {
     try {
       res.json(await controllers.getMsNomenclature(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get(
+  "/ms/nomenclature/categories",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.getMsNomenclatureCategories(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get(
+  "/ms/nomenclature/search",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.searchMsNomenclature(req));
     } catch (err) {
       next(err);
     }
