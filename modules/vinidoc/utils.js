@@ -173,6 +173,34 @@ export const TEXT_FIELDS = [
     FIELD: "VINIF",
     AVAILABLE: true,
   },
+  // Autres données de la fiche : balises facultatives (OPTIONAL), non
+  // signalées comme absentes d'un modèle qui ne les utilise pas.
+  ...[
+    ["CEPAGES", "Cépages", "CEPAGES"],
+    ["GARDE", "Potentiel de garde", "GARDE"],
+    ["ACCORDS", "Accords mets et vins", "ACCORDS"],
+    ["ACCEXPL", "Explication des accords", "ACCEXPL"],
+  ].map(([TAG, LABEL, FIELD]) => ({
+    TAG,
+    LABEL,
+    TRANSLATED: true,
+    FIELD,
+    AVAILABLE: true,
+    OPTIONAL: true,
+  })),
+  ...[
+    ["APPELL", "Appellation seule (sans couleur ni intitulé commercial)", false],
+    ["COULEUR", "Couleur du vin (libellé traduit)", true],
+    ["MILLESIME", "Millésime (vide si non millésimé)", false],
+    ["CODVRAC", "Code vrac", false],
+    ["DESCVRAC", "Description vrac", false],
+  ].map(([TAG, LABEL, TRANSLATED]) => ({
+    TAG,
+    LABEL,
+    TRANSLATED,
+    AVAILABLE: true,
+    OPTIONAL: true,
+  })),
   ...[
     ["LOG.BTLDIM", "Dimensions bouteille"], // ancien : LOGISTICS.BOTTLEDIMENSIONS
     ["LOG.BTLWGT", "Poids bouteille"], // ancien : LOGISTICS.BOTTLEWEIGHT
@@ -240,35 +268,66 @@ export function packagingBadges(packaging = DEFAULT_PACKAGING) {
   );
 }
 
-/** Formes conditionnelles ("badge:TAG"), décrites par motif. */
+/** Libellés des échelles (catalogue des balises). */
+const SCALE_LABELS = {
+  INTENSITE_AROMATIQUE: "Intensité aromatique",
+  INTENSITE_BOUCHE: "Intensité en bouche",
+  ECHELLE_FRUIT: "Échelle de fruit",
+};
+
+const range = (from, to) => Array.from({ length: to - from + 1 }, (_, i) => from + i);
+
+/**
+ * Formes conditionnelles ("badge:TAG"), décrites par motif (PATTERN) avec la
+ * liste exhaustive des noms possibles (NAMES) et leur famille (GROUP).
+ * COULEUR_* : complété par les couleurs paramétrées (cf. getMergeFields).
+ */
 export const BADGE_PATTERNS = [
   ...CERTIFICATIONS.map((c) => ({
+    GROUP: "Certifications",
     PATTERN: c,
+    NAMES: [c],
     LABEL: `Logo ${c} : affiché si seul ${c} est coché à la génération`,
   })),
   {
+    GROUP: "Certifications",
     PATTERN: CERTIFICATION_COMBINED,
+    NAMES: [CERTIFICATION_COMBINED],
     LABEL: "Logo combiné : affiché si HVE et BIO sont cochés (remplace les 2 logos)",
   },
   {
+    GROUP: "Conditionnement",
     PATTERN: `PHOTO_<${PACKAGINGS.join("|")}>`,
-    LABEL: "Cadre photo (groupe contenant img:BOTTLEPHOTO) : affiché si le conditionnement choisi correspond",
+    NAMES: PACKAGINGS.map((p) => `PHOTO_${p}`),
+    LABEL: "Groupe contenant le cadre img:BOTTLEPHOTO : conservé si le conditionnement choisi correspond",
   },
   {
-    PATTERN: "COULEUR_<ROUGE|ROSE|BLANC>",
-    LABEL: "Affiché si la couleur correspond",
+    GROUP: "Couleur",
+    PATTERN: "COULEUR_<COULEUR>",
+    NAMES: ["COULEUR_ROUGE", "COULEUR_ROSE", "COULEUR_BLANC"],
+    LABEL: "Affiché si la couleur du vin correspond",
   },
   ...Object.keys(SCALES).flatMap((s) => [
-    { PATTERN: `${s}_<1..5>`, LABEL: `Jauge : affiché si ${s} ≥ n` },
     {
+      GROUP: SCALE_LABELS[s],
+      PATTERN: `${s}_<1..5>`,
+      NAMES: range(1, 5).map((n) => `${s}_${n}`),
+      LABEL: "Jauge : affiché si la valeur est ≥ n (ex. 5 pastilles, la n-ième s'allume)",
+    },
+    {
+      GROUP: SCALE_LABELS[s],
       PATTERN: `${s}_EQ_<0..5>`,
-      LABEL: `Affiché si ${s} = n (0 = non renseigné)`,
+      NAMES: range(0, 5).map((n) => `${s}_EQ_${n}`),
+      LABEL: "Affiché si la valeur vaut exactement n (0 = non renseignée)",
     },
   ]),
 ];
 
 export const IMAGE_FIELDS = [
-  { TAG: "BOTTLEPHOTO", LABEL: "Photo bouteille (fournie à la génération)" },
+  {
+    TAG: "BOTTLEPHOTO",
+    LABEL: "Photo produit, fournie à la génération (sinon l'image du modèle est conservée)",
+  },
 ];
 
 const TEXT_TAGS = new Set(TEXT_FIELDS.map((f) => f.TAG));
@@ -277,9 +336,17 @@ const BADGE_RE = new RegExp(
   `^(${[...CERTIFICATIONS, CERTIFICATION_COMBINED].join("|")}|PHOTO_(${PACKAGINGS.join("|")})|COULEUR_[A-Z]+|(${Object.keys(SCALES).join("|")})_([1-5]|EQ_[0-5]))$`,
 );
 
+/**
+ * Champs libres : balises texte {{FREE.<NOM>}} (ex. {{FREE.PRIX}}, {{FREE.MENTION_PROMO-130}}),
+ * hors fiche œnologique, saisies dans le formulaire de génération (un champ
+ * par balise du modèle choisi). Non tracées : seul le fichier généré les contient.
+ */
+export const FREE_TAG_RE = /^FREE\.[A-Z0-9_.]+$/;
+export const isFreeTag = (TAGNAM) => FREE_TAG_RE.test(String(TAGNAM ?? ""));
+
 /** La balise détectée dans un modèle fait-elle partie du catalogue ? */
 export function isKnownTag(TAGTYP, TAGNAM) {
-  if (TAGTYP === "TEXT") return TEXT_TAGS.has(TAGNAM);
+  if (TAGTYP === "TEXT") return TEXT_TAGS.has(TAGNAM) || isFreeTag(TAGNAM);
   if (TAGTYP === "IMAGE") return IMAGE_TAGS.has(TAGNAM);
   if (TAGTYP === "BADGE") return BADGE_RE.test(TAGNAM);
   return false;
@@ -340,13 +407,13 @@ export function maxLenWarnings(inventory) {
 
 /**
  * Balises du catalogue absentes d'un modèle : balises texte alimentées et
- * images. Les badges (décrits par motif) et les balises logistiques (non
- * alimentées) ne sont pas listés.
+ * images. Les badges (décrits par motif), les balises logistiques (non
+ * alimentées) et les balises facultatives (OPTIONAL) ne sont pas listés.
  */
 export function missingCatalogTags(TAGS) {
   const present = new Set((TAGS ?? []).map((t) => `${t.TAGTYP}:${t.TAGNAM}`));
   return [
-    ...TEXT_FIELDS.filter((f) => f.AVAILABLE).map((f) => ({
+    ...TEXT_FIELDS.filter((f) => f.AVAILABLE && !f.OPTIONAL).map((f) => ({
       TAGTYP: "TEXT",
       TAGNAM: f.TAG,
       LABEL: f.LABEL,
@@ -466,6 +533,20 @@ export function applySheetChanges(sheet, common = null, translations = {}) {
   };
 }
 
+/**
+ * Fiche ajustée localement pour une génération (sans enregistrement) :
+ * caractéristiques remplacées — sauf le code vrac, qui relie la fiche à
+ * l'article PFI — et textes de la langue `lng` fusionnés champ par champ.
+ */
+export function applyLocalChanges(sheet, lng, common = null, translation = null) {
+  if (!common && !translation) return sheet;
+  return applySheetChanges(
+    sheet,
+    common ? omitKeys(common, ["CODVRAC"]) : null,
+    translation ? { [lng]: translation } : {},
+  ).sheet;
+}
+
 /** Contenu figé à la validation (sans les métadonnées de workflow). */
 export function buildSnapshot(sheet) {
   return {
@@ -540,6 +621,11 @@ export function buildMergeData(sheet, lng, color = {}) {
         .join(" - ")
         .toUpperCase(),
     TEMP: formatTemperature(sheet.TEMPMIN, sheet.TEMPMAX, lng),
+    APPELL: str(sheet.APPELL),
+    COULEUR: str(color.LABEL ?? sheet.COLCOD),
+    MILLESIME: str(sheet.MILLESIME),
+    CODVRAC: str(sheet.CODVRAC),
+    DESCVRAC: str(sheet.DESCVRAC),
   };
 
   // Toutes les balises du catalogue sont présentes (vides si sans donnée,
@@ -579,6 +665,12 @@ export const PREVIEW_DEFAULT_LENGTH = 80;
 /** Valeurs courtes d'exemple (balises non rédigées : température, logistique). */
 const PREVIEW_SAMPLES = {
   TEMP: "8-10°C",
+  APPELL: "Côtes du Rhône",
+  COULEUR: "Rouge",
+  MILLESIME: "2024",
+  CODVRAC: "VHL12345",
+  DESCVRAC: "STANDARD",
+  GARDE: "3 à 5 ans",
   "LOG.BTLDIM": "75 x 300 mm",
   "LOG.BTLWGT": "1,3 kg",
   "LOG.CASEDIM": "240 x 160 x 310 mm",
@@ -889,17 +981,22 @@ export const textLength = (s) =>
 
 /**
  * Contrôle des données de fusion face aux balises texte d'un modèle.
+ * Les champs libres ({{FREE.*}}) ne dépendent pas de la fiche : ignorés sauf
+ * à la génération (withFree), où leur saisie est connue.
  * @param {Record<string,string>} text   buildMergeData().text
  * @param {Array<{TAGTYP,TAGNAM,MAXLEN,REQUIRED,ISKNOWN}>} tags
+ * @param {{ withFree?: boolean }} [options]
  */
-export function checkAgainstTemplate(text, tags = []) {
+export function checkAgainstTemplate(text, tags = [], { withFree = false } = {}) {
   const TAGS = tags
-    .filter((t) => t.TAGTYP === "TEXT")
+    .filter((t) => t.TAGTYP === "TEXT" && (withFree || !isFreeTag(t.TAGNAM)))
     .map((t) => {
       const LENGTH = textLength(text[t.TAGNAM]);
       const MAXLEN = t.MAXLEN ?? null;
       let ISSUE = null;
-      if (!t.ISKNOWN) ISSUE = "UNKNOWN_TAG";
+      // ISKNOWN figé à l'import : un modèle importé avant les champs libres
+      // les a enregistrés comme inconnus.
+      if (!t.ISKNOWN && !isFreeTag(t.TAGNAM)) ISSUE = "UNKNOWN_TAG";
       else if (t.REQUIRED && LENGTH === 0) ISSUE = "MISSING";
       else if (MAXLEN != null && LENGTH > MAXLEN) ISSUE = "TOO_LONG";
       return {

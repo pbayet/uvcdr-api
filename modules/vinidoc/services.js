@@ -1354,25 +1354,6 @@ const TARE_WEIGHTS = `
  * hauteur de la palette chargée (EF-16 / EF-17, cf. utils.computeLogistics).
  */
 export async function getArticle(COD_ARTICLE) {
-  console.log(`
-    SELECT TOP (1)
-        a.COD_ARTICLE, a.DES_ARTICLE_1 AS LIBELLE, a.DES_ARTICLE_COURT AS LIBELLE_COURT,
-        a.MILLESIME, a.STATUT_ARTICLE AS STATUT, ${VHL_CODES} AS CODVRACS,
-        a.CODE_EAN AS EANBTL,
-        a.EAN_CARTON AS EANCASE,
-        a.COEF_CARTON AS UNITCASE,
-        a.COEF_PALETTE AS UNITPAL,
-        a.NB_COUCHES AS LVLPAL,
-        a.CAPACITE AS VOLUME, a.UNIT_CAP AS VOLUME_UNIT,
-        bou.LONGUEUR AS BTL_LONGUEUR, bou.LARGEUR AS BTL_LARGEUR, bou.HAUTEUR AS BTL_HAUTEUR,
-        cab.LONGUEUR AS CASE_LONGUEUR, cab.LARGEUR AS CASE_LARGEUR, cab.HAUTEUR AS CASE_HAUTEUR,
-        ms.BTLTARE_G, ms.CASETARE_G_BTL, ms.BOU_G, ms.PALSUP_KG, ms.PALSUP_HGT
-      FROM dbo.DB_ARTICLES a
-      ${COMPONENT("BOU", "bou")}
-      ${COMPONENT("CAB", "cab")}
-      ${TARE_WEIGHTS}
-      WHERE a.COD_ARTICLE = @COD_ARTICLE;`);
-
   const result = await dwh({
     query: `
       SELECT TOP (1)

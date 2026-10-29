@@ -12,10 +12,12 @@ import {
   missingCatalogTags,
   TEXT_FIELDS,
   IMAGE_FIELDS,
+  BADGE_PATTERNS,
   certificationBadges,
   packagingBadges,
   formatSheet,
   buildSnapshot,
+  applyLocalChanges,
   buildMergeData,
   checkAgainstTemplate,
   formatGrapes,
@@ -142,6 +144,11 @@ describe("modules/vinidoc/utils :: catalogue des balises", () => {
     expect(isKnownTag("TEXT", "LOG.EANBTL")).toBe(true);
     expect(isKnownTag("TEXT", "DEGUSTATION")).toBe(false);
     expect(isKnownTag("TEXT", "CUVEE")).toBe(false);
+    expect(isKnownTag("TEXT", "FREE.PRIX")).toBe(true);
+    expect(isKnownTag("TEXT", "FREE.MENTION_PROMO")).toBe(true);
+    expect(isKnownTag("TEXT", "FREE")).toBe(false);
+    expect(isKnownTag("TEXT", "FREE_1")).toBe(false);
+    expect(isKnownTag("BADGE", "FREE.PRIX")).toBe(false);
     expect(isKnownTag("IMAGE", "BOTTLEPHOTO")).toBe(true);
     expect(isKnownTag("BADGE", "COULEUR_ROUGE")).toBe(true);
     expect(isKnownTag("BADGE", "INTENSITE_AROMATIQUE_3")).toBe(true);
@@ -222,6 +229,9 @@ describe("modules/vinidoc/utils :: missingCatalogTags", () => {
     expect(names).toContain("BOTTLEPHOTO");
     expect(names).not.toContain("TERROIR");
     expect(names.some((n) => n.startsWith("LOG."))).toBe(false);
+    // Balises facultatives (cépages, millésime…) : jamais signalées absentes.
+    expect(names).not.toContain("CEPAGES");
+    expect(names).not.toContain("MILLESIME");
   });
 
   it("ne renvoie rien si toutes les balises sont présentes", () => {
@@ -376,9 +386,32 @@ describe("modules/vinidoc/utils :: buildMergeData", () => {
 
   it("toutes les balises du catalogue sont présentes, LOG.* vides", () => {
     const { text } = buildMergeData(SHEET, "fr", color);
-    expect(Object.keys(text)).toHaveLength(17);
+    expect(Object.keys(text)).toHaveLength(TEXT_FIELDS.length);
     expect(text["LOG.EANBTL"]).toBe("");
     expect(text["LOG.UNITPAL"]).toBe("");
+  });
+
+  it("autres données de la fiche : traduites, caractéristiques, vides si absentes", () => {
+    const { text } = buildMergeData(SHEET, "fr", color);
+    expect(text).toMatchObject({
+      GARDE: "2 ans",
+      CEPAGES: "",
+      ACCORDS: "Viande blanche, dorade à la plancha, salade paysanne",
+      ACCEXPL: "Plats légers.",
+      APPELL: "CDR",
+      MILLESIME: "2025",
+      CODVRAC: "VHL09393",
+      DESCVRAC: "STANDARD",
+    });
+    expect(text.COULEUR).toBe(color.LABEL ?? "BLANC");
+    expect(buildMergeData({ ...SHEET, MILLESIME: null }, "fr").text.MILLESIME).toBe("");
+  });
+
+  it("catalogue des blocs conditionnels : noms exhaustifs, tous reconnus", () => {
+    const names = BADGE_PATTERNS.flatMap((b) => b.NAMES);
+    expect(names).toContain("INTENSITE_BOUCHE_EQ_0");
+    expect(names).toContain("PHOTO_CANETTE");
+    expect(names.every((n) => isKnownTag("BADGE", n))).toBe(true);
   });
 
   it("textes traduits vides si la langue est absente", () => {
@@ -459,6 +492,23 @@ describe("modules/vinidoc/utils :: checkAgainstTemplate", () => {
   it("OK quand toutes les contraintes sont respectées", () => {
     const report = checkAgainstTemplate({ TEMP: "8-10°C" }, [tags[2]]);
     expect(report).toMatchObject({ OK: true, ERRORS: [] });
+  });
+
+  it("champs libres : ignorés hors génération, contrôlés avec withFree", () => {
+    const free = [
+      // Modèle importé avant les champs libres : ISKNOWN figé à false.
+      { TAGTYP: "TEXT", TAGNAM: "FREE.PRIX", MAXLEN: 5, REQUIRED: false, ISKNOWN: false },
+      { TAGTYP: "TEXT", TAGNAM: "FREE.PROMO", MAXLEN: null, REQUIRED: true, ISKNOWN: true },
+    ];
+    expect(checkAgainstTemplate({}, free).TAGS).toEqual([]);
+
+    const report = checkAgainstTemplate({ "FREE.PRIX": "trop long", "FREE.PROMO": "" }, free, {
+      withFree: true,
+    });
+    expect(report.ERRORS.map((e) => [e.TAGNAM, e.ISSUE])).toEqual([
+      ["FREE.PRIX", "TOO_LONG"],
+      ["FREE.PROMO", "MISSING"],
+    ]);
   });
 });
 
@@ -740,6 +790,28 @@ describe("applySheetChanges (modification d'une fiche validée)", () => {
     expect(translations[0]).toMatchObject({ LNGCOD: "en", DEGUST: "Pale yellow.", TERROIR: null });
     expect(deletedLngs).toEqual(["de"]);
     expect(buildSnapshot(sheet).TRANSLATIONS.en.DEGUST).toBe("Pale yellow.");
+  });
+});
+
+describe("applyLocalChanges (fiche ajustée pour une génération)", () => {
+  it("sans ajustement : fiche inchangée (même objet)", () => {
+    expect(applyLocalChanges(SHEET, "fr")).toBe(SHEET);
+  });
+
+  it("remplace les caractéristiques sauf le code vrac, fusionne les textes de la langue", () => {
+    const sheet = applyLocalChanges(
+      SHEET,
+      "fr",
+      { ...SHEET, CODVRAC: "AUTRE", INTARO: 5 },
+      { DEGUST: "Ajusté." },
+    );
+    expect(sheet.CODVRAC).toBe(SHEET.CODVRAC);
+    expect(sheet.INTARO).toBe(5);
+    expect(sheet.TRANSLATIONS.fr).toMatchObject({
+      DEGUST: "Ajusté.",
+      TERROIR: SHEET.TRANSLATIONS.fr.TERROIR,
+    });
+    expect(SHEET.TRANSLATIONS.fr.DEGUST).toBe("Robe jaune pâle brillante.");
   });
 });
 

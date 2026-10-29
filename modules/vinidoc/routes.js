@@ -51,7 +51,7 @@ import { templateFileUpload, photoUpload, fieldsOnly, cleanupTmpFiles } from "./
    GET    /articles/:COD_ARTICLE                codes vrac, fiches, données logistiques {{LOG.*}}
 
    Génération
-   POST   /generate        [mp]    SHTID, TPLID, LNGCOD, FORMAT?, COD_ARTICLE?, photo?
+   POST   /generate        [mp]    SHTID, TPLID, LNGCOD, COD_ARTICLE, FORMAT?, FREE?, LOGISTICS?, SHEET?, TRANSLATION?, photo?
    GET    /generations             ?SHTID&TPLID&LIMIT
    [mp] = multipart/form-data
 ───────────────────────────────────────────── */

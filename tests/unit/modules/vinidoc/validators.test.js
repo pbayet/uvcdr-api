@@ -110,24 +110,66 @@ describe("modules/vinidoc/validators :: modèles & génération", () => {
   });
 
   it("génération : format pdf par défaut, langue normalisée", () => {
-    const r = generateSchema.parse({ SHTID: "1", TPLID: "2", LNGCOD: "EN" });
-    expect(r).toEqual({ SHTID: 1, TPLID: 2, LNGCOD: "en", FORMAT: "pdf", HVE: false, BIO: false, PACKAGING: "BOUTEILLE" });
-    expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, LNGCOD: "en", FORMAT: "docx" }).success).toBe(false);
+    const r = generateSchema.parse({ SHTID: "1", TPLID: "2", COD_ARTICLE: "pfi01140", LNGCOD: "EN" });
+    expect(r).toEqual({ SHTID: 1, TPLID: 2, COD_ARTICLE: "PFI01140", LNGCOD: "en", FORMAT: "pdf", HVE: false, BIO: false, PACKAGING: "BOUTEILLE", FREE: {}, LOGISTICS: {} });
+    expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, COD_ARTICLE: "PFI01140", LNGCOD: "en", FORMAT: "docx" }).success).toBe(false);
+  });
+
+  it("génération : article PFI obligatoire (données logistiques)", () => {
+    for (const COD_ARTICLE of [undefined, "", "  "]) {
+      const r = generateSchema.safeParse({ SHTID: 1, TPLID: 2, LNGCOD: "fr", COD_ARTICLE });
+      expect(r.success).toBe(false);
+      expect(r.error.issues[0].path).toEqual(["COD_ARTICLE"]);
+    }
   });
 
   it("génération : options logos HVE / BIO (multipart en chaînes)", () => {
-    const r = generateSchema.parse({ SHTID: "1", TPLID: "2", LNGCOD: "fr", HVE: "true", BIO: "0" });
+    const r = generateSchema.parse({ SHTID: "1", TPLID: "2", COD_ARTICLE: "pfi01140", LNGCOD: "fr", HVE: "true", BIO: "0" });
     expect(r.HVE).toBe(true);
     expect(r.BIO).toBe(false);
-    expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, LNGCOD: "fr", HVE: "oui" }).success).toBe(false);
+    expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, COD_ARTICLE: "PFI01140", LNGCOD: "fr", HVE: "oui" }).success).toBe(false);
   });
 
   it("génération : conditionnement de la photo (défaut BOUTEILLE)", () => {
-    const parse = (PACKAGING) => generateSchema.parse({ SHTID: 1, TPLID: 2, LNGCOD: "fr", PACKAGING });
+    const parse = (PACKAGING) => generateSchema.parse({ SHTID: 1, TPLID: 2, COD_ARTICLE: "PFI01140", LNGCOD: "fr", PACKAGING });
     expect(parse(" bib ").PACKAGING).toBe("BIB");
     expect(parse("CANETTE").PACKAGING).toBe("CANETTE");
     expect(parse("").PACKAGING).toBe("BOUTEILLE");
-    expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, LNGCOD: "fr", PACKAGING: "MAGNUM" }).success).toBe(false);
+    expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, COD_ARTICLE: "PFI01140", LNGCOD: "fr", PACKAGING: "MAGNUM" }).success).toBe(false);
+  });
+
+  it("génération : champs libres (objet ou JSON multipart, clés en majuscules)", () => {
+    const parse = (FREE) => generateSchema.safeParse({ SHTID: 1, TPLID: 2, COD_ARTICLE: "PFI01140", LNGCOD: "fr", FREE });
+    expect(parse(undefined).data.FREE).toEqual({});
+    expect(parse("").data.FREE).toEqual({});
+    expect(parse({ "free.promo": " Promo\r\nété " }).data.FREE).toEqual({ "FREE.PROMO": "Promo\nété" });
+    expect(parse({ FREE_1: "x" }).success).toBe(false);
+    expect(parse('{"FREE.PRIX":"x"}').data.FREE).toEqual({ "FREE.PRIX": "x" });
+    expect(parse({ DEGUST: "x" }).success).toBe(false);
+    expect(parse("{pas du json").success).toBe(false);
+  });
+
+  it("génération : corrections des données logistiques (balises LOG.* connues)", () => {
+    const parse = (LOGISTICS) =>
+      generateSchema.safeParse({ SHTID: 1, TPLID: 2, COD_ARTICLE: "PFI01140", LNGCOD: "fr", LOGISTICS });
+    expect(parse(undefined).data.LOGISTICS).toEqual({});
+    expect(parse({ "log.btlwgt": " 1,35 kg " }).data.LOGISTICS).toEqual({ "LOG.BTLWGT": "1,35 kg" });
+    expect(parse('{"LOG.EANBTL":"3 123"}').data.LOGISTICS).toEqual({ "LOG.EANBTL": "3 123" });
+    expect(parse({ "LOG.INCONNU": "x" }).success).toBe(false);
+    expect(parse({ DEGUST: "x" }).success).toBe(false);
+    expect(parse({ "LOG.BTLWGT": "x".repeat(101) }).success).toBe(false);
+  });
+
+  it("génération et contrôle : fiche ajustée localement (SHEET, TRANSLATION)", () => {
+    const base = { SHTID: 1, TPLID: 2, COD_ARTICLE: "PFI01140", LNGCOD: "fr" };
+    const SHEET = { CODVRAC: "vhl1", APPELL: "CDR", COLCOD: "rouge", INTARO: 4, TEMPMIN: 14, TEMPMAX: 16 };
+    const r = generateSchema.parse({ ...base, SHEET: JSON.stringify(SHEET), TRANSLATION: { DEGUST: " Nez  fruité " } });
+    expect(r.SHEET).toMatchObject({ CODVRAC: "VHL1", COLCOD: "ROUGE", INTARO: 4 });
+    expect(r.TRANSLATION).toEqual({ DEGUST: "Nez fruité" });
+    expect(generateSchema.parse(base).SHEET).toBeUndefined();
+    expect(generateSchema.safeParse({ ...base, SHEET: { ...SHEET, TEMPMIN: 18 } }).success).toBe(false);
+    expect(generateSchema.safeParse({ ...base, SHEET: { ...SHEET, APPELL: "" } }).success).toBe(false);
+    expect(checkSchema.parse({ LNGCOD: "fr", TRANSLATION: '{"VINIF":"x"}' }).TRANSLATION).toEqual({ VINIF: "x" });
   });
 });
 

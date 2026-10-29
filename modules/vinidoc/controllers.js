@@ -184,7 +184,10 @@ export async function getMe(req) {
 export async function getMergeFields(req) {
   utils.assertVinidocApp(req);
   const { LNGCOD } = v.mergeFieldsQuery.parse(await input(req));
-  const rows = await services.getTextTagLimits(LNGCOD ?? null);
+  const [rows, colors] = await Promise.all([
+    services.getTextTagLimits(LNGCOD ?? null),
+    services.getColors(),
+  ]);
 
   const TEXT = utils.TEXT_FIELDS.map((f) => {
     const LIMITS = rows
@@ -205,7 +208,13 @@ export async function getMergeFields(req) {
     };
   });
 
-  return { TEXT, BADGES: utils.BADGE_PATTERNS, IMAGES: utils.IMAGE_FIELDS };
+  // Blocs « COULEUR_* » : un nom par couleur paramétrée.
+  const BADGES = utils.BADGE_PATTERNS.map((b) =>
+    b.GROUP === "Couleur" && colors.length
+      ? { ...b, NAMES: colors.map((c) => `COULEUR_${c.COLCOD}`) }
+      : b,
+  );
+  return { TEXT, BADGES, IMAGES: utils.IMAGE_FIELDS };
 }
 
 /* ═════════════════════════════ Fiches — lecture ═════════════════════════════ */
@@ -790,9 +799,8 @@ export async function getArticle(req) {
 export async function checkSheet(req) {
   utils.assertVinidocApp(req);
   const { SHTID } = v.sheetIdParam.parse(req.params);
-  const { LNGCOD, TPLID, SOURCE, COD_ARTICLE } = v.checkSchema.parse(
-    await input(req),
-  );
+  const { LNGCOD, TPLID, SOURCE, COD_ARTICLE, SHEET, TRANSLATION } =
+    v.checkSchema.parse(await input(req));
 
   let data;
   let VERNUM = null;
@@ -807,6 +815,8 @@ export async function checkSheet(req) {
   } else {
     data = await getSheetOrThrow(SHTID);
   }
+  // Ajustements locaux d'une génération en préparation (non enregistrés).
+  data = utils.applyLocalChanges(data, LNGCOD, SHEET, TRANSLATION);
 
   let templates;
   if (TPLID) {
@@ -1183,14 +1193,30 @@ async function getGenerationSource(SHTID) {
  * Génère la fiche technique (version validée, ou saisie en cours si la fiche
  * n'est pas validée — voir getGenerationSource).
  * multipart : SHTID, TPLID, LNGCOD, FORMAT (pdf|pptx, défaut pdf),
- *             COD_ARTICLE? (article PFI : balises {{LOG.*}}),
+ *             COD_ARTICLE (article PFI, obligatoire : balises {{LOG.*}}),
  *             HVE?, BIO? (affichage des logos, défaut false), photo? (image),
- *             PACKAGING? (BOUTEILLE|BIB|CANETTE, défaut BOUTEILLE : cadre photo)
+ *             PACKAGING? (BOUTEILLE|BIB|CANETTE, défaut BOUTEILLE : cadre photo),
+ *             FREE? (champs libres {{FREE.*}} : objet, ou chaîne JSON en multipart),
+ *             LOGISTICS? (corrections {{LOG.*}}, prioritaires sur l'article : idem),
+ *             SHEET?, TRANSLATION? (fiche ajustée pour cette génération, non
+ *             enregistrée : caractéristiques complètes, textes de LNGCOD ; idem)
  */
 export async function generate(req) {
   utils.assertVinidocApp(req);
-  const { SHTID, TPLID, LNGCOD, FORMAT, HVE, BIO, PACKAGING, COD_ARTICLE } =
-    v.generateSchema.parse(await input(req));
+  const {
+    SHTID,
+    TPLID,
+    LNGCOD,
+    FORMAT,
+    HVE,
+    BIO,
+    PACKAGING,
+    COD_ARTICLE,
+    FREE,
+    LOGISTICS,
+    SHEET,
+    TRANSLATION,
+  } = v.generateSchema.parse(await input(req));
 
   const [source, template] = await Promise.all([
     getGenerationSource(SHTID),
@@ -1208,13 +1234,25 @@ export async function generate(req) {
     throw new Error(`VINIDOC_TRANSLATION_MISSING_[${LNGCOD}]`);
   }
 
-  const color = await services.getColorTrans(snapshot.COLCOD, LNGCOD);
-  const merge = utils.buildMergeData(snapshot, LNGCOD, color);
+  // Fiche ajustée pour cette génération uniquement (fiche inchangée).
+  const data = utils.applyLocalChanges(snapshot, LNGCOD, SHEET, TRANSLATION);
+  const color = await services.getColorTrans(data.COLCOD, LNGCOD);
+  const merge = utils.buildMergeData(data, LNGCOD, color);
   merge.text = {
     ...merge.text,
     ...(await articleMergeText(COD_ARTICLE, snapshot.CODVRAC)),
+    // Données logistiques corrigées par l'utilisateur (absentes ou erronées).
+    ...LOGISTICS,
+    // Champs libres du modèle uniquement (non saisis → vides).
+    ...Object.fromEntries(
+      template.TAGS.filter(
+        (t) => t.TAGTYP === "TEXT" && utils.isFreeTag(t.TAGNAM),
+      ).map((t) => [t.TAGNAM, FREE[t.TAGNAM] ?? ""]),
+    ),
   };
-  const report = utils.checkAgainstTemplate(merge.text, template.TAGS);
+  const report = utils.checkAgainstTemplate(merge.text, template.TAGS, {
+    withFree: true,
+  });
   if (!report.OK) throw constraintsError(report.ERRORS);
 
   await fsp.mkdir(TMP_ROOT, { recursive: true });
@@ -1284,7 +1322,7 @@ export async function generate(req) {
     }
 
     logger.info(
-      `[VINIDOC] Génération ${FORMAT} | fiche ${SHTID} ${VERNUM ? `v${VERNUM}` : "saisie en cours (non validée)"} | modèle ${TPLID} | ${LNGCOD} | HVE=${HVE} BIO=${BIO} | ${PACKAGING} | ${USR}`,
+      `[VINIDOC] Génération ${FORMAT} | fiche ${SHTID} ${VERNUM ? `v${VERNUM}` : "saisie en cours (non validée)"} | modèle ${TPLID} | ${LNGCOD} | HVE=${HVE} BIO=${BIO} | ${PACKAGING} | ${COD_ARTICLE}${Object.keys(LOGISTICS).length ? ` (logistique corrigée : ${Object.entries(LOGISTICS).map(([k, val]) => `${k}=${val}`).join(", ")})` : ""}${SHEET || TRANSLATION ? ` | fiche ajustée localement : ${[SHEET && "caractéristiques", TRANSLATION && `textes ${LNGCOD}`].filter(Boolean).join(", ")}` : ""} | ${USR}`,
     );
 
     return {

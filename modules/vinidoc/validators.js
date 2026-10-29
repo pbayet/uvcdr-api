@@ -1,9 +1,11 @@
 import { z } from "zod";
 import {
   DEFAULT_PACKAGING,
+  FREE_TAG_RE,
   PACKAGINGS,
   TAG_MAXLEN_MAX,
   TAG_MAXLEN_MIN,
+  TEXT_FIELDS,
   cleanText,
 } from "./utils.js";
 
@@ -211,6 +213,31 @@ export const rejectSchema = z.object({
   COMMENT: z.string().trim().min(3, "Le motif du refus est obligatoire.").max(1000),
 });
 
+/** Objet JSON, ou chaîne JSON en multipart (génération avec photo) ; vide → absent. */
+const jsonObject = (v) => {
+  if (v == null || v === "") return undefined;
+  if (typeof v !== "string") return v;
+  try {
+    return JSON.parse(v);
+  } catch {
+    return v; // rejeté par le schéma avec un message explicite
+  }
+};
+
+/**
+ * Fiche ajustée localement avant une génération, sans enregistrement :
+ * SHEET = caractéristiques complètes (mêmes règles que la saisie ; le code
+ * vrac reste celui de la fiche), TRANSLATION = textes de la langue générée
+ * (champs absents inchangés). Appliqués au contrôle comme à la génération.
+ */
+const localSheetChanges = {
+  SHEET: z.preprocess(
+    jsonObject,
+    z.object(sheetCommonFields).superRefine(refineSheet).optional(),
+  ),
+  TRANSLATION: z.preprocess(jsonObject, translationSchema.partial().optional()),
+};
+
 /** Contrôle des longueurs avant génération (ou pendant la saisie). */
 export const checkSchema = z.object({
   LNGCOD: lngCode,
@@ -220,6 +247,8 @@ export const checkSchema = z.object({
   // VALIDATED = dernière version validée (ce qui sera généré) ;
   // CURRENT = données en cours de saisie (aide à la rédaction).
   SOURCE: z.enum(["VALIDATED", "CURRENT"]).default("CURRENT"),
+  // Ajustements locaux de la génération en préparation.
+  ...localSheetChanges,
 });
 
 /* ───────────────────────────── Modèles ───────────────────────────── */
@@ -260,12 +289,63 @@ export const mergeFieldsQuery = z.object({
 
 /* ───────────────────────────── Génération ───────────────────────────── */
 
+/**
+ * Valeurs de balises saisies à la génération : { BALISE: "texte", ... }.
+ * Objet JSON, ou chaîne JSON en multipart (génération avec photo). Clés
+ * insensibles à la casse ; retours à la ligne conservés, début et fin rognés.
+ */
+const tagValues = (key, max) =>
+  z.preprocess(
+    (v) => {
+      if (v == null || v === "") return {};
+      if (typeof v !== "string") return v;
+      try {
+        return JSON.parse(v);
+      } catch {
+        return v; // rejeté par z.record avec un message explicite
+      }
+    },
+    z
+      .record(
+        z.string().trim().toUpperCase().pipe(key),
+        z.preprocess(
+          (v) => (typeof v === "string" ? v.replace(/\r\n?/g, "\n").trim() : v ?? ""),
+          z.string().max(max, `${max} caractères maximum.`),
+        ),
+      )
+      .default({}),
+  );
+
+/** Champs libres {{FREE.*}} : { "FREE.PRIX": "texte", ... }. */
+const freeValues = tagValues(
+  z.string().regex(FREE_TAG_RE, "Champ libre invalide (attendu FREE.<NOM>)."),
+  TAG_MAXLEN_MAX,
+);
+
+const LOGISTICS_TAGS = TEXT_FIELDS.map((f) => f.TAG).filter((t) => t.startsWith("LOG."));
+
+/**
+ * Données logistiques corrigées à la génération (manquantes ou erronées dans
+ * Sage X3) : { "LOG.BTLWGT": "1,35 kg", ... }, prioritaires sur l'article.
+ * Non enregistrées : seul le fichier généré les contient.
+ */
+const logisticsValues = tagValues(
+  z.enum(LOGISTICS_TAGS, { error: "Donnée logistique inconnue (attendu LOG.<CODE>)." }),
+  100,
+);
+
 export const generateSchema = z.object({
   SHTID: positiveInt,
   TPLID: positiveInt,
   LNGCOD: lngCode,
   // Article PFI dont le code vrac est celui de la fiche : balises {{LOG.*}}.
-  COD_ARTICLE: optArticle,
+  // Obligatoire : pas de fiche technique sans données logistiques.
+  COD_ARTICLE: z.preprocess(
+    emptyToUndefined,
+    z
+      .string({ error: "Article PFI obligatoire (données logistiques)." })
+      .pipe(articleCode),
+  ),
   FORMAT: z.preprocess(
     (v) => (typeof v === "string" ? v.trim().toLowerCase() : v),
     z.enum(["pptx", "pdf"]).default("pdf"),
@@ -278,6 +358,12 @@ export const generateSchema = z.object({
     (v) => (typeof v === "string" ? v.trim().toUpperCase() || undefined : v),
     z.enum(PACKAGINGS).default(DEFAULT_PACKAGING),
   ),
+  // Champs libres du modèle ({{FREE.*}}), saisis à la génération.
+  FREE: freeValues,
+  // Corrections des données logistiques de l'article ({{LOG.*}}).
+  LOGISTICS: logisticsValues,
+  // Fiche ajustée pour cette génération uniquement (non enregistrée).
+  ...localSheetChanges,
 });
 
 export const generationListQuery = z.object({

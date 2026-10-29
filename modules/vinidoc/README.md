@@ -175,10 +175,14 @@ Balises texte (alignées sur le modèle du POC `fiche-template.pptx`) :
 | `{{DEGUST}}` | Dégustation (œil, nez, bouche) — traduit |
 | `{{TERROIR}}` | Terroir et sol — traduit |
 | `{{VINIF}}` | Vendanges et vinification — traduit |
-| `{{LOG.*}}` | `BTLDIM, BTLWGT, CASEDIM, CASEPAL, CASEWGT, EANBTL, EANCASE, LVLPAL, PALHGT, PALWGT, UNITCASE, UNITPAL` — reconnues mais **non alimentées** (rendues vides, `AVAILABLE: false`) : ces données logistiques ne sont pas saisies dans VINIDOC |
+| `{{CEPAGES}}`, `{{GARDE}}`, `{{ACCORDS}}`, `{{ACCEXPL}}` | Cépages, potentiel de garde, accords mets et vins et leur explication — traduits, facultatifs (`OPTIONAL` : jamais signalés absents d'un modèle) |
+| `{{APPELL}}`, `{{COULEUR}}`, `{{MILLESIME}}`, `{{CODVRAC}}`, `{{DESCVRAC}}` | Appellation seule, couleur (libellé traduit), millésime (vide si non millésimé), code vrac, description vrac — facultatifs |
+| `{{LOG.*}}` | `BTLDIM, BTLWGT, CASEDIM, CASEPAL, CASEWGT, EANBTL, EANCASE, LVLPAL, PALHGT, PALWGT, UNITCASE, UNITPAL` — alimentées par l'article PFI choisi à la génération (`AVAILABLE: false` : pas de donnée sur la fiche), corrigeables à la génération (`LOGISTICS`) |
+| `{{FREE.*}}` | Champs libres (`{{FREE.PRIX}}`, `{{FREE.MENTION_PROMO-130}}`…) : un champ par balise du modèle dans le formulaire de génération (`FREE`), longueur max et caractère obligatoire réglés comme les autres balises ; ignorés par le contrôle des fiches, non tracés |
 
-Catalogue complet via `GET /merge-fields`. Les cépages, la garde, les accords et leur
-explication sont saisis et validés mais n'ont pas (encore) de balise.
+Catalogue complet via `GET /merge-fields` : balises texte, images, et blocs
+conditionnels avec la liste exhaustive de leurs noms (`NAMES`, regroupés par
+`GROUP` ; `COULEUR_*` d'après les couleurs paramétrées).
 
 Au dépôt d'un modèle, ses balises sont **détectées automatiquement**
 (`TEMPLATETAGS`), puis l'administrateur règle pour chaque balise texte
@@ -257,7 +261,7 @@ POST /api/vinidoc/sheets
 ### Génération
 | Méthode | Route | Corps | Succès |
 |---|---|---|---|
-| POST | `/generate` | JSON ou multipart : `SHTID, TPLID, LNGCOD, FORMAT` (`pdf` défaut \| `pptx`), `HVE?`, `BIO?` (booléens, défaut `false`), `PACKAGING?` (`BOUTEILLE` défaut \| `BIB` \| `CANETTE`), `photo?` | 201 `{ GENID, VERNUM, SOURCE, HVE, BIO, FILECODE, ORIGINALNAME, URL, WARNINGS }` |
+| POST | `/generate` | JSON ou multipart : `SHTID, TPLID, LNGCOD, COD_ARTICLE` (obligatoire : données logistiques), `FORMAT` (`pdf` défaut \| `pptx`), `HVE?`, `BIO?` (booléens, défaut `false`), `PACKAGING?` (`BOUTEILLE` défaut \| `BIB` \| `CANETTE`), `FREE?` (`{ "FREE.PRIX": "…" }`, chaîne JSON en multipart), `LOGISTICS?` (corrections `{ "LOG.BTLWGT": "1,35 kg" }` prioritaires sur l'article, non enregistrées ; idem), `SHEET?`, `TRANSLATION?` (fiche ajustée pour cette génération, non enregistrée : caractéristiques complètes hors code vrac, textes de `LNGCOD` ; acceptés aussi par `POST /sheets/:SHTID/check` ; idem), `photo?` | 201 `{ GENID, VERNUM, SOURCE, HVE, BIO, FILECODE, ORIGINALNAME, URL, WARNINGS }` |
 | GET | `/generations?SHTID&TPLID&LIMIT` | — | 200 historique avec `URL` |
 
 Contenu utilisé : fiche au statut `VALIDATED` → dernière version validée
