@@ -225,6 +225,21 @@ export function certificationBadges(options = {}, templateTags = []) {
   };
 }
 
+/**
+ * Conditionnements de la photo produit : formes "badge:PHOTO_<TYPE>" (un
+ * groupe par type, contenant son cadre "img:BOTTLEPHOTO" au ratio du type),
+ * seul le groupe du conditionnement choisi à la génération est conservé.
+ */
+export const PACKAGINGS = ["BOUTEILLE", "BIB", "CANETTE"];
+export const DEFAULT_PACKAGING = "BOUTEILLE";
+
+/** Badges de conditionnement : seul PHOTO_<PACKAGING> est affiché. */
+export function packagingBadges(packaging = DEFAULT_PACKAGING) {
+  return Object.fromEntries(
+    PACKAGINGS.map((p) => [`PHOTO_${p}`, p === packaging]),
+  );
+}
+
 /** Formes conditionnelles ("badge:TAG"), décrites par motif. */
 export const BADGE_PATTERNS = [
   ...CERTIFICATIONS.map((c) => ({
@@ -234,6 +249,10 @@ export const BADGE_PATTERNS = [
   {
     PATTERN: CERTIFICATION_COMBINED,
     LABEL: "Logo combiné : affiché si HVE et BIO sont cochés (remplace les 2 logos)",
+  },
+  {
+    PATTERN: `PHOTO_<${PACKAGINGS.join("|")}>`,
+    LABEL: "Cadre photo (groupe contenant img:BOTTLEPHOTO) : affiché si le conditionnement choisi correspond",
   },
   {
     PATTERN: "COULEUR_<ROUGE|ROSE|BLANC>",
@@ -255,7 +274,7 @@ export const IMAGE_FIELDS = [
 const TEXT_TAGS = new Set(TEXT_FIELDS.map((f) => f.TAG));
 const IMAGE_TAGS = new Set(IMAGE_FIELDS.map((f) => f.TAG));
 const BADGE_RE = new RegExp(
-  `^(${[...CERTIFICATIONS, CERTIFICATION_COMBINED].join("|")}|COULEUR_[A-Z]+|(${Object.keys(SCALES).join("|")})_([1-5]|EQ_[0-5]))$`,
+  `^(${[...CERTIFICATIONS, CERTIFICATION_COMBINED].join("|")}|PHOTO_(${PACKAGINGS.join("|")})|COULEUR_[A-Z]+|(${Object.keys(SCALES).join("|")})_([1-5]|EQ_[0-5]))$`,
 );
 
 /** La balise détectée dans un modèle fait-elle partie du catalogue ? */
@@ -612,7 +631,11 @@ export function previewMergeData(templateTags = []) {
   );
   return {
     text,
-    badges: { ...badges, ...certificationBadges({ HVE: true, BIO: true }, templateTags) },
+    badges: {
+      ...badges,
+      ...certificationBadges({ HVE: true, BIO: true }, templateTags),
+      ...packagingBadges(),
+    },
   };
 }
 

@@ -326,9 +326,9 @@ export class OoxmlTemplate {
           }
         : null;
 
-      // L'image de remplacement est déjà recadrée au ratio du cadre : on
+      // L'image de remplacement est déjà ajustée au ratio du cadre : on
       // retire un éventuel recadrage PowerPoint (a:srcRect) pour ne pas
-      // recadrer deux fois (cf. POC).
+      // la rogner (cf. POC).
       const srcIdx = blipFill.findIndex((c) => tagOf(c) === "a:srcRect");
       if (srcIdx !== -1) blipFill.splice(srcIdx, 1);
 
@@ -369,13 +369,20 @@ export class OoxmlTemplate {
       ? Math.round((job.dims.cy / EMU_PER_INCH) * DPI)
       : 1200;
 
+    // Image entière dans le cadre (jamais rognée), posée en bas : le vide
+    // éventuel est transparent (PNG) ou blanc (JPEG, sans transparence).
     const ext = path.posix.extname(mediaPath).toLowerCase();
+    const isJpeg = [".jpg", ".jpeg"].includes(ext);
     let pipeline = sharp(job.localPath)
       .rotate()
-      .resize(width, height, { fit: "cover" });
-    pipeline = [".jpg", ".jpeg"].includes(ext)
-      ? pipeline.jpeg({ quality: 90 })
-      : pipeline.png();
+      .resize(width, height, {
+        fit: "contain",
+        position: "bottom",
+        background: isJpeg
+          ? { r: 255, g: 255, b: 255, alpha: 1 }
+          : { r: 0, g: 0, b: 0, alpha: 0 },
+      });
+    pipeline = isJpeg ? pipeline.jpeg({ quality: 90 }) : pipeline.png();
 
     this.zip.file(mediaPath, await pipeline.toBuffer());
   }

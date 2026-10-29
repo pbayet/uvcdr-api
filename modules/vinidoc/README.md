@@ -153,7 +153,11 @@ Conventions dans le `.pptx` (Volet Sélection pour nommer les formes) :
   une longueur présente dans la balise écrase la valeur enregistrée ; sans
   suffixe, la valeur enregistrée est conservée. Elle reste modifiable ensuite
   via `PUT /templates/:TPLID/tags`.
-- **Image** : forme image nommée `img:BOTTLEPHOTO` (photo fournie à la génération).
+- **Image** : forme image nommée `img:BOTTLEPHOTO` (photo fournie à la génération),
+  ajustée entière au cadre (jamais rognée, posée en bas). Pour plusieurs
+  conditionnements, placer chaque cadre dans un groupe `badge:PHOTO_BOUTEILLE`,
+  `badge:PHOTO_BIB` ou `badge:PHOTO_CANETTE` : seul celui choisi à la
+  génération (`PACKAGING`, défaut `BOUTEILLE`) est conservé.
 - **Bloc conditionnel** : forme/groupe nommé `badge:<TAG>`, retiré si faux :
   `COULEUR_ROUGE|ROSE|BLANC`, jauges `INTENSITE_AROMATIQUE_1..5` (affiché si
   valeur ≥ n), valeur exacte `INTENSITE_AROMATIQUE_EQ_0..5` (`EQ_0` = non renseignée) ; idem
@@ -253,7 +257,7 @@ POST /api/vinidoc/sheets
 ### Génération
 | Méthode | Route | Corps | Succès |
 |---|---|---|---|
-| POST | `/generate` | JSON ou multipart : `SHTID, TPLID, LNGCOD, FORMAT` (`pdf` défaut \| `pptx`), `HVE?`, `BIO?` (booléens, défaut `false`), `photo?` | 201 `{ GENID, VERNUM, SOURCE, HVE, BIO, FILECODE, ORIGINALNAME, URL, WARNINGS }` |
+| POST | `/generate` | JSON ou multipart : `SHTID, TPLID, LNGCOD, FORMAT` (`pdf` défaut \| `pptx`), `HVE?`, `BIO?` (booléens, défaut `false`), `PACKAGING?` (`BOUTEILLE` défaut \| `BIB` \| `CANETTE`), `photo?` | 201 `{ GENID, VERNUM, SOURCE, HVE, BIO, FILECODE, ORIGINALNAME, URL, WARNINGS }` |
 | GET | `/generations?SHTID&TPLID&LIMIT` | — | 200 historique avec `URL` |
 
 Contenu utilisé : fiche au statut `VALIDATED` → dernière version validée

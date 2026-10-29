@@ -111,7 +111,7 @@ describe("modules/vinidoc/validators :: modèles & génération", () => {
 
   it("génération : format pdf par défaut, langue normalisée", () => {
     const r = generateSchema.parse({ SHTID: "1", TPLID: "2", LNGCOD: "EN" });
-    expect(r).toEqual({ SHTID: 1, TPLID: 2, LNGCOD: "en", FORMAT: "pdf", HVE: false, BIO: false });
+    expect(r).toEqual({ SHTID: 1, TPLID: 2, LNGCOD: "en", FORMAT: "pdf", HVE: false, BIO: false, PACKAGING: "BOUTEILLE" });
     expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, LNGCOD: "en", FORMAT: "docx" }).success).toBe(false);
   });
 
@@ -120,6 +120,14 @@ describe("modules/vinidoc/validators :: modèles & génération", () => {
     expect(r.HVE).toBe(true);
     expect(r.BIO).toBe(false);
     expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, LNGCOD: "fr", HVE: "oui" }).success).toBe(false);
+  });
+
+  it("génération : conditionnement de la photo (défaut BOUTEILLE)", () => {
+    const parse = (PACKAGING) => generateSchema.parse({ SHTID: 1, TPLID: 2, LNGCOD: "fr", PACKAGING });
+    expect(parse(" bib ").PACKAGING).toBe("BIB");
+    expect(parse("CANETTE").PACKAGING).toBe("CANETTE");
+    expect(parse("").PACKAGING).toBe("BOUTEILLE");
+    expect(generateSchema.safeParse({ SHTID: 1, TPLID: 2, LNGCOD: "fr", PACKAGING: "MAGNUM" }).success).toBe(false);
   });
 });
 

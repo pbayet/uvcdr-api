@@ -13,6 +13,7 @@ import {
   TEXT_FIELDS,
   IMAGE_FIELDS,
   certificationBadges,
+  packagingBadges,
   formatSheet,
   buildSnapshot,
   buildMergeData,
@@ -188,6 +189,8 @@ describe("modules/vinidoc/utils :: catalogue des balises", () => {
     expect(isKnownTag("BADGE", "HVE")).toBe(true);
     expect(isKnownTag("BADGE", "BIO")).toBe(true);
     expect(isKnownTag("IMAGE", "HVE")).toBe(false);
+    expect(isKnownTag("BADGE", "PHOTO_BIB")).toBe(true);
+    expect(isKnownTag("BADGE", "PHOTO_MAGNUM")).toBe(false);
     expect(isKnownTag("IMAGE", "BIO")).toBe(false);
     expect(isKnownTag("BADGE", "HVE_3")).toBe(false);
   });
@@ -737,5 +740,12 @@ describe("applySheetChanges (modification d'une fiche validée)", () => {
     expect(translations[0]).toMatchObject({ LNGCOD: "en", DEGUST: "Pale yellow.", TERROIR: null });
     expect(deletedLngs).toEqual(["de"]);
     expect(buildSnapshot(sheet).TRANSLATIONS.en.DEGUST).toBe("Pale yellow.");
+  });
+});
+
+describe("modules/vinidoc/utils :: conditionnement de la photo", () => {
+  it("seul le groupe PHOTO_<type> choisi est affiché (défaut BOUTEILLE)", () => {
+    expect(packagingBadges("BIB")).toEqual({ PHOTO_BOUTEILLE: false, PHOTO_BIB: true, PHOTO_CANETTE: false });
+    expect(packagingBadges()).toEqual({ PHOTO_BOUTEILLE: true, PHOTO_BIB: false, PHOTO_CANETTE: false });
   });
 });

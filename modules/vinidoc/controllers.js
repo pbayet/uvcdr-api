@@ -1184,11 +1184,12 @@ async function getGenerationSource(SHTID) {
  * n'est pas validée — voir getGenerationSource).
  * multipart : SHTID, TPLID, LNGCOD, FORMAT (pdf|pptx, défaut pdf),
  *             COD_ARTICLE? (article PFI : balises {{LOG.*}}),
- *             HVE?, BIO? (affichage des logos, défaut false), photo? (image)
+ *             HVE?, BIO? (affichage des logos, défaut false), photo? (image),
+ *             PACKAGING? (BOUTEILLE|BIB|CANETTE, défaut BOUTEILLE : cadre photo)
  */
 export async function generate(req) {
   utils.assertVinidocApp(req);
-  const { SHTID, TPLID, LNGCOD, FORMAT, HVE, BIO, COD_ARTICLE } =
+  const { SHTID, TPLID, LNGCOD, FORMAT, HVE, BIO, PACKAGING, COD_ARTICLE } =
     v.generateSchema.parse(await input(req));
 
   const [source, template] = await Promise.all([
@@ -1237,6 +1238,7 @@ export async function generate(req) {
       badges: {
         ...merge.badges,
         ...utils.certificationBadges({ HVE, BIO }, template.TAGS),
+        ...utils.packagingBadges(PACKAGING),
       },
       images: req.file ? { BOTTLEPHOTO: req.file.path } : {},
     });
@@ -1282,7 +1284,7 @@ export async function generate(req) {
     }
 
     logger.info(
-      `[VINIDOC] Génération ${FORMAT} | fiche ${SHTID} ${VERNUM ? `v${VERNUM}` : "saisie en cours (non validée)"} | modèle ${TPLID} | ${LNGCOD} | HVE=${HVE} BIO=${BIO} | ${USR}`,
+      `[VINIDOC] Génération ${FORMAT} | fiche ${SHTID} ${VERNUM ? `v${VERNUM}` : "saisie en cours (non validée)"} | modèle ${TPLID} | ${LNGCOD} | HVE=${HVE} BIO=${BIO} | ${PACKAGING} | ${USR}`,
     );
 
     return {

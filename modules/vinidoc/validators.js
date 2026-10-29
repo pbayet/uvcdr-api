@@ -1,5 +1,11 @@
 import { z } from "zod";
-import { TAG_MAXLEN_MAX, TAG_MAXLEN_MIN, cleanText } from "./utils.js";
+import {
+  DEFAULT_PACKAGING,
+  PACKAGINGS,
+  TAG_MAXLEN_MAX,
+  TAG_MAXLEN_MIN,
+  cleanText,
+} from "./utils.js";
 
 /* ─────────────────────────────────────────────
    VINIDOC — Schémas zod
@@ -267,6 +273,11 @@ export const generateSchema = z.object({
   // Logos de certification (formes "badge:HVE" / "badge:BIO") : masqués par défaut.
   HVE: boolish.default(false),
   BIO: boolish.default(false),
+  // Conditionnement de la photo (forme "badge:PHOTO_<TYPE>" conservée).
+  PACKAGING: z.preprocess(
+    (v) => (typeof v === "string" ? v.trim().toUpperCase() || undefined : v),
+    z.enum(PACKAGINGS).default(DEFAULT_PACKAGING),
+  ),
 });
 
 export const generationListQuery = z.object({
