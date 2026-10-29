@@ -18,6 +18,9 @@ import { templateFileUpload, photoUpload, fieldsOnly, cleanupTmpFiles } from "./
    PUT    /sheets/:SHTID                        champs communs + cépages     → DRAFT
    DELETE /sheets/:SHTID                        suppression logique
    PUT    /sheets/:SHTID/default-template       modèle PowerPoint par défaut (statut inchangé)
+   PUT    /sheets/:SHTID/validated              modification d'une fiche VALIDATED → nouvelle version (RG-01)
+   POST   /sheets/:SHTID/lock                   réservation / prolongation (RG-04)
+   DELETE /sheets/:SHTID/lock                   libération de sa réservation
    PUT    /sheets/:SHTID/translations/:LNGCOD   texte d'une langue           → DRAFT
    DELETE /sheets/:SHTID/translations/:LNGCOD   (sauf langue par défaut)     → DRAFT
    POST   /sheets/:SHTID/submit                 DRAFT|REJECTED → SUBMITTED
@@ -38,6 +41,10 @@ import { templateFileUpload, photoUpload, fieldsOnly, cleanupTmpFiles } from "./
    PUT    /templates/:TPLID/tags                longueurs max / obligatoire
    GET    /templates/:TPLID/preview             aperçu PDF (faux texte), mis en cache
    DELETE /templates/:TPLID
+
+   Paramètres
+   GET    /params                               paramètres (calculs logistiques, réservation)
+   PUT    /params                               PARAMS: [{ PRMKEY, PRMVAL }]
 
    Articles PFI (DWH)
    GET    /articles                ?SEARCH&LIMIT  recherche (code, libellés, code vrac)
@@ -79,6 +86,9 @@ router.get("/sheets/:SHTID", handle(controllers.getSheet));
 router.put("/sheets/:SHTID", handle(controllers.updateSheet));
 router.delete("/sheets/:SHTID", fieldsOnly, handle(controllers.deleteSheet));
 router.put("/sheets/:SHTID/default-template", handle(controllers.setDefaultTemplate));
+router.put("/sheets/:SHTID/validated", handle(controllers.updateValidatedSheet));
+router.post("/sheets/:SHTID/lock", handle(controllers.lockSheet));
+router.delete("/sheets/:SHTID/lock", fieldsOnly, handle(controllers.unlockSheet));
 
 router.put("/sheets/:SHTID/translations/:LNGCOD", handle(controllers.saveTranslation));
 router.delete("/sheets/:SHTID/translations/:LNGCOD", fieldsOnly, handle(controllers.deleteTranslation));
@@ -102,6 +112,10 @@ router.put("/templates/:TPLID/file", templateFileUpload, handle(controllers.repl
 router.put("/templates/:TPLID/tags", handle(controllers.setTemplateTags));
 router.get("/templates/:TPLID/preview", handle(controllers.previewTemplate));
 router.delete("/templates/:TPLID", fieldsOnly, handle(controllers.deleteTemplate));
+
+/* Paramètres */
+router.get("/params", handle(controllers.getParams));
+router.put("/params", handle(controllers.updateParams));
 
 /* Articles PFI (DWH) */
 router.get("/articles", handle(controllers.searchArticles));

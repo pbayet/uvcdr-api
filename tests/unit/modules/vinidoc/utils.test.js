@@ -4,6 +4,8 @@ import {
   canEditSheets,
   canValidateSheets,
   canManageTemplates,
+  canManageParams,
+  getRights,
   isKnownTag,
   tagsFromInventory,
   maxLenWarnings,
@@ -26,7 +28,10 @@ import {
   articleFromRow,
   logisticsText,
   logisticsFields,
-  LOGISTICS_TEST_TAGS,
+  computeLogistics,
+  volumeInLiters,
+  applySheetChanges,
+  LOGISTICS_CALCULATED_TAGS,
   previewMergeData,
   PREVIEW_DEFAULT_LENGTH,
   textLength,
@@ -120,6 +125,13 @@ describe("modules/vinidoc/utils :: droits", () => {
 
   it("aucun service n'administre les modèles par défaut", () => {
     expect(canManageTemplates(req({ service: "Marketing" }))).toBe(false);
+  });
+
+  it("paramètres : service informatique par défaut, exposé dans les droits", () => {
+    delete process.env.VINIDOC_PARAM_SERVICES;
+    expect(canManageParams(req({ service: "Informatique" }))).toBe(true);
+    expect(canManageParams(req({ service: "Marketing" }))).toBe(false);
+    expect(getRights(req({ service: "Informatique" })).PARAMS).toBe(true);
   });
 });
 
@@ -498,7 +510,8 @@ describe("previewMergeData", () => {
 });
 
 describe("articles PFI", () => {
-  // Ligne réelle de services.getArticle (PFI01140), valeurs de test comprises.
+  // Ligne de services.getArticle (PFI01140), poids à vide inspirés du PFI07228
+  // (bouteille 410 g + capsule 4,2 g + contre-étiquette 1 g, carton 428 g / 12).
   const row = {
     COD_ARTICLE: "PFI01140",
     LIBELLE: "MEDC 14 RG 075 INSALV MGR 13.5 ",
@@ -511,16 +524,19 @@ describe("articles PFI", () => {
     UNITCASE: 6,
     UNITPAL: 720,
     LVLPAL: 5,
-    BTLWGT: 1.25,
+    VOLUME: 0.75,
+    VOLUME_UNIT: "L",
+    BTLTARE_G: 415.2,
+    BOU_G: 410,
+    CASETARE_G_BTL: 428 / 6,
+    PALSUP_KG: 25,
+    PALSUP_HGT: 15,
     BTL_LONGUEUR: 30,
     BTL_LARGEUR: 7.5,
     BTL_HAUTEUR: 0,
     CASE_LONGUEUR: 24.5,
     CASE_LARGEUR: 16,
     CASE_HAUTEUR: 30.5,
-    CASEWGT: 8,
-    PALHGT: 160,
-    PALWGT: 900,
   };
 
   it("articleFromRow : libellés nettoyés, codes vrac en liste", () => {
@@ -541,15 +557,15 @@ describe("articles PFI", () => {
   it("logisticsText : balises {{LOG.*}} au format français", () => {
     expect(logisticsText(row)).toEqual({
       "LOG.BTLDIM": "7,5 x 30",
-      "LOG.BTLWGT": "1,25 kg",
+      "LOG.BTLWGT": "1,16 kg",
       "LOG.CASEDIM": "16 x 24,5 x 30,5",
       "LOG.CASEPAL": "120",
-      "LOG.CASEWGT": "8 kg",
+      "LOG.CASEWGT": "7,37 kg",
       "LOG.EANBTL": "4985908835151",
       "LOG.EANCASE": "",
       "LOG.LVLPAL": "5",
-      "LOG.PALHGT": "160 cm",
-      "LOG.PALWGT": "900 kg",
+      "LOG.PALHGT": "167,5 cm",
+      "LOG.PALWGT": "909,9 kg",
       "LOG.UNITCASE": "6",
       "LOG.UNITPAL": "720",
     });
@@ -561,16 +577,62 @@ describe("articles PFI", () => {
     expect(logisticsText(null)).toEqual({});
   });
 
-  it("logisticsFields : libellés courts et valeurs de test signalées", () => {
+  it("logisticsFields : libellés courts, valeurs calculées détaillées", () => {
     const fields = logisticsFields(row);
     expect(fields).toHaveLength(12);
     expect(fields.find((f) => f.TAG === "LOG.EANBTL")).toEqual({
       TAG: "LOG.EANBTL",
       LABEL: "EAN bouteille",
       VALUE: "4985908835151",
-      TEST: false,
+      CALCULATED: false,
+      DETAIL: null,
     });
-    expect(fields.filter((f) => f.TEST).map((f) => f.TAG)).toEqual(LOGISTICS_TEST_TAGS);
+    expect(fields.filter((f) => f.CALCULATED).map((f) => f.TAG).sort()).toEqual(
+      [...LOGISTICS_CALCULATED_TAGS].sort(),
+    );
+    expect(fields.find((f) => f.TAG === "LOG.PALHGT").DETAIL).toBe(
+      "15 cm (support) + 5 couches × 30,5 cm",
+    );
+  });
+
+  it("computeLogistics : formules EF-16 / EF-17", () => {
+    const c = computeLogistics(row);
+    // 0,4152 kg + 0,75 L × 0,99 kg/L
+    expect(c.BTLWGT).toBeCloseTo(1.1577, 4);
+    // 6 × (1,1577 + 0,428 / 6)
+    expect(c.CASEWGT).toBeCloseTo(6 * 1.1577 + 0.428, 4);
+    // 25 kg + 120 cartons × carton plein
+    expect(c.PALWGT).toBeCloseTo(25 + 120 * (6 * 1.1577 + 0.428), 3);
+    // 15 cm + 5 × 30,5 cm
+    expect(c.PALHGT).toBeCloseTo(167.5, 4);
+  });
+
+  it("computeLogistics : paramètres (masse volumique, support palette par défaut)", () => {
+    const c = computeLogistics(
+      { ...row, PALSUP_KG: null, PALSUP_HGT: 0 },
+      { WINE_DENSITY: 1, PALLET_WEIGHT: 30, PALLET_HEIGHT: 14.4 },
+    );
+    expect(c.BTLWGT).toBeCloseTo(0.4152 + 0.75, 4);
+    expect(c.PALWGT).toBeCloseTo(30 + 120 * c.CASEWGT, 3);
+    expect(c.PALHGT).toBeCloseTo(14.4 + 5 * 30.5, 4);
+  });
+
+  it("computeLogistics : donnée manquante → valeur vide et explication", () => {
+    const c = computeLogistics({ ...row, BOU_G: null });
+    expect(c).toMatchObject({ BTLWGT: null, CASEWGT: null, PALWGT: null });
+    expect(c.PALHGT).toBeCloseTo(167.5, 4);
+    expect(c.DETAIL["LOG.BTLWGT"]).toBe(
+      "Non calculable : donnée manquante dans Sage X3 (poids de la bouteille vide).",
+    );
+    expect(logisticsText({ ...row, CASE_HAUTEUR: 0 })["LOG.PALHGT"]).toBe("");
+  });
+
+  it("volumeInLiters : unités X3", () => {
+    expect(volumeInLiters(0.75, "L")).toBe(0.75);
+    expect(volumeInLiters(75, "CL")).toBeCloseTo(0.75, 6);
+    expect(volumeInLiters(750, "ml")).toBeCloseTo(0.75, 6);
+    expect(volumeInLiters(0.75, "KG")).toBeNull();
+    expect(volumeInLiters(0, "L")).toBeNull();
   });
 });
 
@@ -642,5 +704,38 @@ describe("fiche utilisée pour un article PFI", () => {
     expect(articleSheetStatus(article, sheets)).toBe("SUBMITTED");
     expect(articleSheetStatus({ ...article, MILLESIME: 2030 }, sheets)).toBe("VALIDATED");
     expect(articleSheetStatus({ CODVRACS: ["VHL0"], MILLESIME: null }, sheets)).toBeNull();
+  });
+});
+
+describe("applySheetChanges (modification d'une fiche validée)", () => {
+  it("fusionne les textes modifiés sans effacer les autres champs", () => {
+    const { sheet, translations, deletedLngs } = applySheetChanges(SHEET, null, {
+      fr: { DEGUST: "Nouvelle dégustation.", TERROIR: undefined },
+    });
+    expect(sheet.TRANSLATIONS.fr).toMatchObject({
+      DEGUST: "Nouvelle dégustation.",
+      TERROIR: SHEET.TRANSLATIONS.fr.TERROIR,
+      GARDE: "2 ans",
+    });
+    expect(translations).toEqual([{ LNGCOD: "fr", ...sheet.TRANSLATIONS.fr }]);
+    expect(deletedLngs).toEqual([]);
+    expect(SHEET.TRANSLATIONS.fr.DEGUST).toBe("Robe jaune pâle brillante.");
+  });
+
+  it("crée une langue, en supprime une autre, remplace les champs communs", () => {
+    const withEn = {
+      ...SHEET,
+      TRANSLATIONS: { ...SHEET.TRANSLATIONS, de: { DEGUST: "Blass." } },
+    };
+    const { sheet, translations, deletedLngs } = applySheetChanges(
+      withEn,
+      { ...SHEET, TEMPMIN: 9 },
+      { en: { DEGUST: "Pale yellow." }, de: null },
+    );
+    expect(sheet.TEMPMIN).toBe(9);
+    expect(Object.keys(sheet.TRANSLATIONS).sort()).toEqual(["en", "fr"]);
+    expect(translations[0]).toMatchObject({ LNGCOD: "en", DEGUST: "Pale yellow.", TERROIR: null });
+    expect(deletedLngs).toEqual(["de"]);
+    expect(buildSnapshot(sheet).TRANSLATIONS.en.DEGUST).toBe("Pale yellow.");
   });
 });

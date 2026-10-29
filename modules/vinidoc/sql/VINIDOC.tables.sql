@@ -22,16 +22,19 @@
                   TEMPLATETAGS      balises détectées + longueur max par balise
    Traçabilité    GENERATIONS       qui a généré quoi, depuis quelle version
 
+   Réservation    SHEETLOCKS        fiche ouverte en modification (RG-04)
+   Paramètres     PARAMS            valeurs modifiables sans développement
+                                    (réservation, calculs logistiques)
+
    Workflow (validation par fiche entière, toutes langues confondues)
    ────────
-     DRAFT ──submit──▶ SUBMITTED ──validate──▶ VALIDATED
-       ▲                   │
+     DRAFT ──submit──▶ SUBMITTED ──validate──▶ VALIDATED ──modifier──▶ VALIDATED
+       ▲                   │                              (nouvelle version)
        │                   └──reject──▶ REJECTED ──submit──▶ SUBMITTED
-       └── toute modification (champ commun ou traduction)
-           repasse la fiche en DRAFT, quel que soit son statut.
-   Une fiche repassée en DRAFT après validation reste générable : la
-   génération s'appuie sur SHEETVERS (dernière version validée), jamais sur
-   les données en cours d'édition.
+       └── modification par l'œnologie d'une fiche DRAFT / SUBMITTED / REJECTED.
+   Une fiche VALIDATED ne repasse jamais en DRAFT (RG-01) : sa modification
+   (PUT /sheets/:SHTID/validated) crée directement une nouvelle version
+   validée. La génération s'appuie sur SHEETVERS (dernière version validée).
 ═══════════════════════════════════════════════════════════════════════════ */
 
 IF DB_ID(N'VINIDOC') IS NULL
@@ -201,7 +204,7 @@ CREATE TABLE dbo.SHEETEVTS (
   COMMENT   nvarchar(1000) NULL,
   CONSTRAINT CK_SHEETEVTS_EVTTYP CHECK (EVTTYP IN (
     'CREATED', 'UPDATED', 'TRANSLATION_SAVED', 'TRANSLATION_DELETED',
-    'SUBMITTED', 'VALIDATED', 'REJECTED', 'DELETED'
+    'SUBMITTED', 'VALIDATED', 'VALIDATED_UPDATED', 'REJECTED', 'DELETED'
   ))
 );
 GO
@@ -328,6 +331,74 @@ GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_GENERATIONS_SHTID')
   CREATE INDEX IX_GENERATIONS_SHTID ON dbo.GENERATIONS (SHTID, CREDAT DESC);
+GO
+
+/* Migration (modification d'une fiche validée, RG-01) ──────────────────────
+   Évènement VALIDATED_UPDATED : enregistrement d'une modification sur une
+   fiche validée, qui crée directement la version suivante. */
+IF EXISTS (
+  SELECT 1 FROM sys.check_constraints
+  WHERE name = N'CK_SHEETEVTS_EVTTYP' AND definition NOT LIKE N'%VALIDATED_UPDATED%'
+)
+  ALTER TABLE dbo.SHEETEVTS DROP CONSTRAINT CK_SHEETEVTS_EVTTYP;
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_SHEETEVTS_EVTTYP')
+  ALTER TABLE dbo.SHEETEVTS ADD CONSTRAINT CK_SHEETEVTS_EVTTYP CHECK (EVTTYP IN (
+    'CREATED', 'UPDATED', 'TRANSLATION_SAVED', 'TRANSLATION_DELETED',
+    'SUBMITTED', 'VALIDATED', 'VALIDATED_UPDATED', 'REJECTED', 'DELETED'
+  ));
+GO
+
+/* ─────────────────────────────── Réservation (RG-04) ─────────────────────────────── */
+
+-- Une ligne par fiche ouverte en modification. La réservation est active
+-- tant que LASTSEEN (dernière activité du titulaire) date de moins de
+-- PARAMS.LOCK_TIMEOUT_MIN minutes ; au-delà, n'importe qui peut la reprendre.
+IF OBJECT_ID(N'dbo.SHEETLOCKS', N'U') IS NULL
+CREATE TABLE dbo.SHEETLOCKS (
+  SHTID     int           NOT NULL CONSTRAINT PK_SHEETLOCKS PRIMARY KEY
+                                   CONSTRAINT FK_SHEETLOCKS_SHEETS REFERENCES dbo.SHEETS (SHTID),
+  USR       nvarchar(254) NOT NULL,   -- email du titulaire (cf. utils.getActor)
+  USRNAME   nvarchar(254) NOT NULL,   -- nom affiché aux autres utilisateurs
+  LOCKDAT   datetime2(0)  NOT NULL CONSTRAINT DF_SHEETLOCKS_LOCKDAT DEFAULT (SYSUTCDATETIME()),
+  LASTSEEN  datetime2(0)  NOT NULL CONSTRAINT DF_SHEETLOCKS_LASTSEEN DEFAULT (SYSUTCDATETIME())
+);
+GO
+
+/* ─────────────────────────────── Paramètres ─────────────────────────────── */
+
+IF OBJECT_ID(N'dbo.PARAMS', N'U') IS NULL
+CREATE TABLE dbo.PARAMS (
+  PRMKEY    varchar(30)    NOT NULL CONSTRAINT PK_PARAMS PRIMARY KEY,
+  PRMVAL    decimal(12, 4) NOT NULL,
+  LABEL     nvarchar(200)  NOT NULL,
+  UNIT      nvarchar(20)   NULL,
+  MINVAL    decimal(12, 4) NULL,
+  MAXVAL    decimal(12, 4) NULL,
+  SORTORD   smallint       NOT NULL CONSTRAINT DF_PARAMS_SORTORD DEFAULT (0),
+  MODUSR    nvarchar(254)  NOT NULL CONSTRAINT DF_PARAMS_MODUSR DEFAULT (N'init'),
+  MODDAT    datetime2(0)   NOT NULL CONSTRAINT DF_PARAMS_MODDAT DEFAULT (SYSUTCDATETIME()),
+  CONSTRAINT CK_PARAMS_RANGE CHECK (
+    (MINVAL IS NULL OR PRMVAL >= MINVAL) AND (MAXVAL IS NULL OR PRMVAL <= MAXVAL)
+  )
+);
+GO
+
+-- Valeurs initiales (non écrasées si déjà modifiées). Calculs logistiques
+-- (EF-16 / EF-17, cf. utils.logisticsText) : formules et valeurs à valider
+-- avec le référent Sage X3.
+MERGE dbo.PARAMS AS t
+USING (VALUES
+  ('LOCK_TIMEOUT_MIN', 15,   N'Réservation d''une fiche : libérée après une inactivité de', N'min',  1,   480, 1),
+  ('WINE_DENSITY',     0.99, N'Masse volumique du vin',                                       N'kg/L', 0.8, 1.2, 2),
+  ('PALLET_WEIGHT',    25,   N'Poids du support palette (si absent de la nomenclature)',      N'kg',   0,   100, 3),
+  ('PALLET_HEIGHT',    15,   N'Hauteur du support palette (si absente de la nomenclature)',   N'cm',   0,   50,  4)
+) AS s (PRMKEY, PRMVAL, LABEL, UNIT, MINVAL, MAXVAL, SORTORD)
+ON t.PRMKEY = s.PRMKEY
+WHEN NOT MATCHED THEN
+  INSERT (PRMKEY, PRMVAL, LABEL, UNIT, MINVAL, MAXVAL, SORTORD)
+  VALUES (s.PRMKEY, s.PRMVAL, s.LABEL, s.UNIT, s.MINVAL, s.MAXVAL, s.SORTORD);
 GO
 
 /* ─────────────────────────────── Données de référence ─────────────────────────────── */

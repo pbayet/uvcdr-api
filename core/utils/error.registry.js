@@ -754,6 +754,26 @@ export const ERROR_REGISTRY = {
     HTTP_RESPONSE_CODE: 400,
   },
 
+  VINIDOC_SHEET_RESERVED: {
+    CODE: 1722,
+    MESSAGE: { en: "Sheet being edited", fr: "Fiche en cours de modification" },
+    DESCRIPTION: {
+      en: "Another user is editing this sheet: it is read-only until the sheet is saved or closed.",
+      fr: "Un autre utilisateur modifie cette fiche : elle reste en lecture seule jusqu'à son enregistrement ou sa fermeture.",
+    },
+    HTTP_RESPONSE_CODE: 423,
+  },
+
+  "VINIDOC_SHEET_RESERVED_[USRNAME]_[SINCE]": {
+    CODE: 1722,
+    MESSAGE: { en: "Sheet being edited", fr: "Fiche en cours de modification" },
+    DESCRIPTION: {
+      en: "[USRNAME] has been editing this sheet since [SINCE]: it is read-only until the sheet is saved or closed.",
+      fr: "[USRNAME] modifie cette fiche depuis le [SINCE] : elle reste en lecture seule jusqu'à son enregistrement ou sa fermeture.",
+    },
+    HTTP_RESPONSE_CODE: 423,
+  },
+
   INTERNAL_ERROR: {
     CODE: 9999,
     MESSAGE: { en: "Internal server error", fr: "Erreur interne du serveur" },

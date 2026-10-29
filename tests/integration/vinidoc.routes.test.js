@@ -60,6 +60,7 @@ describe("Intégration :: /api/vinidoc", () => {
     users.oeno = await tokenFor({ email: "oeno@union-vignerons.com", service: "Œnologie" });
     users.marketing = await tokenFor({ email: "marketing@union-vignerons.com", service: "Marketing" });
     users.otherApp = await tokenFor({ email: "autre@union-vignerons.com", service: "Œnologie", appcode: "TICKETING" });
+    users.admin = await tokenFor({ email: "info@union-vignerons.com", service: "Informatique" });
   });
 
   beforeEach(() => {
@@ -351,5 +352,121 @@ describe("Intégration :: /api/vinidoc", () => {
     const res = await request(app).post("/api/vinidoc/sheets/submit-all").set(auth("marketing")).send({});
     expect(res.status).toBeGreaterThanOrEqual(400);
     expect(services.submitSheet).not.toHaveBeenCalled();
+  });
+
+  /* ───────────── Modification d'une fiche validée (RG-01) ───────────── */
+
+  it("PUT /sheets/:id/validated → nouvelle version avec le texte modifié, autres champs conservés", async () => {
+    services.getSheet.mockResolvedValue({
+      ...VALIDATED_SHEET,
+      TRANSLATIONS: { fr: { DEGUST: "Ancienne.", TERROIR: "Argilo-calcaire.", MODUSR: "x", MODDAT: null } },
+    });
+    services.updateValidatedSheet.mockResolvedValue({ SHTID: 1, STATUS: "VALIDATED", LASTVER: 2, ROWVER: ROWVER_BUF });
+
+    const res = await request(app)
+      .put("/api/vinidoc/sheets/1/validated")
+      .set(auth("marketing"))
+      .send({ ROWVER, COMMENT: "Coquille", TRANSLATIONS: { fr: { DEGUST: "Nouvelle." } } });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ STATUS: "VALIDATED", LASTVER: 2 });
+    const call = services.updateValidatedSheet.mock.calls[0][0];
+    expect(call).toMatchObject({ SHTID: 1, COMMENT: "Coquille", sheet: null, deletedLngs: [] });
+    expect(call.translations).toEqual([
+      expect.objectContaining({ LNGCOD: "fr", DEGUST: "Nouvelle.", TERROIR: "Argilo-calcaire." }),
+    ]);
+    expect(call.SNAPSHOT.STATUS).toBeUndefined();
+    expect(call.SNAPSHOT.TRANSLATIONS.fr).toMatchObject({ DEGUST: "Nouvelle.", TERROIR: "Argilo-calcaire." });
+  });
+
+  it("PUT /sheets/:id/validated sur une fiche non validée → refusé", async () => {
+    services.getSheet.mockResolvedValue(SHEET);
+    const res = await request(app)
+      .put("/api/vinidoc/sheets/1/validated")
+      .set(auth("oeno"))
+      .send({ ROWVER, TRANSLATIONS: { fr: { DEGUST: "x" } } });
+    expect(res.body.error.key).toBe("VINIDOC_INVALID_STATUS_TRANSITION");
+    expect(services.updateValidatedSheet).not.toHaveBeenCalled();
+  });
+
+  it("PUT /sheets/:id/validated sans modification → 400", async () => {
+    const res = await request(app).put("/api/vinidoc/sheets/1/validated").set(auth("oeno")).send({ ROWVER });
+    expect(res.status).toBe(400);
+  });
+
+  it("PUT /sheets/:id/validated supprimant la langue par défaut → refusé", async () => {
+    services.getSheet.mockResolvedValue(VALIDATED_SHEET);
+    const res = await request(app)
+      .put("/api/vinidoc/sheets/1/validated")
+      .set(auth("oeno"))
+      .send({ ROWVER, TRANSLATIONS: { fr: null } });
+    expect(res.body.error.key).toBe("VINIDOC_DEFAULT_TRANSLATION_REQUIRED");
+    expect(services.updateValidatedSheet).not.toHaveBeenCalled();
+  });
+
+  /* ───────────── Réservation (RG-04) ───────────── */
+
+  it("POST /sheets/:id/lock → réservation détenue par l'appelant", async () => {
+    services.acquireSheetLock.mockResolvedValue({
+      USR: "oeno@union-vignerons.com",
+      USRNAME: "Oeno",
+      LOCKDAT: new Date("2026-10-29T08:40:00Z"),
+      LASTSEEN: new Date("2026-10-29T08:40:00Z"),
+      MINE: true,
+      ACQUIRED: true,
+    });
+    const res = await request(app).post("/api/vinidoc/sheets/1/lock").set(auth("oeno")).send({});
+    expect(res.status).toBe(200);
+    expect(res.body.data).toMatchObject({ USR: "oeno@union-vignerons.com", MINE: true });
+  });
+
+  it("écriture sur une fiche réservée par un autre → 423 avec le nom et l'heure", async () => {
+    services.getSheetLock.mockResolvedValue({
+      USR: "marketing@union-vignerons.com",
+      USRNAME: "Camille Martin",
+      LOCKDAT: new Date("2026-10-29T08:40:00Z"),
+    });
+    const res = await request(app)
+      .put("/api/vinidoc/sheets/1/translations/fr")
+      .set(auth("oeno"))
+      .send({ DEGUST: "Robe or.", ROWVER });
+    expect(res.status).toBe(423);
+    expect(res.body.error.description).toContain("Camille Martin");
+    expect(res.body.error.description).toContain("29/10 à 09:40");
+    expect(services.upsertTranslation).not.toHaveBeenCalled();
+  });
+
+  it("écriture sur une fiche réservée par soi-même → acceptée", async () => {
+    services.getSheetLock.mockResolvedValue({ USR: "oeno@union-vignerons.com", USRNAME: "Oeno", LOCKDAT: new Date() });
+    services.upsertTranslation.mockResolvedValue({ SHTID: 1, STATUS: "DRAFT", LASTVER: 0, ROWVER: ROWVER_BUF });
+    const res = await request(app)
+      .put("/api/vinidoc/sheets/1/translations/fr")
+      .set(auth("oeno"))
+      .send({ DEGUST: "Robe or.", ROWVER });
+    expect(res.status).toBe(200);
+  });
+
+  /* ───────────── Paramètres ───────────── */
+
+  const PARAMS = [
+    { PRMKEY: "WINE_DENSITY", PRMVAL: 0.99, LABEL: "Masse volumique du vin", UNIT: "kg/L", MINVAL: 0.8, MAXVAL: 1.2 },
+  ];
+
+  it("PUT /params hors bornes → 400, rien n'est enregistré", async () => {
+    services.getParams.mockResolvedValue(PARAMS);
+    const res = await request(app)
+      .put("/api/vinidoc/params")
+      .set(auth("admin"))
+      .send({ PARAMS: [{ PRMKEY: "WINE_DENSITY", PRMVAL: 2 }] });
+    expect(res.status).toBe(400);
+    expect(services.updateParams).not.toHaveBeenCalled();
+  });
+
+  it("PUT /params par le marketing → refusé", async () => {
+    const res = await request(app)
+      .put("/api/vinidoc/params")
+      .set(auth("marketing"))
+      .send({ PARAMS: [{ PRMKEY: "WINE_DENSITY", PRMVAL: 1 }] });
+    expect(res.status).toBe(460);
   });
 });

@@ -29,6 +29,11 @@ import { ERROR_REGISTRY } from "../../core/utils/error.registry.js";
      modèles PowerPoint              : VINIDOC_TEMPLATE_SERVICES
      + profils MODIFY_PERMS partout.
 
+   Fiche validée : « Modifier » (PUT /sheets/:SHTID/validated) crée une
+   nouvelle version validée, la fiche reste VALIDATED (RG-01).
+   Réservation (RG-04) : une fiche ouverte en modification est réservée à
+   son auteur ; toute écriture d'un autre utilisateur est refusée.
+
    Génération : TOUJOURS à partir de la dernière version validée
    (SHEETVERS), jamais des données en cours de saisie — c'est ce qui
    garantit que seul un contenu validé par le marketing est diffusé.
@@ -113,6 +118,47 @@ async function getSheetOrThrow(SHTID) {
   return sheet;
 }
 
+/* ─────────────────────────── Réservation (RG-04) ─────────────────────────── */
+
+const lockTime = new Intl.DateTimeFormat("fr-FR", {
+  timeZone: "Europe/Paris",
+  day: "2-digit",
+  month: "2-digit",
+  hour: "2-digit",
+  minute: "2-digit",
+});
+
+/** Réservation (ligne SHEETLOCKS) → objet API ; MINE = détenue par l'utilisateur courant. */
+function formatLock(row, req) {
+  if (!row) return null;
+  return {
+    USR: row.USR,
+    USRNAME: row.USRNAME,
+    LOCKDAT: row.LOCKDAT,
+    LASTSEEN: row.LASTSEEN,
+    MINE: row.USR === utils.getActor(req),
+  };
+}
+
+/**
+ * Refuse une écriture sur une fiche réservée par un autre utilisateur, en
+ * nommant le titulaire et l'heure de sa prise (le service revérifie sous
+ * verrou, cf. ASSERT_NOT_RESERVED).
+ */
+async function assertNotReserved(SHTID, req) {
+  const lock = await services.getSheetLock(SHTID);
+  if (lock && lock.USR !== utils.getActor(req)) {
+    const since = lockTime.format(new Date(lock.LOCKDAT)).replace(" ", " à ");
+    throw new Error(`VINIDOC_SHEET_RESERVED_[${lock.USRNAME}]_[${since}]`);
+  }
+}
+
+/** Paramètres (table PARAMS) : { PRMKEY: valeur }. */
+async function getParamValues() {
+  const rows = await services.getParams();
+  return Object.fromEntries(rows.map((r) => [r.PRMKEY, r.PRMVAL]));
+}
+
 /* ═════════════════════════════ Référentiels ═════════════════════════════ */
 
 /** Droits de l'utilisateur + référentiels : de quoi initialiser le front. */
@@ -166,11 +212,14 @@ export async function getMergeFields(req) {
 
 /** Message lisible d'une erreur métier (clé du registre) ou technique. */
 const errorMessage = (err) =>
-  ERROR_REGISTRY[err?.message]?.MESSAGE?.fr ?? err?.message ?? "Erreur inconnue.";
+  ERROR_REGISTRY[err?.message]?.MESSAGE?.fr ??
+  err?.message ??
+  "Erreur inconnue.";
 
 /** Libellé court d'une balise texte (« Dégustation (œil, nez…) » → « Dégustation »). */
 const tagLabel = (TAGNAM) =>
-  utils.TEXT_FIELDS.find((f) => f.TAG === TAGNAM)?.LABEL.split(" (")[0] ?? TAGNAM;
+  utils.TEXT_FIELDS.find((f) => f.TAG === TAGNAM)?.LABEL.split(" (")[0] ??
+  TAGNAM;
 
 /**
  * Anomalies de saisie de chaque fiche (données en cours) : traduction de la
@@ -195,18 +244,24 @@ async function sheetsIssues(sheets) {
   for (const sheet of sheets) {
     const issues = [];
     if (!sheet.TRANSLATIONS[defaultLng]) {
-      issues.push(`[${defaultLng.toUpperCase()}] Traduction de la langue par défaut absente.`);
+      issues.push(
+        `[${defaultLng.toUpperCase()}] Traduction de la langue par défaut absente.`,
+      );
     }
     for (const lng of Object.keys(sheet.TRANSLATIONS)) {
-      const color = colors.find((c) => c.COLCOD === sheet.COLCOD)?.LABELS[lng] ?? {};
+      const color =
+        colors.find((c) => c.COLCOD === sheet.COLCOD)?.LABELS[lng] ?? {};
       const { text } = utils.buildMergeData(sheet, lng, color);
       // Une anomalie par balise : limite la plus stricte, modèles concernés.
       const byTag = new Map();
-      for (const tpl of templates.filter((t) => !t.TPLLNG || t.TPLLNG === lng)) {
+      for (const tpl of templates.filter(
+        (t) => !t.TPLLNG || t.TPLLNG === lng,
+      )) {
         for (const e of utils.checkAgainstTemplate(text, tpl.TAGS).ERRORS) {
           const key = `${e.ISSUE}|${e.TAGNAM}`;
           const cur = byTag.get(key) ?? { ...e, TEMPLATES: [] };
-          if (e.MAXLEN != null && (cur.MAXLEN == null || e.MAXLEN < cur.MAXLEN)) cur.MAXLEN = e.MAXLEN;
+          if (e.MAXLEN != null && (cur.MAXLEN == null || e.MAXLEN < cur.MAXLEN))
+            cur.MAXLEN = e.MAXLEN;
           cur.TEMPLATES.push(tpl.TPLNAM);
           byTag.set(key, cur);
         }
@@ -229,8 +284,12 @@ async function sheetsIssues(sheets) {
 /** Liste paginée ; chaque fiche porte ses anomalies de saisie (ISSUES). */
 export async function listSheets(req) {
   utils.assertVinidocApp(req);
-  const list = await services.listSheets(v.sheetListQuery.parse(await input(req)));
-  const sheets = await services.getSheetsFull({ SHTIDS: list.ITEMS.map((i) => i.SHTID) });
+  const list = await services.listSheets(
+    v.sheetListQuery.parse(await input(req)),
+  );
+  const sheets = await services.getSheetsFull({
+    SHTIDS: list.ITEMS.map((i) => i.SHTID),
+  });
   const issues = await sheetsIssues(sheets);
   return {
     ...list,
@@ -241,12 +300,13 @@ export async function listSheets(req) {
 export async function getSheet(req) {
   utils.assertVinidocApp(req);
   const { SHTID } = v.sheetIdParam.parse(req.params);
-  const [sheet, EVENTS, VERSIONS] = await Promise.all([
+  const [sheet, EVENTS, VERSIONS, lock] = await Promise.all([
     getSheetOrThrow(SHTID),
     services.getSheetEvents(SHTID),
     services.getSheetVersions(SHTID),
+    services.getSheetLock(SHTID),
   ]);
-  return { ...sheet, EVENTS, VERSIONS };
+  return { ...sheet, EVENTS, VERSIONS, LOCK: formatLock(lock, req) };
 }
 
 export async function getSheetVersions(req) {
@@ -287,6 +347,7 @@ export async function updateSheet(req) {
   const RIGHTS = utils.getSheetEditRights(req);
   const { SHTID } = v.sheetIdParam.parse(req.params);
   const { ROWVER, ...sheet } = v.sheetUpdateSchema.parse(await input(req));
+  await assertNotReserved(SHTID, req);
 
   const state = await services.updateSheet({
     SHTID,
@@ -307,7 +368,9 @@ export async function setDefaultTemplate(req) {
   utils.assertVinidocApp(req);
   utils.getSheetEditRights(req);
   const { SHTID } = v.sheetIdParam.parse(req.params);
-  const { ROWVER, DEFTPLID } = v.sheetDefaultTemplateSchema.parse(await input(req));
+  const { ROWVER, DEFTPLID } = v.sheetDefaultTemplateSchema.parse(
+    await input(req),
+  );
 
   const state = await services.setDefaultTemplate({
     SHTID,
@@ -326,6 +389,7 @@ export async function saveTranslation(req) {
   const { ROWVER, ...translation } = v.translationUpsertSchema.parse(
     await input(req),
   );
+  await assertNotReserved(SHTID, req);
 
   const state = await services.upsertTranslation({
     SHTID,
@@ -344,6 +408,7 @@ export async function deleteTranslation(req) {
   const RIGHTS = utils.getSheetEditRights(req);
   const { SHTID, LNGCOD } = v.sheetLngParam.parse(req.params);
   const { ROWVER } = v.rowverOnlySchema.parse(await input(req));
+  await assertNotReserved(SHTID, req);
 
   const state = await services.deleteTranslation({
     SHTID,
@@ -361,6 +426,7 @@ export async function deleteSheet(req) {
   utils.assertCanEditSheets(req);
   const { SHTID } = v.sheetIdParam.parse(req.params);
   const { ROWVER, COMMENT } = v.workflowCommentSchema.parse(await input(req));
+  await assertNotReserved(SHTID, req);
 
   const result = await services.deleteSheet({
     SHTID,
@@ -379,6 +445,7 @@ export async function submitSheet(req) {
   utils.assertCanEditSheets(req);
   const { SHTID } = v.sheetIdParam.parse(req.params);
   const { ROWVER, COMMENT } = v.workflowCommentSchema.parse(await input(req));
+  await assertNotReserved(SHTID, req);
 
   const state = await services.submitSheet({
     SHTID,
@@ -406,9 +473,16 @@ export async function submitSheets(req) {
   const { COMMENT, ...filters } = v.submitSheetsSchema.parse(await input(req));
   const USR = utils.getActor(req);
 
-  const sheets = await services.getSheetsFull({ ...filters, SUBMITTABLE: true });
+  const sheets = await services.getSheetsFull({
+    ...filters,
+    SUBMITTABLE: true,
+  });
   const issues = await sheetsIssues(sheets);
-  const label = (s) => ({ SHTID: s.SHTID, CODVRAC: s.CODVRAC, MILLESIME: s.MILLESIME });
+  const label = (s) => ({
+    SHTID: s.SHTID,
+    CODVRAC: s.CODVRAC,
+    MILLESIME: s.MILLESIME,
+  });
 
   const SUBMITTED = [];
   const ERRORS = [];
@@ -419,7 +493,12 @@ export async function submitSheets(req) {
       continue;
     }
     try {
-      const state = await services.submitSheet({ SHTID: sheet.SHTID, ROWVER: sheet.ROWVER, COMMENT, USR });
+      const state = await services.submitSheet({
+        SHTID: sheet.SHTID,
+        ROWVER: sheet.ROWVER,
+        COMMENT,
+        USR,
+      });
       emitSheet("vinidoc.sheet.submitted", state);
       SUBMITTED.push({ ...label(sheet), sheet });
     } catch (err) {
@@ -428,7 +507,10 @@ export async function submitSheets(req) {
   }
 
   if (SUBMITTED.length) {
-    void notify.notifySubmittedBatch(SUBMITTED.map((s) => s.sheet), utils.getActorDisplayName(req));
+    void notify.notifySubmittedBatch(
+      SUBMITTED.map((s) => s.sheet),
+      utils.getActorDisplayName(req),
+    );
   }
   return { SUBMITTED: SUBMITTED.map(({ sheet, ...s }) => s), ERRORS };
 }
@@ -449,6 +531,7 @@ export async function validateSheet(req) {
   if (!utils.hexToRowver(ROWVER).equals(utils.hexToRowver(sheet.ROWVER))) {
     throw new Error("VINIDOC_CONCURRENT_UPDATE");
   }
+  await assertNotReserved(SHTID, req);
 
   const state = await services.validateSheet({
     SHTID,
@@ -473,6 +556,7 @@ export async function rejectSheet(req) {
   utils.assertCanValidateSheets(req);
   const { SHTID } = v.sheetIdParam.parse(req.params);
   const { ROWVER, COMMENT } = v.rejectSchema.parse(await input(req));
+  await assertNotReserved(SHTID, req);
 
   const state = await services.rejectSheet({
     SHTID,
@@ -486,6 +570,129 @@ export async function rejectSheet(req) {
   if (sheet)
     void notify.notifyRejected(sheet, utils.getActorDisplayName(req), COMMENT);
   return sheetState(state);
+}
+
+/**
+ * Modification d'une fiche validée (RG-01) : œnologie ou marketing, via le
+ * bouton « Modifier ». La fiche reste VALIDATED ; l'enregistrement (champs
+ * communs et/ou textes de plusieurs langues) crée UNE nouvelle version
+ * validée, utilisée dès lors pour la génération. Aussi utilisé par la
+ * correction des textes trop longs à la génération (EF-53).
+ * Corps : ROWVER, COMMENT?, SHEET? (champs communs complets),
+ *         TRANSLATIONS? ({ lng: champs modifiés | null = suppression }).
+ */
+export async function updateValidatedSheet(req) {
+  utils.assertVinidocApp(req);
+  utils.getSheetEditRights(req);
+  const { SHTID } = v.sheetIdParam.parse(req.params);
+  const { ROWVER, COMMENT, SHEET, TRANSLATIONS } =
+    v.validatedUpdateSchema.parse(await input(req));
+
+  const current = await getSheetOrThrow(SHTID);
+  if (current.STATUS !== "VALIDATED")
+    throw new Error("VINIDOC_INVALID_STATUS_TRANSITION");
+  // L'instantané est construit à partir de cette lecture : elle doit être
+  // celle que l'utilisateur a modifiée (le service revérifie sous verrou).
+  if (!utils.hexToRowver(ROWVER).equals(utils.hexToRowver(current.ROWVER))) {
+    throw new Error("VINIDOC_CONCURRENT_UPDATE");
+  }
+  await assertNotReserved(SHTID, req);
+
+  const changes = utils.applySheetChanges(current, SHEET ?? null, TRANSLATIONS);
+  const defaultLng = await getDefaultLanguage();
+  if (!changes.sheet.TRANSLATIONS[defaultLng]) {
+    throw new Error("VINIDOC_DEFAULT_TRANSLATION_REQUIRED");
+  }
+
+  const state = await services.updateValidatedSheet({
+    SHTID,
+    ROWVER: current.ROWVER,
+    sheet: SHEET ?? null,
+    translations: changes.translations,
+    deletedLngs: changes.deletedLngs,
+    SNAPSHOT: utils.buildSnapshot(changes.sheet),
+    COMMENT,
+    USR: utils.getActor(req),
+  });
+  emitSheet("vinidoc.sheet.updated", state);
+  broadcastToAll({ type: "vinidoc.sheet.unlocked", payload: { SHTID } });
+  return sheetState(state);
+}
+
+/**
+ * Réservation d'une fiche ouverte en modification (RG-04), ou prolongation
+ * (appel périodique tant que l'utilisateur est actif). Réservée par un autre
+ * utilisateur : renvoie sa réservation (MINE = false), sans erreur, pour que
+ * le front prévienne avant toute saisie.
+ */
+export async function lockSheet(req) {
+  utils.assertVinidocApp(req);
+  utils.getSheetEditRights(req);
+  const { SHTID } = v.sheetIdParam.parse(req.params);
+  const row = await services.acquireSheetLock({
+    SHTID,
+    USR: utils.getActor(req),
+    USRNAME: utils.getActorDisplayName(req),
+  });
+  if (row?.ACQUIRED) {
+    broadcastToAll({
+      type: "vinidoc.sheet.locked",
+      payload: {
+        SHTID,
+        USR: row.USR,
+        USRNAME: row.USRNAME,
+        LOCKDAT: row.LOCKDAT,
+      },
+    });
+  }
+  return formatLock(row, req);
+}
+
+/** Libération de sa réservation (fermeture de la fiche, abandon de la modification). */
+export async function unlockSheet(req) {
+  utils.assertVinidocApp(req);
+  const { SHTID } = v.sheetIdParam.parse(req.params);
+  const RELEASED = await services.releaseSheetLock({
+    SHTID,
+    USR: utils.getActor(req),
+  });
+  if (RELEASED)
+    broadcastToAll({ type: "vinidoc.sheet.unlocked", payload: { SHTID } });
+  return { SHTID, RELEASED };
+}
+
+/* ═════════════════════════════ Paramètres ═════════════════════════════ */
+
+export async function getParams(req) {
+  utils.assertVinidocApp(req);
+  return services.getParams();
+}
+
+/** Mise à jour de paramètres existants, dans leurs bornes. */
+export async function updateParams(req) {
+  utils.assertVinidocApp(req);
+  utils.assertCanManageParams(req);
+  const { PARAMS } = v.paramsUpdateSchema.parse(await input(req));
+
+  const current = new Map(
+    (await services.getParams()).map((r) => [r.PRMKEY, r]),
+  );
+  for (const { PRMKEY, PRMVAL } of PARAMS) {
+    const prm = current.get(PRMKEY);
+    if (!prm) throw badRequest(`Paramètre inconnu : ${PRMKEY}.`);
+    if (
+      (prm.MINVAL != null && PRMVAL < prm.MINVAL) ||
+      (prm.MAXVAL != null && PRMVAL > prm.MAXVAL)
+    ) {
+      throw badRequest(
+        `${prm.LABEL} : valeur attendue entre ${prm.MINVAL ?? "-∞"} et ${prm.MAXVAL ?? "+∞"}${prm.UNIT ? ` ${prm.UNIT}` : ""}.`,
+      );
+    }
+  }
+
+  await services.updateParams({ PARAMS, USR: utils.getActor(req) });
+  broadcastToAll({ type: "vinidoc.params.updated", payload: {} });
+  return services.getParams();
 }
 
 /* ═════════════════════════════ Contrôle des longueurs ═════════════════════════════ */
@@ -527,7 +734,7 @@ async function articleMergeText(COD_ARTICLE, CODVRAC) {
   if (!utils.articleFromRow(row).CODVRACS.includes(CODVRAC)) {
     throw new Error(`VINIDOC_ARTICLE_SHEET_MISMATCH_[${CODVRAC}]`);
   }
-  return utils.logisticsText(row);
+  return utils.logisticsText(row, await getParamValues());
 }
 
 /**
@@ -542,10 +749,13 @@ export async function searchArticles(req) {
   const CODVRACS = await services.listSheetCodvracs();
   const rows = await services.searchArticles({ ...filters, CODVRACS });
   const articles = rows.map(utils.articleFromRow);
+  console.log(articles);
+
   // Statut de la fiche qui serait utilisée (badge « non validée » au front).
   const sheets = await services.findSheetsByCodvrac([
     ...new Set(articles.flatMap((a) => a.CODVRACS)),
   ]);
+
   return articles.map((a, i) => ({
     ...a,
     HASSHEET: !!rows[i].HASSHEET,
@@ -562,18 +772,27 @@ export async function getArticle(req) {
   const { COD_ARTICLE } = v.articleParam.parse(req.params);
   const row = await getArticleOrThrow(COD_ARTICLE);
   const article = utils.articleFromRow(row);
-  const sheets = await services.findSheetsByCodvrac(article.CODVRACS);
+
+  console.log(row);
+  console.log(article);
+
+  const [sheets, params] = await Promise.all([
+    services.findSheetsByCodvrac(article.CODVRACS),
+    getParamValues(),
+  ]);
   return {
     ...article,
     SHEETS: utils.sortArticleSheets(sheets, article.MILLESIME),
-    LOGISTICS: utils.logisticsFields(row),
+    LOGISTICS: utils.logisticsFields(row, params),
   };
 }
 
 export async function checkSheet(req) {
   utils.assertVinidocApp(req);
   const { SHTID } = v.sheetIdParam.parse(req.params);
-  const { LNGCOD, TPLID, SOURCE, COD_ARTICLE } = v.checkSchema.parse(await input(req));
+  const { LNGCOD, TPLID, SOURCE, COD_ARTICLE } = v.checkSchema.parse(
+    await input(req),
+  );
 
   let data;
   let VERNUM = null;
@@ -685,7 +904,9 @@ export async function getTemplate(req) {
 export async function inspectTemplate(req) {
   utils.assertVinidocApp(req);
   utils.assertCanManageTemplates(req);
-  const { TAGS, WARNINGS, LENGTHWARNINGS } = await inspectTemplateFile(req.file);
+  const { TAGS, WARNINGS, LENGTHWARNINGS } = await inspectTemplateFile(
+    req.file,
+  );
   return {
     TAGS,
     UNKNOWN: TAGS.filter((t) => !t.ISKNOWN),
@@ -830,7 +1051,10 @@ async function removeTemplatePreviews(TPLID, keep = null) {
 
 /** Rend le modèle avec des données fictives puis le convertit en PDF (sauf s'il existe déjà). */
 async function buildTemplatePreview(template, absPath) {
-  const exists = await fsp.access(absPath).then(() => true, () => false);
+  const exists = await fsp.access(absPath).then(
+    () => true,
+    () => false,
+  );
   if (exists) return true;
 
   await fsp.mkdir(TMP_ROOT, { recursive: true });
@@ -838,7 +1062,9 @@ async function buildTemplatePreview(template, absPath) {
   try {
     let tpl;
     try {
-      tpl = await OoxmlTemplate.load(path.join(UPLOAD_ROOT, template.RELATIVEPATH));
+      tpl = await OoxmlTemplate.load(
+        path.join(UPLOAD_ROOT, template.RELATIVEPATH),
+      );
     } catch (err) {
       if (err.code === "ENOENT")
         throw new Error("VINIDOC_TEMPLATE_FILE_MISSING", { cause: err });
@@ -891,7 +1117,9 @@ export async function previewTemplate(req) {
   if (!previewJobs.has(absPath)) {
     previewJobs.set(
       absPath,
-      buildTemplatePreview(template, absPath).finally(() => previewJobs.delete(absPath)),
+      buildTemplatePreview(template, absPath).finally(() =>
+        previewJobs.delete(absPath),
+      ),
     );
   }
   const CACHED = await previewJobs.get(absPath);
@@ -941,7 +1169,11 @@ async function getGenerationSource(SHTID) {
   if (sheet.STATUS === "VALIDATED") {
     const version = await services.getSheetVersion(SHTID);
     if (version) {
-      return { SOURCE: "VALIDATED", VERNUM: version.VERNUM, data: version.SNAPSHOT };
+      return {
+        SOURCE: "VALIDATED",
+        VERNUM: version.VERNUM,
+        data: version.SNAPSHOT,
+      };
     }
   }
   return { SOURCE: "CURRENT", VERNUM: null, data: sheet };
@@ -1002,7 +1234,10 @@ export async function generate(req) {
 
     await tpl.render({
       ...merge,
-      badges: { ...merge.badges, ...utils.certificationBadges({ HVE, BIO }, template.TAGS) },
+      badges: {
+        ...merge.badges,
+        ...utils.certificationBadges({ HVE, BIO }, template.TAGS),
+      },
       images: req.file ? { BOTTLEPHOTO: req.file.path } : {},
     });
 

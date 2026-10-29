@@ -59,10 +59,17 @@ Correspondance avec le tableau Excel de l'œnologie :
 ## Workflow de validation
 
 ```
-DRAFT ──submit──▶ SUBMITTED ──validate──▶ VALIDATED
+DRAFT ──submit──▶ SUBMITTED ──validate──▶ VALIDATED ──modifier──▶ VALIDATED (version n+1)
   ▲                   └──reject (motif)──▶ REJECTED ──submit──▶ SUBMITTED
-  └── toute modification par l'œnologie (champ commun, cépage, traduction) ⇒ DRAFT
+  └── modification par l'œnologie d'une fiche DRAFT / SUBMITTED / REJECTED ⇒ DRAFT
 ```
+
+- **Fiche validée (RG-01)** : elle ne repasse jamais en `DRAFT`. Sa
+  modification passe par `PUT /sheets/:SHTID/validated` (œnologie ou
+  marketing) : la fiche reste `VALIDATED` et l'enregistrement crée
+  directement la version suivante dans `SHEETVERS` (évènement
+  `VALIDATED_UPDATED`, commentaire facultatif). Les écritures « brouillon »
+  (`PUT /sheets/:SHTID`, traductions) sont refusées sur une fiche validée.
 
 - **Relecture marketing** : un valideur peut modifier une fiche `SUBMITTED`
   (champs, cépages, traductions) ; elle **reste `SUBMITTED`** — pas de
@@ -74,12 +81,41 @@ DRAFT ──submit──▶ SUBMITTED ──validate──▶ VALIDATED
 
 - La soumission exige le texte dans la langue par défaut.
 - La validation **fige** le contenu (toutes les langues) dans `SHEETVERS`.
-- **La génération utilise toujours la dernière version validée**, jamais les
-  données en cours : une fiche validée puis remodifiée (repassée en DRAFT)
-  reste générable dans sa dernière version validée, et la nouvelle saisie
-  n'est diffusée qu'après une nouvelle validation.
+- **Une fiche validée est générée depuis sa dernière version validée** :
+  une modification en cours n'est utilisée qu'une fois enregistrée (RG-03).
 - Notifications mail : soumission → `VINIDOC_MARKETING_EMAIL` ; validation /
   refus → soumissionnaire. Hors production, tout part vers `BASE_RECIPIENT_EMAIL`.
+
+### Réservation des fiches (RG-04, `SHEETLOCKS`)
+
+Avant toute saisie, le front réserve la fiche (`POST /sheets/:SHTID/lock`) ;
+si un autre utilisateur la détient, la réponse le nomme (`MINE: false`) et la
+fiche reste en lecture seule. Le titulaire prolonge sa réservation par le
+même appel tant qu'il est actif ; elle expire après
+`PARAMS.LOCK_TIMEOUT_MIN` minutes d'inactivité et est libérée à
+l'enregistrement d'une fiche validée, par `DELETE /sheets/:SHTID/lock` ou à
+la fermeture de la fiche. Toute écriture d'un autre utilisateur sur une fiche
+réservée est refusée : **423 `VINIDOC_SHEET_RESERVED_[nom]_[date]`**.
+Websocket : `vinidoc.sheet.locked` / `vinidoc.sheet.unlocked`.
+
+### Paramètres (`PARAMS`)
+
+Valeurs modifiables sans développement (`GET` / `PUT /params`, droit
+`VINIDOC_PARAM_SERVICES`, défaut `INFORMATIQUE`) : durée de réservation,
+masse volumique du vin, poids et hauteur du support palette (utilisés si le
+composant `PAL` de la nomenclature ne les renseigne pas).
+
+### Données logistiques calculées (EF-16 / EF-17)
+
+`utils.computeLogistics`, à partir des poids à vide des matières sèches
+(`DB_ARTICLES_MATIERES_SECHES.NUM_POIDS_MS`, nomenclature principale) :
+bouteille pleine = bouteille habillée vide + contenance × masse volumique ;
+carton plein = bouteilles/carton × (bouteille pleine + emballage carton par
+bouteille) ; palette chargée = support + cartons/palette × carton plein ;
+hauteur = hauteur du support + couches × hauteur du carton. Donnée manquante
+⇒ balise vide, avec la raison (`LOGISTICS[].DETAIL`). Unités constatées dans
+le DWH : grammes pour les matières sèches, kilogrammes pour les palettes — à
+valider avec le référent Sage X3.
 
 ### Verrouillage optimiste (`ROWVER`)
 
@@ -165,6 +201,11 @@ Réponses au format standard `{ success, data }` ; erreurs `{ success:false, err
 | PUT | `/sheets/:SHTID` | champs communs + `ROWVER` | 200 état |
 | DELETE | `/sheets/:SHTID` | `ROWVER`, `COMMENT?` | 200 |
 | PUT | `/sheets/:SHTID/default-template` | `DEFTPLID` (null = aucun), `ROWVER` — statut inchangé, hors instantanés validés | 200 état |
+| PUT | `/sheets/:SHTID/validated` | `ROWVER`, `COMMENT?`, `SHEET?` (champs communs complets), `TRANSLATIONS?` (`{ lng: champs modifiés \| null }`) — fiche `VALIDATED` uniquement | 200 état (nouvelle version, statut inchangé) |
+| POST | `/sheets/:SHTID/lock` | — | 200 réservation `{ USR, USRNAME, LOCKDAT, LASTSEEN, MINE }` |
+| DELETE | `/sheets/:SHTID/lock` | — | 200 `{ SHTID, RELEASED }` |
+| GET | `/params` | — | 200 paramètres |
+| PUT | `/params` | `PARAMS: [{ PRMKEY, PRMVAL }]` (bornes MINVAL / MAXVAL) | 200 paramètres |
 | PUT | `/sheets/:SHTID/translations/:LNGCOD` | `LIBELLE, TERROIR, VINIF, DEGUST, GARDE, CEPAGES, ACCORDS, ACCEXPL, ROWVER` | 200 état |
 | DELETE | `/sheets/:SHTID/translations/:LNGCOD` | `ROWVER` | 200 état |
 | POST | `/sheets/:SHTID/submit` | `ROWVER`, `COMMENT?` | 200 état |
@@ -206,7 +247,7 @@ POST /api/vinidoc/sheets
 | PUT | `/templates/:TPLID/tags` | `{ TAGS: [{ TAGNAM, TAGTYP?, MAXLEN?, REQUIRED? }] }` | 200 |
 | GET | `/templates/:TPLID/preview` | — | 200 `{ TPLID, URL, ORIGINALNAME, CACHED }` : PDF du modèle rempli de faux texte (longueur max de chaque balise), mis en cache dans `uploads/<APP_CODE>/previews` tant que le fichier et les longueurs max sont inchangés |
 | GET | `/articles` | `SEARCH?`, `LIMIT?` (≤ 50) | 200 articles PFI du DWH : sans `SEARCH`, uniquement ceux **ayant une fiche œnologique** (un de leurs codes vrac VHL) ; avec `SEARCH`, tous les PFI correspondants, ceux avec fiche d'abord. `HASSHEET` = une fiche existe pour l'un de ses codes vrac ; `SHEETSTATUS` = statut de la fiche utilisée (même millésime d'abord ; `VALIDATED` = validée par le marketing, null sans fiche) |
-| GET | `/articles/:COD_ARTICLE` | — | 200 article + `SHEETS` (fiches de ses codes vrac, même millésime d'abord) + `LOGISTICS` (balises `{{LOG.*}}`, `TEST` = valeur de test) |
+| GET | `/articles/:COD_ARTICLE` | — | 200 article + `SHEETS` (fiches de ses codes vrac, même millésime d'abord) + `LOGISTICS` (balises `{{LOG.*}}` ; `CALCULATED` + `DETAIL` pour les poids pleins et la hauteur palette) |
 | DELETE | `/templates/:TPLID` | — | 200 (suppression logique) |
 
 ### Génération

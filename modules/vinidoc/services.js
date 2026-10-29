@@ -1,6 +1,11 @@
 import sql from "mssql";
 import { runQuery } from "../../core/utils/db.utils.js";
-import { formatSheet, hexToRowver, omitKeys, upgradeSnapshot } from "./utils.js";
+import {
+  formatSheet,
+  hexToRowver,
+  omitKeys,
+  upgradeSnapshot,
+} from "./utils.js";
 
 /* ═══════════════════════════════════════════════════════════════
    VINIDOC — Services (base VINIDOC, cf. sql/VINIDOC.tables.sql)
@@ -21,6 +26,7 @@ const SQL_ERRORS = {
   50174: "VINIDOC_TEMPLATE_NOT_FOUND",
   50175: "VINIDOC_UNKNOWN_TEMPLATE_TAG",
   50176: "VINIDOC_UNKNOWN_REFERENCE", // langue inconnue ou inactive
+  50177: "VINIDOC_SHEET_RESERVED",
   547: "VINIDOC_UNKNOWN_REFERENCE", // violation de clé étrangère (langue, couleur...)
 };
 
@@ -65,8 +71,35 @@ const LOCK_SHEET = `
 `;
 
 /**
+ * Début de la fenêtre des réservations actives (RG-04) : une réservation
+ * dont la dernière activité (LASTSEEN) précède @LOCKFROM est expirée.
+ * Durée : PARAMS.LOCK_TIMEOUT_MIN (15 min par défaut). Une fois par batch.
+ */
+const DECLARE_LOCK_FROM = `
+  DECLARE @LOCKTTL int = (
+    SELECT CAST(ISNULL(MAX(PRMVAL), 15) * 60 AS int) FROM dbo.PARAMS WHERE PRMKEY = 'LOCK_TIMEOUT_MIN'
+  );
+  DECLARE @LOCKFROM datetime2(0) = DATEADD(SECOND, -@LOCKTTL, SYSUTCDATETIME());
+`;
+
+/**
+ * Refuse l'écriture si la fiche est réservée par un autre utilisateur (RG-04).
+ * Filet de sécurité sous verrou : le contrôleur vérifie avant, avec un
+ * message nommant le titulaire (cf. controllers.assertNotReserved).
+ */
+const ASSERT_NOT_RESERVED = `
+  ${DECLARE_LOCK_FROM}
+  IF EXISTS (
+    SELECT 1 FROM dbo.SHEETLOCKS
+    WHERE SHTID = @SHTID AND USR <> @USR AND LASTSEEN > @LOCKFROM
+  ) THROW 50177, 'Fiche en cours de modification par un autre utilisateur.', 1;
+`;
+
+/**
  * Statut d'une fiche après une modification de contenu, décidé SOUS VERROU
  * (à placer juste après LOCK_SHEET, avant toute écriture). Expose @NEWSTS.
+ *   - fiche VALIDATED : interdit (50172) — sa modification passe par
+ *     updateValidatedSheet, qui crée une nouvelle version (RG-01) ;
  *   - valideur (marketing) sur une fiche SUBMITTED : elle reste SUBMITTED —
  *     c'est lui qui corrige, inutile de la lui resoumettre ; il valide ensuite ;
  *   - œnologie : la fiche repasse en DRAFT (à resoumettre) ;
@@ -76,10 +109,12 @@ const LOCK_SHEET = `
 const RESOLVE_EDIT_STATUS = `
   DECLARE @NEWSTS varchar(10) =
     CASE
+      WHEN @CURSTS = 'VALIDATED' THEN NULL
       WHEN @CANVALIDATE = 1 AND @CURSTS = 'SUBMITTED' THEN 'SUBMITTED'
       WHEN @CANEDIT = 1 THEN 'DRAFT'
     END;
   IF @NEWSTS IS NULL THROW 50172, 'Transition de statut non autorisée.', 1;
+  ${ASSERT_NOT_RESERVED}
 `;
 
 const APPLY_EDIT_STATUS = `
@@ -110,8 +145,14 @@ const p = {
   bit: (value) => ({ type: sql.Bit, value: value == null ? null : !!value }),
   str: (len, value) => ({ type: sql.NVarChar(len), value: value ?? null }),
   vstr: (len, value) => ({ type: sql.VarChar(len), value: value ?? null }),
-  json: (value) => ({ type: sql.NVarChar(sql.MAX), value: JSON.stringify(value ?? []) }),
-  rowver: (hex) => ({ type: sql.VarBinary(8), value: hex ? hexToRowver(hex) : null }),
+  json: (value) => ({
+    type: sql.NVarChar(sql.MAX),
+    value: JSON.stringify(value ?? []),
+  }),
+  rowver: (hex) => ({
+    type: sql.VarBinary(8),
+    value: hex ? hexToRowver(hex) : null,
+  }),
 };
 
 /* ═════════════════════════════ Référentiels ═════════════════════════════ */
@@ -141,7 +182,11 @@ export async function getColors() {
   for (const r of result.recordset) {
     if (!map.has(r.COLCOD)) map.set(r.COLCOD, { COLCOD: r.COLCOD, LABELS: {} });
     if (r.LNGCOD) {
-      map.get(r.COLCOD).LABELS[r.LNGCOD] = { LABEL: r.LABEL, BOUMIN: r.BOUMIN, BOUMAX: r.BOUMAX };
+      map.get(r.COLCOD).LABELS[r.LNGCOD] = {
+        LABEL: r.LABEL,
+        BOUMIN: r.BOUMIN,
+        BOUMAX: r.BOUMAX,
+      };
     }
   }
   return [...map.values()];
@@ -157,9 +202,20 @@ export async function getColorTrans(COLCOD, LNGCOD) {
 
 /* ═════════════════════════════ Fiches — lecture ═════════════════════════════ */
 
-export async function listSheets({ SEARCH, STATUS, COLCOD, MILLESIME, GENERABLE, PAGE = 1, PAGESIZE = 50 }) {
+export async function listSheets({
+  SEARCH,
+  STATUS,
+  COLCOD,
+  MILLESIME,
+  GENERABLE,
+  PAGE = 1,
+  PAGESIZE = 50,
+}) {
   const where = ["s.ISDEL = 0"];
-  if (SEARCH) where.push("(s.CODVRAC LIKE @SEARCH OR s.APPELL LIKE @SEARCH OR d.LIBELLE LIKE @SEARCH)");
+  if (SEARCH)
+    where.push(
+      "(s.CODVRAC LIKE @SEARCH OR s.APPELL LIKE @SEARCH OR d.LIBELLE LIKE @SEARCH)",
+    );
   if (STATUS) where.push("s.STATUS = @STATUS");
   if (COLCOD) where.push("s.COLCOD = @COLCOD");
   if (MILLESIME) where.push("s.MILLESIME = @MILLESIME");
@@ -211,12 +267,22 @@ export async function listSheets({ SEARCH, STATUS, COLCOD, MILLESIME, GENERABLE,
  * Fiches complètes (communs + traductions) : par identifiants (`SHTIDS`), ou
  * toutes les fiches soumettables (DRAFT / REJECTED) filtrées comme la liste.
  */
-export async function getSheetsFull({ SHTIDS = null, SUBMITTABLE = false, SEARCH, COLCOD, MILLESIME } = {}) {
+export async function getSheetsFull({
+  SHTIDS = null,
+  SUBMITTABLE = false,
+  SEARCH,
+  COLCOD,
+  MILLESIME,
+} = {}) {
   if (SHTIDS && !SHTIDS.length) return [];
   const where = ["s.ISDEL = 0"];
-  if (SHTIDS) where.push("s.SHTID IN (SELECT CAST(value AS int) FROM OPENJSON(@SHTIDS))");
+  if (SHTIDS)
+    where.push("s.SHTID IN (SELECT CAST(value AS int) FROM OPENJSON(@SHTIDS))");
   if (SUBMITTABLE) where.push("s.STATUS IN ('DRAFT', 'REJECTED')");
-  if (SEARCH) where.push("(s.CODVRAC LIKE @SEARCH OR s.APPELL LIKE @SEARCH OR d.LIBELLE LIKE @SEARCH)");
+  if (SEARCH)
+    where.push(
+      "(s.CODVRAC LIKE @SEARCH OR s.APPELL LIKE @SEARCH OR d.LIBELLE LIKE @SEARCH)",
+    );
   if (COLCOD) where.push("s.COLCOD = @COLCOD");
   if (MILLESIME) where.push("s.MILLESIME = @MILLESIME");
   const like = SEARCH ? `%${SEARCH.replace(/[[%_]/g, "[$&]")}%` : null;
@@ -241,7 +307,12 @@ export async function getSheetsFull({ SHTIDS = null, SUBMITTABLE = false, SEARCH
     },
   });
   const [rows = [], trans = []] = result.recordsets;
-  return rows.map((r) => formatSheet(r, trans.filter((t) => t.SHTID === r.SHTID)));
+  return rows.map((r) =>
+    formatSheet(
+      r,
+      trans.filter((t) => t.SHTID === r.SHTID),
+    ),
+  );
 }
 
 /** Fiche complète (communs + traductions), ou null. */
@@ -432,7 +503,14 @@ export async function setDefaultTemplate({ SHTID, ROWVER, DEFTPLID, USR }) {
 }
 
 /** Création / remplacement d'une traduction → DRAFT (ou reste SUBMITTED si relecture marketing). */
-export async function upsertTranslation({ SHTID, LNGCOD, ROWVER, translation, USR, RIGHTS }) {
+export async function upsertTranslation({
+  SHTID,
+  LNGCOD,
+  ROWVER,
+  translation,
+  USR,
+  RIGHTS,
+}) {
   const result = await run({
     query: tx(`
       ${LOCK_SHEET}
@@ -461,7 +539,13 @@ export async function upsertTranslation({ SHTID, LNGCOD, ROWVER, translation, US
 }
 
 /** Suppression d'une traduction (interdit pour la langue par défaut) → DRAFT (ou reste SUBMITTED si relecture marketing). */
-export async function deleteTranslation({ SHTID, LNGCOD, ROWVER, USR, RIGHTS }) {
+export async function deleteTranslation({
+  SHTID,
+  LNGCOD,
+  ROWVER,
+  USR,
+  RIGHTS,
+}) {
   const result = await run({
     query: tx(`
       ${LOCK_SHEET}
@@ -494,6 +578,7 @@ export async function deleteSheet({ SHTID, ROWVER, USR, COMMENT }) {
   await run({
     query: tx(`
       ${LOCK_SHEET}
+      ${ASSERT_NOT_RESERVED}
       UPDATE dbo.SHEETS SET ISDEL = 1, MODUSR = @USR, MODDAT = SYSUTCDATETIME() WHERE SHTID = @SHTID;
       INSERT INTO dbo.SHEETEVTS (SHTID, EVTTYP, FROMSTS, EVTUSR, COMMENT)
       VALUES (@SHTID, 'DELETED', @CURSTS, @USR, @COMMENT);
@@ -521,6 +606,7 @@ export async function submitSheet({ SHTID, ROWVER, USR, COMMENT }) {
     query: tx(`
       ${LOCK_SHEET}
       ${assertStatusIn(["DRAFT", "REJECTED"])}
+      ${ASSERT_NOT_RESERVED}
       IF NOT EXISTS (
         SELECT 1 FROM dbo.SHEETTRANS t
         INNER JOIN dbo.LANGUAGES l ON l.LNGCOD = t.LNGCOD AND l.ISDEFAULT = 1
@@ -557,6 +643,7 @@ export async function validateSheet({ SHTID, ROWVER, SNAPSHOT, USR, COMMENT }) {
     query: tx(`
       ${LOCK_SHEET}
       ${assertStatusIn(["SUBMITTED"])}
+      ${ASSERT_NOT_RESERVED}
 
       DECLARE @VERNUM int = @LASTVER + 1;
       INSERT INTO dbo.SHEETVERS (SHTID, VERNUM, SNAPSHOT, SUBUSR, VALUSR, COMMENT)
@@ -572,7 +659,10 @@ export async function validateSheet({ SHTID, ROWVER, SNAPSHOT, USR, COMMENT }) {
     inputs: {
       SHTID: p.int(SHTID),
       ROWVER: p.rowver(ROWVER),
-      SNAPSHOT: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(SNAPSHOT) },
+      SNAPSHOT: {
+        type: sql.NVarChar(sql.MAX),
+        value: JSON.stringify(SNAPSHOT),
+      },
       USR: p.str(254, USR),
       COMMENT: p.str(1000, COMMENT),
     },
@@ -586,6 +676,7 @@ export async function rejectSheet({ SHTID, ROWVER, USR, COMMENT }) {
     query: tx(`
       ${LOCK_SHEET}
       ${assertStatusIn(["SUBMITTED"])}
+      ${ASSERT_NOT_RESERVED}
       UPDATE dbo.SHEETS SET STATUS = 'REJECTED' WHERE SHTID = @SHTID;
 
       INSERT INTO dbo.SHEETEVTS (SHTID, EVTTYP, FROMSTS, TOSTS, EVTUSR, COMMENT)
@@ -601,6 +692,202 @@ export async function rejectSheet({ SHTID, ROWVER, USR, COMMENT }) {
     },
   });
   return result.recordset[0];
+}
+
+/* ═════════════════════════════ Fiche validée (RG-01) ═════════════════════════════ */
+
+/**
+ * Modification d'une fiche VALIDATED : elle reste VALIDATED et
+ * l'enregistrement crée directement la version suivante (`SNAPSHOT`, contenu
+ * complet après modification, construit par le contrôleur à partir de la
+ * fiche lue avec ce ROWVER). Un seul enregistrement = une seule version,
+ * quel que soit le nombre de parties modifiées.
+ *   sheet        : champs communs (null = inchangés)
+ *   translations : [{ LNGCOD, ...textes complets }] créées ou remplacées
+ *   deletedLngs  : langues supprimées (jamais la langue par défaut)
+ * La réservation de l'auteur est libérée (RG-04 : libérée à l'enregistrement).
+ */
+export async function updateValidatedSheet({
+  SHTID,
+  ROWVER,
+  sheet = null,
+  translations = [],
+  deletedLngs = [],
+  SNAPSHOT,
+  COMMENT,
+  USR,
+}) {
+  const result = await run({
+    duplicateKey: "VINIDOC_SHEET_ALREADY_EXISTS",
+    query: tx(`
+      ${LOCK_SHEET}
+      ${assertStatusIn(["VALIDATED"])}
+      ${ASSERT_NOT_RESERVED}
+
+      IF EXISTS (
+        SELECT 1 FROM OPENJSON(@TRANS) WITH (LNGCOD varchar(5)) j
+        WHERE NOT EXISTS (SELECT 1 FROM dbo.LANGUAGES l WHERE l.LNGCOD = j.LNGCOD AND l.ACTIVE = 1)
+      ) THROW 50176, 'Langue inconnue ou inactive.', 1;
+      IF EXISTS (
+        SELECT 1 FROM OPENJSON(@DELLNGS) d
+        INNER JOIN dbo.LANGUAGES l ON l.LNGCOD = d.value AND l.ISDEFAULT = 1
+      ) THROW 50173, 'La traduction dans la langue par défaut ne peut pas être supprimée.', 1;
+
+      IF @HASSHEET = 1
+        UPDATE dbo.SHEETS SET
+          CODVRAC = @CODVRAC, MILLESIME = @MILLESIME, APPELL = @APPELL, COLCOD = @COLCOD,
+          DESCVRAC = @DESCVRAC, INTARO = @INTARO, INTBOU = @INTBOU, ECHFRU = @ECHFRU,
+          TEMPMIN = @TEMPMIN, TEMPMAX = @TEMPMAX
+        WHERE SHTID = @SHTID;
+
+      MERGE dbo.SHEETTRANS WITH (HOLDLOCK) AS t
+      USING (
+        SELECT * FROM OPENJSON(@TRANS) WITH (
+          LNGCOD varchar(5), LIBELLE nvarchar(200), TERROIR nvarchar(4000),
+          VINIF nvarchar(4000), DEGUST nvarchar(4000), GARDE nvarchar(100),
+          CEPAGES nvarchar(1000), ACCORDS nvarchar(1000), ACCEXPL nvarchar(4000)
+        )
+      ) AS s
+      ON t.SHTID = @SHTID AND t.LNGCOD = s.LNGCOD
+      WHEN MATCHED THEN UPDATE SET
+        LIBELLE = s.LIBELLE, TERROIR = s.TERROIR, VINIF = s.VINIF, DEGUST = s.DEGUST,
+        GARDE = s.GARDE, CEPAGES = s.CEPAGES, ACCORDS = s.ACCORDS, ACCEXPL = s.ACCEXPL,
+        MODUSR = @USR, MODDAT = SYSUTCDATETIME()
+      WHEN NOT MATCHED THEN INSERT
+        (SHTID, LNGCOD, LIBELLE, TERROIR, VINIF, DEGUST, GARDE, CEPAGES, ACCORDS, ACCEXPL, MODUSR)
+        VALUES (@SHTID, s.LNGCOD, s.LIBELLE, s.TERROIR, s.VINIF, s.DEGUST, s.GARDE, s.CEPAGES, s.ACCORDS, s.ACCEXPL, @USR);
+
+      DELETE FROM dbo.SHEETTRANS
+      WHERE SHTID = @SHTID AND LNGCOD IN (SELECT value FROM OPENJSON(@DELLNGS));
+
+      DECLARE @VERNUM int = @LASTVER + 1;
+      INSERT INTO dbo.SHEETVERS (SHTID, VERNUM, SNAPSHOT, SUBUSR, VALUSR, COMMENT)
+      VALUES (@SHTID, @VERNUM, @SNAPSHOT, NULL, @USR, @COMMENT);
+
+      UPDATE dbo.SHEETS
+      SET LASTVER = @VERNUM, MODUSR = @USR, MODDAT = SYSUTCDATETIME()
+      WHERE SHTID = @SHTID;
+
+      INSERT INTO dbo.SHEETEVTS (SHTID, EVTTYP, FROMSTS, TOSTS, VERNUM, EVTUSR, COMMENT)
+      VALUES (@SHTID, 'VALIDATED_UPDATED', 'VALIDATED', 'VALIDATED', @VERNUM, @USR, @COMMENT);
+
+      DELETE FROM dbo.SHEETLOCKS WHERE SHTID = @SHTID AND USR = @USR;
+
+      ${RETURN_STATE}
+    `),
+    inputs: {
+      ...SHEET_INPUTS(sheet ?? {}),
+      HASSHEET: p.bit(!!sheet),
+      TRANS: p.json(translations),
+      DELLNGS: p.json(deletedLngs),
+      SNAPSHOT: {
+        type: sql.NVarChar(sql.MAX),
+        value: JSON.stringify(SNAPSHOT),
+      },
+      SHTID: p.int(SHTID),
+      ROWVER: p.rowver(ROWVER),
+      COMMENT: p.str(1000, COMMENT),
+      USR: p.str(254, USR),
+    },
+  });
+  return result.recordset[0];
+}
+
+/* ═════════════════════════════ Réservation (RG-04) ═════════════════════════════ */
+
+/** Réservation active d'une fiche (quel que soit son titulaire), ou null. */
+export async function getSheetLock(SHTID) {
+  const result = await run({
+    query: `
+      ${DECLARE_LOCK_FROM}
+      SELECT USR, USRNAME, LOCKDAT, LASTSEEN
+      FROM dbo.SHEETLOCKS
+      WHERE SHTID = @SHTID AND LASTSEEN > @LOCKFROM;
+    `,
+    inputs: { SHTID: p.int(SHTID) },
+  });
+  return result.recordset[0] ?? null;
+}
+
+/**
+ * Prise ou prolongation (activité du titulaire) de la réservation.
+ * Libre, expirée ou déjà détenue par USR → réservée à USR ; détenue par un
+ * autre utilisateur actif → inchangée. Renvoie la réservation résultante
+ * (MINE = 1 si elle appartient à USR).
+ */
+export async function acquireSheetLock({ SHTID, USR, USRNAME }) {
+  const result = await run({
+    query: tx(`
+      IF NOT EXISTS (SELECT 1 FROM dbo.SHEETS WHERE SHTID = @SHTID AND ISDEL = 0)
+        THROW 50170, 'Fiche introuvable.', 1;
+      ${DECLARE_LOCK_FROM}
+
+      DECLARE @CURUSR nvarchar(254), @CURSEEN datetime2(0);
+      SELECT @CURUSR = USR, @CURSEEN = LASTSEEN
+      FROM dbo.SHEETLOCKS WITH (UPDLOCK, HOLDLOCK) WHERE SHTID = @SHTID;
+
+      IF @CURUSR IS NULL
+        INSERT INTO dbo.SHEETLOCKS (SHTID, USR, USRNAME) VALUES (@SHTID, @USR, @USRNAME);
+      ELSE IF @CURUSR = @USR OR @CURSEEN <= @LOCKFROM
+        UPDATE dbo.SHEETLOCKS SET
+          LOCKDAT = CASE WHEN @CURUSR = @USR AND @CURSEEN > @LOCKFROM THEN LOCKDAT ELSE SYSUTCDATETIME() END,
+          USR = @USR, USRNAME = @USRNAME, LASTSEEN = SYSUTCDATETIME()
+        WHERE SHTID = @SHTID;
+
+      -- ACQUIRED : réservation obtenue par cet appel (et non simple prolongation).
+      SELECT
+        USR, USRNAME, LOCKDAT, LASTSEEN,
+        CAST(CASE WHEN USR = @USR THEN 1 ELSE 0 END AS bit) AS MINE,
+        CAST(CASE WHEN USR = @USR AND (@CURUSR IS NULL OR @CURUSR <> @USR OR @CURSEEN <= @LOCKFROM)
+                  THEN 1 ELSE 0 END AS bit) AS ACQUIRED
+      FROM dbo.SHEETLOCKS WHERE SHTID = @SHTID;
+    `),
+    inputs: {
+      SHTID: p.int(SHTID),
+      USR: p.str(254, USR),
+      USRNAME: p.str(254, USRNAME),
+    },
+  });
+  return result.recordset[0];
+}
+
+/** Libération de la réservation de USR (sans effet si elle ne lui appartient pas). */
+export async function releaseSheetLock({ SHTID, USR }) {
+  const result = await run({
+    query: `DELETE FROM dbo.SHEETLOCKS WHERE SHTID = @SHTID AND USR = @USR;`,
+    inputs: { SHTID: p.int(SHTID), USR: p.str(254, USR) },
+  });
+  return result.rowsAffected?.[0] > 0;
+}
+
+/* ═════════════════════════════ Paramètres ═════════════════════════════ */
+
+export async function getParams() {
+  const result = await run({
+    query: `
+      SELECT PRMKEY, PRMVAL, LABEL, UNIT, MINVAL, MAXVAL, MODUSR, MODDAT
+      FROM dbo.PARAMS ORDER BY SORTORD, PRMKEY;
+    `,
+  });
+  return result.recordset.map((r) => ({
+    ...r,
+    PRMVAL: Number(r.PRMVAL),
+    MINVAL: r.MINVAL == null ? null : Number(r.MINVAL),
+    MAXVAL: r.MAXVAL == null ? null : Number(r.MAXVAL),
+  }));
+}
+
+/** Mise à jour de valeurs existantes (bornes contrôlées par le contrôleur et CK_PARAMS_RANGE). */
+export async function updateParams({ PARAMS, USR }) {
+  await run({
+    query: tx(`
+      UPDATE p SET PRMVAL = j.PRMVAL, MODUSR = @USR, MODDAT = SYSUTCDATETIME()
+      FROM dbo.PARAMS p
+      INNER JOIN OPENJSON(@PARAMS) WITH (PRMKEY varchar(30), PRMVAL decimal(12, 4)) j
+        ON j.PRMKEY = p.PRMKEY;
+    `),
+    inputs: { PARAMS: p.json(PARAMS), USR: p.str(254, USR) },
+  });
 }
 
 /* ═════════════════════════════ Modèles ═════════════════════════════ */
@@ -659,7 +946,15 @@ const TAGS_JSON = (tags) =>
     })),
   );
 
-export async function createTemplate({ TPLKEY, TPLNAM, DESCR, LNGCOD, FILECODE, TAGS, USR }) {
+export async function createTemplate({
+  TPLKEY,
+  TPLNAM,
+  DESCR,
+  LNGCOD,
+  FILECODE,
+  TAGS,
+  USR,
+}) {
   const result = await run({
     duplicateKey: "VINIDOC_TEMPLATE_NAME_EXISTS",
     query: tx(`
@@ -695,7 +990,15 @@ const LOCK_TEMPLATE = `
     THROW 50171, 'Le modèle a été modifié par un autre utilisateur.', 1;
 `;
 
-export async function updateTemplate({ TPLID, ROWVER, TPLNAM, DESCR, LNGCOD, ACTIVE, USR }) {
+export async function updateTemplate({
+  TPLID,
+  ROWVER,
+  TPLNAM,
+  DESCR,
+  LNGCOD,
+  ACTIVE,
+  USR,
+}) {
   const result = await run({
     duplicateKey: "VINIDOC_TEMPLATE_NAME_EXISTS",
     query: tx(`
@@ -848,7 +1151,19 @@ export async function getTextTagLimits(LNGCOD = null) {
 /* ═════════════════════════════ Générations ═════════════════════════════ */
 
 /** VERNUM null = générée depuis la saisie en cours (fiche non validée). */
-export async function insertGeneration({ SHTID, VERNUM, TPLID, TPLFILECODE, LNGCOD, FORMAT, HVE = false, BIO = false, COD_ARTICLE = null, FILECODE, USR }) {
+export async function insertGeneration({
+  SHTID,
+  VERNUM,
+  TPLID,
+  TPLFILECODE,
+  LNGCOD,
+  FORMAT,
+  HVE = false,
+  BIO = false,
+  COD_ARTICLE = null,
+  FILECODE,
+  USR,
+}) {
   const result = await run({
     query: `
       INSERT INTO dbo.GENERATIONS (SHTID, VERNUM, TPLID, TPLFILECODE, LNGCOD, FORMAT, HVE, BIO, COD_ARTICLE, FILECODE, CREUSR)
@@ -1002,11 +1317,62 @@ export async function listSheetCodvracs() {
 }
 
 /**
+ * Poids à vide des matières sèches (NUM_POIDS_MS) de la nomenclature
+ * principale de l'article `a` (plus petite alternative : une nomenclature
+ * alternative doublerait les poids), rapportés à UNE bouteille :
+ *   BTLTARE_G      bouteille habillée vide (BOU, bouchage, capsule, étiquettes...), g
+ *   CASETARE_G_BTL emballage carton (CAB, intercalaires) par bouteille, g
+ *   BOU_G          poids du verre seul, g (absent = poids bouteille non calculable)
+ *   PALSUP_KG / PALSUP_HGT  support palette (PAL), kg / cm
+ * ⚠ Unités constatées dans le DWH (à valider avec le référent Sage X3) :
+ * grammes pour les matières sèches, kilogrammes pour les palettes.
+ */
+const TARE_WEIGHTS = `
+  OUTER APPLY (
+    SELECT
+      SUM(CASE WHEN n.L_CATEG_COMPOSANT NOT IN ('CAB', 'INT', 'PAL')
+               THEN m.NUM_POIDS_MS * n.L_QTY_LIEN_US / n.E_QTY_BASE END) AS BTLTARE_G,
+      SUM(CASE WHEN n.L_CATEG_COMPOSANT IN ('CAB', 'INT')
+               THEN m.NUM_POIDS_MS * n.L_QTY_LIEN_US / n.E_QTY_BASE END) AS CASETARE_G_BTL,
+      MAX(CASE WHEN n.L_CATEG_COMPOSANT = 'BOU' THEN m.NUM_POIDS_MS END) AS BOU_G,
+      MAX(CASE WHEN n.L_CATEG_COMPOSANT = 'PAL' THEN m.NUM_POIDS_MS END) AS PALSUP_KG,
+      MAX(CASE WHEN n.L_CATEG_COMPOSANT = 'PAL' THEN m.[NUM_HAUTEUR_EXTÉRIEURE] END) AS PALSUP_HGT
+    FROM dbo.DB_ARTICLES_NOMENCLATURE n
+    INNER JOIN dbo.DB_ARTICLES_MATIERES_SECHES m ON m.COD_ARTICLE = n.L_ARTICLE_COMPOSANT
+    WHERE n.E_ARTICLE_COMPOSE = a.COD_ARTICLE
+      AND n.E_QTY_BASE > 0
+      AND n.E_COD_ALTERNAT = (
+        SELECT MIN(x.E_COD_ALTERNAT) FROM dbo.DB_ARTICLES_NOMENCLATURE x
+        WHERE x.E_ARTICLE_COMPOSE = a.COD_ARTICLE
+      )
+  ) ms`;
+
+/**
  * Article PFI et ses données logistiques, en une ligne (cf. utils.logisticsText).
- * Poids bouteille = POIDS_ARTICLE (bouteille pleine, kg) ; dimensions issues
- * des matières sèches des composants BOU (bouteille) et CAB (carton).
+ * Dimensions issues des matières sèches des composants BOU (bouteille) et
+ * CAB (carton) ; poids à vide pour le calcul des poids pleins et de la
+ * hauteur de la palette chargée (EF-16 / EF-17, cf. utils.computeLogistics).
  */
 export async function getArticle(COD_ARTICLE) {
+  console.log(`
+    SELECT TOP (1)
+        a.COD_ARTICLE, a.DES_ARTICLE_1 AS LIBELLE, a.DES_ARTICLE_COURT AS LIBELLE_COURT,
+        a.MILLESIME, a.STATUT_ARTICLE AS STATUT, ${VHL_CODES} AS CODVRACS,
+        a.CODE_EAN AS EANBTL,
+        a.EAN_CARTON AS EANCASE,
+        a.COEF_CARTON AS UNITCASE,
+        a.COEF_PALETTE AS UNITPAL,
+        a.NB_COUCHES AS LVLPAL,
+        a.CAPACITE AS VOLUME, a.UNIT_CAP AS VOLUME_UNIT,
+        bou.LONGUEUR AS BTL_LONGUEUR, bou.LARGEUR AS BTL_LARGEUR, bou.HAUTEUR AS BTL_HAUTEUR,
+        cab.LONGUEUR AS CASE_LONGUEUR, cab.LARGEUR AS CASE_LARGEUR, cab.HAUTEUR AS CASE_HAUTEUR,
+        ms.BTLTARE_G, ms.CASETARE_G_BTL, ms.BOU_G, ms.PALSUP_KG, ms.PALSUP_HGT
+      FROM dbo.DB_ARTICLES a
+      ${COMPONENT("BOU", "bou")}
+      ${COMPONENT("CAB", "cab")}
+      ${TARE_WEIGHTS}
+      WHERE a.COD_ARTICLE = @COD_ARTICLE;`);
+
   const result = await dwh({
     query: `
       SELECT TOP (1)
@@ -1017,17 +1383,14 @@ export async function getArticle(COD_ARTICLE) {
         a.COEF_CARTON AS UNITCASE,
         a.COEF_PALETTE AS UNITPAL,
         a.NB_COUCHES AS LVLPAL,
-        a.POIDS_ARTICLE AS BTLWGT,
+        a.CAPACITE AS VOLUME, a.UNIT_CAP AS VOLUME_UNIT,
         bou.LONGUEUR AS BTL_LONGUEUR, bou.LARGEUR AS BTL_LARGEUR, bou.HAUTEUR AS BTL_HAUTEUR,
         cab.LONGUEUR AS CASE_LONGUEUR, cab.LARGEUR AS CASE_LARGEUR, cab.HAUTEUR AS CASE_HAUTEUR,
-        -- ⚠ VALEURS DE TEST : données absentes du DWH pour l'instant
-        -- (cf. utils.LOGISTICS_TEST_TAGS), à remplacer par les vraies colonnes.
-        CAST(8.0 AS decimal(9, 2)) AS CASEWGT,  -- poids carton plein (kg)
-        CAST(160 AS decimal(9, 1)) AS PALHGT,   -- hauteur palette chargée (cm)
-        CAST(900 AS decimal(9, 1)) AS PALWGT    -- poids palette chargée (kg)
+        ms.BTLTARE_G, ms.CASETARE_G_BTL, ms.BOU_G, ms.PALSUP_KG, ms.PALSUP_HGT
       FROM dbo.DB_ARTICLES a
       ${COMPONENT("BOU", "bou")}
       ${COMPONENT("CAB", "cab")}
+      ${TARE_WEIGHTS}
       WHERE a.COD_ARTICLE = @COD_ARTICLE;
     `,
     inputs: { COD_ARTICLE: p.str(30, COD_ARTICLE) },

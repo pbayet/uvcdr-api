@@ -151,6 +151,40 @@ export const sheetDefaultTemplateSchema = z.object({
 
 export const translationUpsertSchema = translationSchema.extend({ ROWVER: rowver });
 
+/**
+ * Modification d'une fiche validée (RG-01) : un seul enregistrement, une
+ * seule nouvelle version. SHEET = champs communs complets (absent =
+ * inchangés) ; TRANSLATIONS[lng] = champs modifiés de cette langue (les
+ * autres sont conservés), null = suppression de la langue.
+ */
+export const validatedUpdateSchema = z
+  .object({
+    ROWVER: rowver,
+    COMMENT: optText(1000),
+    SHEET: z.object(sheetCommonFields).superRefine(refineSheet).optional(),
+    TRANSLATIONS: z
+      .record(lngCode, translationSchema.partial().nullable())
+      .optional()
+      .default({}),
+  })
+  .refine((d) => d.SHEET || Object.keys(d.TRANSLATIONS).length > 0, {
+    message: "Aucune modification à enregistrer.",
+  });
+
+/* ───────────────────────────── Paramètres ───────────────────────────── */
+
+export const paramsUpdateSchema = z.object({
+  PARAMS: z
+    .array(
+      z.object({
+        PRMKEY: z.string().trim().toUpperCase().min(1).max(30),
+        PRMVAL: z.coerce.number().finite(),
+      }),
+    )
+    .min(1)
+    .max(50),
+});
+
 export const rowverOnlySchema = z.object({ ROWVER: rowver });
 
 export const workflowCommentSchema = z.object({

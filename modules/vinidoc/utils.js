@@ -55,6 +55,10 @@ export const canValidateSheets = (req) =>
 export const canManageTemplates = (req) =>
   isManager(req) || inServices(req, "VINIDOC_TEMPLATE_SERVICES", "MARKETING");
 
+/** Paramètres de l'application (calculs logistiques, réservation des fiches). */
+export const canManageParams = (req) =>
+  isManager(req) || inServices(req, "VINIDOC_PARAM_SERVICES", "INFORMATIQUE");
+
 const assertOr = (ok) => {
   if (!ok) throw new Error("ACCESS_DENIED_WO_LOGOUT");
 };
@@ -63,6 +67,7 @@ export const assertCanValidateSheets = (req) =>
   assertOr(canValidateSheets(req));
 export const assertCanManageTemplates = (req) =>
   assertOr(canManageTemplates(req));
+export const assertCanManageParams = (req) => assertOr(canManageParams(req));
 
 /**
  * Modification du contenu d'une fiche (champs, cépages, traductions) :
@@ -84,6 +89,7 @@ export const getRights = (req) => ({
   EDIT: canEditSheets(req),
   VALIDATE: canValidateSheets(req),
   TEMPLATES: canManageTemplates(req),
+  PARAMS: canManageParams(req),
   GENERATE: true,
 });
 
@@ -404,6 +410,43 @@ const WORKFLOW_KEYS = [
   "CREDAT",
 ];
 
+/**
+ * Fiche après modification d'une fiche validée (RG-01), avant écriture :
+ * champs communs remplacés (`common`, null = inchangés), traductions
+ * modifiées fusionnées champ par champ (`translations[lng]` partiel ; null =
+ * langue supprimée). Sert à construire l'instantané de la nouvelle version.
+ * @returns {{ sheet: object, translations: object[], deletedLngs: string[] }}
+ *   translations : textes complets des langues créées ou modifiées
+ */
+export function applySheetChanges(sheet, common = null, translations = {}) {
+  const TRANSLATIONS = { ...(sheet.TRANSLATIONS ?? {}) };
+  const changed = [];
+  const deletedLngs = [];
+  for (const [lng, t] of Object.entries(translations ?? {})) {
+    if (t === null) {
+      if (TRANSLATIONS[lng]) deletedLngs.push(lng);
+      delete TRANSLATIONS[lng];
+      continue;
+    }
+    // Champ absent (ou undefined après validation) = inchangé.
+    const edited = Object.fromEntries(
+      Object.entries(t).filter(([, v]) => v !== undefined),
+    );
+    const merged = {
+      ...Object.fromEntries(CLEANED_TRANSLATION_FIELDS.map((f) => [f, null])),
+      ...omitKeys(TRANSLATIONS[lng], ["MODUSR", "MODDAT"]),
+      ...edited,
+    };
+    TRANSLATIONS[lng] = merged;
+    changed.push({ LNGCOD: lng, ...merged });
+  }
+  return {
+    sheet: { ...sheet, ...(common ?? {}), TRANSLATIONS },
+    translations: changed,
+    deletedLngs,
+  };
+}
+
 /** Contenu figé à la validation (sans les métadonnées de workflow). */
 export function buildSnapshot(sheet) {
   return {
@@ -635,12 +678,6 @@ export function cleanSheetTexts(sheet) {
 
 /* ───────────────────────── Articles PFI (DWH) ───────────────────────── */
 
-/**
- * Données logistiques encore absentes du DWH : la requête
- * (services.getArticle) renvoie des VALEURS DE TEST, signalées au front.
- */
-export const LOGISTICS_TEST_TAGS = ["LOG.CASEWGT", "LOG.PALHGT", "LOG.PALWGT"];
-
 const fr = (value, digits = 1) =>
   new Intl.NumberFormat("fr-FR", { maximumFractionDigits: digits }).format(value);
 
@@ -669,12 +706,95 @@ export function articleFromRow(row) {
 }
 
 /**
+ * Paramètres des calculs logistiques (table PARAMS, modifiables sans
+ * développement) ; valeurs par défaut si la table n'est pas renseignée.
+ */
+export const DEFAULT_LOGISTICS_PARAMS = {
+  WINE_DENSITY: 0.99, // kg/L
+  PALLET_WEIGHT: 25, // kg, support palette absent de la nomenclature
+  PALLET_HEIGHT: 15, // cm, idem
+};
+
+const VOLUME_UNITS = { L: 1, CL: 0.01, ML: 0.001 };
+
+/** Contenance X3 (CAPACITE + UNIT_CAP) en litres ; null si inconnue. */
+export function volumeInLiters(value, unit) {
+  const factor = VOLUME_UNITS[String(unit ?? "L").trim().toUpperCase()];
+  return positive(value) != null && factor ? positive(value) * factor : null;
+}
+
+/**
+ * Poids pleins et hauteur de la palette chargée (EF-16 / EF-17), calculés à
+ * partir des poids à vide de Sage X3 (cf. services.getArticle) :
+ *   bouteille pleine = bouteille habillée vide + contenance × masse volumique
+ *   carton plein     = bouteilles/carton × (bouteille pleine + emballage carton par bouteille)
+ *   palette chargée  = support palette + cartons/palette × carton plein
+ *   hauteur palette  = hauteur support + couches × hauteur carton
+ * Support palette : composant PAL de la nomenclature, sinon paramètres.
+ * Chaque valeur est null si une donnée manque (EF-14 : champ laissé vide) ;
+ * DETAIL décrit le calcul (ou la donnée manquante) pour l'affichage.
+ */
+export function computeLogistics(row, params = {}) {
+  const prm = { ...DEFAULT_LOGISTICS_PARAMS, ...params };
+  const unitCase = positive(row?.UNITCASE);
+  const unitPal = positive(row?.UNITPAL);
+  const layers = positive(row?.LVLPAL);
+  const caseHeight = positive(row?.CASE_HAUTEUR);
+  const volume = volumeInLiters(row?.VOLUME, row?.VOLUME_UNIT);
+  const btlTare = positive(row?.BOU_G) && positive(row?.BTLTARE_G) ? row.BTLTARE_G / 1000 : null;
+  const casePack = positive(row?.CASETARE_G_BTL) ? row.CASETARE_G_BTL / 1000 : null;
+  const cases = unitCase && unitPal ? unitPal / unitCase : null;
+  const support = positive(row?.PALSUP_KG) ?? Number(prm.PALLET_WEIGHT);
+  const supportHeight = positive(row?.PALSUP_HGT) ?? Number(prm.PALLET_HEIGHT);
+
+  const BTLWGT = btlTare != null && volume != null ? btlTare + volume * prm.WINE_DENSITY : null;
+  const CASEWGT = BTLWGT != null && casePack != null && unitCase ? unitCase * (BTLWGT + casePack) : null;
+  const PALWGT = CASEWGT != null && cases ? support + cases * CASEWGT : null;
+  const PALHGT = caseHeight && layers ? supportHeight + layers * caseHeight : null;
+
+  const kg = (v) => `${fr(v, 3)} kg`;
+  const missing = (what) => `Non calculable : donnée manquante dans Sage X3 (${what}).`;
+  return {
+    BTLWGT,
+    CASEWGT,
+    PALWGT,
+    PALHGT,
+    DETAIL: {
+      "LOG.BTLWGT":
+        BTLWGT != null
+          ? `${kg(btlTare)} (bouteille habillée vide) + ${fr(volume, 3)} L × ${fr(prm.WINE_DENSITY, 3)} kg/L`
+          : missing(btlTare == null ? "poids de la bouteille vide" : "contenance"),
+      "LOG.CASEWGT":
+        CASEWGT != null
+          ? `${fr(unitCase, 0)} × (${kg(BTLWGT)} + ${kg(casePack)} d'emballage carton)`
+          : BTLWGT == null
+            ? "Non calculable : poids de la bouteille pleine inconnu."
+            : missing(casePack == null ? "poids du carton vide" : "nombre de bouteilles par carton"),
+      "LOG.PALWGT":
+        PALWGT != null
+          ? `${fr(support, 1)} kg (support) + ${fr(cases, 1)} cartons × ${kg(CASEWGT)}`
+          : CASEWGT == null
+            ? "Non calculable : poids du carton plein inconnu."
+            : missing("nombre de bouteilles par palette"),
+      "LOG.PALHGT":
+        PALHGT != null
+          ? `${fr(supportHeight, 1)} cm (support) + ${fr(layers, 0)} couches × ${fr(caseHeight, 1)} cm`
+          : missing(layers ? "hauteur du carton" : "nombre de couches"),
+    },
+  };
+}
+
+/** Balises calculées par Vinidoc (et non reprises telles quelles de Sage X3). */
+export const LOGISTICS_CALCULATED_TAGS = ["LOG.BTLWGT", "LOG.CASEWGT", "LOG.PALWGT", "LOG.PALHGT"];
+
+/**
  * Valeurs des balises logistiques ({{LOG.*}}) d'un article PFI.
  * Dimensions en cm sans unité (l'unité figure dans l'en-tête du modèle) :
  * bouteille « diamètre x hauteur », carton « largeur x longueur x hauteur ».
  * Cartons par palette = bouteilles par palette / bouteilles par carton.
+ * Poids et hauteur palette : cf. computeLogistics (`params` : table PARAMS).
  */
-export function logisticsText(row) {
+export function logisticsText(row, params = {}) {
   if (!row) return {};
   const unitCase = positive(row.UNITCASE);
   const unitPal = positive(row.UNITPAL);
@@ -682,18 +802,19 @@ export function logisticsText(row) {
     .map(positive)
     .filter((v) => v != null)
     .sort((a, b) => a - b);
+  const calc = computeLogistics(row, params);
   return {
     "LOG.BTLDIM": dims(...btl),
-    "LOG.BTLWGT": withUnit(row.BTLWGT, "kg", 2),
+    "LOG.BTLWGT": withUnit(calc.BTLWGT, "kg", 2),
     "LOG.CASEDIM": dims(row.CASE_LARGEUR, row.CASE_LONGUEUR, row.CASE_HAUTEUR),
     "LOG.CASEPAL":
       unitCase && unitPal ? fr(unitPal / unitCase, unitPal % unitCase ? 1 : 0) : "",
-    "LOG.CASEWGT": withUnit(row.CASEWGT, "kg", 2),
+    "LOG.CASEWGT": withUnit(calc.CASEWGT, "kg", 2),
     "LOG.EANBTL": row.EANBTL?.trim() ?? "",
     "LOG.EANCASE": row.EANCASE?.trim() ?? "",
     "LOG.LVLPAL": integer(row.LVLPAL),
-    "LOG.PALHGT": withUnit(row.PALHGT, "cm"),
-    "LOG.PALWGT": withUnit(row.PALWGT, "kg"),
+    "LOG.PALHGT": withUnit(calc.PALHGT, "cm"),
+    "LOG.PALWGT": withUnit(calc.PALWGT, "kg"),
     "LOG.UNITCASE": integer(unitCase),
     "LOG.UNITPAL": integer(unitPal),
   };
@@ -720,15 +841,23 @@ export function articleSheetStatus(article, sheets = []) {
   return sheet.STATUS;
 }
 
-/** Balises logistiques pour l'affichage : libellé, valeur, valeur de test. */
-export function logisticsFields(row) {
-  const text = logisticsText(row);
-  return TEXT_FIELDS.filter((f) => f.TAG.startsWith("LOG.")).map((f) => ({
-    TAG: f.TAG,
-    LABEL: f.LABEL.replace(/ \(.*\)$/, ""),
-    VALUE: text[f.TAG] ?? "",
-    TEST: LOGISTICS_TEST_TAGS.includes(f.TAG),
-  }));
+/**
+ * Balises logistiques pour l'affichage : libellé, valeur, et pour les
+ * valeurs calculées par Vinidoc le détail du calcul (DETAIL).
+ */
+export function logisticsFields(row, params = {}) {
+  const text = logisticsText(row, params);
+  const { DETAIL } = computeLogistics(row, params);
+  return TEXT_FIELDS.filter((f) => f.TAG.startsWith("LOG.")).map((f) => {
+    const CALCULATED = LOGISTICS_CALCULATED_TAGS.includes(f.TAG);
+    return {
+      TAG: f.TAG,
+      LABEL: f.LABEL.replace(/ \(.*\)$/, ""),
+      VALUE: text[f.TAG] ?? "",
+      CALCULATED,
+      DETAIL: CALCULATED ? DETAIL[f.TAG] : null,
+    };
+  });
 }
 
 /** Longueur "visible" (points de code, \r\n compté pour 1). */
