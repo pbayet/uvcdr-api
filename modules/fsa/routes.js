@@ -71,6 +71,18 @@ router.get(
 );
 
 router.get(
+  "/filters",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.getFolderFilters(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get(
   "/gestionnaires",
   authMiddlewares.authVerifyMiddleware,
   async (req, res, next) => {

@@ -40,14 +40,50 @@ function jsonObject(objSchema) {
    GETS
 ───────────────────────────────────────────── */
 
+// Liste de valeurs passée en query string : tableau JSON (`["EAV","BRO"]`),
+// CSV (`EAV,BRO`) ou paramètre répété — normalisée en tableau de chaînes.
+const queryList = z.preprocess(
+  (value) => {
+    if (value == null || value === "") return undefined;
+    if (Array.isArray(value)) return value;
+    const text = String(value).trim();
+    if (text.startsWith("[")) {
+      try {
+        return JSON.parse(text);
+      } catch {
+        return undefined;
+      }
+    }
+    return text.split(",");
+  },
+  z.array(z.coerce.string().trim().min(1).max(255)).max(500).optional(),
+);
+
+const folderTypeSchema = z
+  .enum(["default", "archive", "delete", "all"])
+  .optional()
+  .default("default");
+
 export const foldersQuerySchema = z.object({
   numdos: z.string().trim().min(1).nullish(),
   numges: z.string().trim().min(1).nullish(),
   permlvl: z.coerce.number().int().nullish(),
-  type: z
-    .enum(["default", "archive", "delete", "all"])
-    .optional()
-    .default("default"),
+  type: folderTypeSchema,
+  // Pagination / recherche / filtres côté serveur : réponse paginée
+  // { ROWS, TOTAL, TOTAL_ALL } dès que `page` est fourni
+  page: z.coerce.number().int().min(1).nullish(),
+  limit: z.coerce.number().int().min(1).max(200).nullish(),
+  search: z.string().trim().max(200).nullish(),
+  status: queryList,
+  clients: queryList,
+  dems: queryList,
+  myval: queryList,
+  myserv: z.string().trim().max(50).nullish(),
+});
+
+export const folderFiltersQuerySchema = z.object({
+  type: folderTypeSchema,
+  myserv: z.string().trim().max(50).nullish(),
 });
 
 export const statusGestQuerySchema = z.object({

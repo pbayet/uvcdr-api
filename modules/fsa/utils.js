@@ -317,6 +317,34 @@ function mapFolderListItem(row, mustValidateMap) {
     NOMACT: row.CLI_NOMACT,
     MY_VALIDATION_CODE: row.ENT_MY_VALIDATION_CODE,
 
+    // Champs obligatoires, rangés selon les chemins de FsaFolder.REQUIRED
+    // côté front (barre de progression de saisie des brouillons).
+    REQUIRED_DATA: {
+      FSACLIENT: {
+        CLICCON: row.REQ_CLI_CLICCON,
+        BPCNAM: row.CLI_BPCNAM,
+        CLINAM: row.CLI_CLINAM,
+        CLIPAY: { CLIPAY: row.REQ_CLI_CLIPAY },
+      },
+      FSAPRODUITS: {
+        TCLCOD: row.REQ_PRO_TCLCOD,
+        ITMFMT: row.REQ_PRO_ITMFMT,
+        ITMAPP: row.REQ_PRO_ITMAPP,
+        ITMCEP: row.REQ_PRO_ITMCEP,
+        ITMCOU: row.REQ_PRO_ITMCOU,
+        ITMGAM: row.REQ_PRO_ITMGAM,
+        ITMMAR: row.REQ_PRO_ITMMAR,
+        ITMQUA: row.REQ_PRO_ITMQUA,
+        ITMTYP: row.REQ_PRO_ITMTYP,
+      },
+      FSAVENTES: {
+        DATMAD: row.REQ_VEN_DATMAD,
+        VOLANN: row.REQ_VEN_VOLANN,
+        PRIANN: row.REQ_VEN_PRIANN,
+      },
+      NOMENCLATURES_COUNT: row.REQ_NOM_COUNT ?? 0,
+    },
+
     PJ_COUNT: row.ENT_PJ_COUNT ?? 0,
 
     // CSV -> tableau, comme les autres listes sont déjà parsées côté
@@ -329,6 +357,9 @@ function mapFolderListItem(row, mustValidateMap) {
     // (cf. setRelEtaDos côté front) : Refusé si une validation REF existe
     // pour ce dossier, Validé sinon.
     IS_REF: toBool(row.ENT_IS_REF),
+
+    // Dossier repris de l'ancienne application (APP_FSA)
+    IS_LEGACY: toBool(row.ENT_IS_LEGACY),
 
     SRVMSTVAL: mustValidateMap.get(row.ENT_NUMDOS) || [],
   };

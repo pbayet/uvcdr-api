@@ -687,46 +687,91 @@ export async function testDailyRelaunch(req) {
 /* -------------------------------------------------------------------------- */
 
 export async function getFsas(req) {
-  const { numdos, numges, permlvl, type } = v.foldersQuerySchema.parse(
+  const {
+    numdos,
+    numges,
+    permlvl,
+    type,
+    page,
+    limit,
+    search,
+    status,
+    clients,
+    dems,
+    myval,
+    myserv,
+  } = v.foldersQuerySchema.parse(
     (await requestUtils.getRequestParams(req)).params,
   );
 
   const { USRID } = getUserIdentity(req);
 
   /* ------------------------------------------------------------------
-   * 1. Sélection de la source FSA
-   * ------------------------------------------------------------------ */
-  const getSourceFsas = () => {
-    if (numdos) return services.getFsa(numdos);
-
-    if (numges && permlvl) {
-      if (permlvl > 2) {
-        if (permlvl === 5) return services.getReadOnlyFsas(type);
-
-        if (type === "delete") {
-          return services.getFsas(USRID, type);
-        }
-        return services.getFsas(USRID, type);
-      }
-
-      return services.getFsas(USRID, type);
-    }
-
-    return services.getFsas(USRID, type);
-  };
-
-  /* ------------------------------------------------------------------
-   * 2. Traitement et formatage final
+   * 1. Détail d'un dossier
    * ------------------------------------------------------------------ */
   const gestsMustValidate = await services.getGestsMustValidate();
   const formattedGests = utils.formatGestsMustValidate(gestsMustValidate);
 
-  const rawFsa = await getSourceFsas();
-  const formattedFsas = numdos
-    ? utils.formatFsasJson(rawFsa, formattedGests)
-    : utils.formatFsasJsonList(rawFsa, formattedGests);
+  if (numdos) {
+    const rawFsa = await services.getFsa(numdos);
+    return utils.formatFsasJson(rawFsa, formattedGests)[0];
+  }
 
-  return numdos ? formattedFsas[0] : formattedFsas;
+  /* ------------------------------------------------------------------
+   * 2. Liste — paginée dès que `page` est fourni
+   * ------------------------------------------------------------------ */
+  const isPaged = page != null;
+  const filters = {
+    page,
+    limit: isPaged ? (limit ?? 30) : limit,
+    search,
+    status,
+    clients,
+    dems,
+    myval,
+    myserv,
+  };
+
+  const { rows, total, totalAll } =
+    numges && permlvl === 5
+      ? await services.getReadOnlyFsas(type, filters)
+      : await services.getFsas(USRID, type, filters);
+
+  const formattedFsas = utils.formatFsasJsonList(rows, formattedGests);
+
+  if (!isPaged) {
+    // Comportement historique de la liste complète
+    if (!formattedFsas.length) throw new Error("DATA_NOT_FOUND");
+    return formattedFsas;
+  }
+
+  return {
+    ROWS: formattedFsas,
+    TOTAL: total,
+    TOTAL_ALL: totalAll,
+    PAGE: page,
+    LIMIT: filters.limit,
+  };
+}
+
+export async function getFolderFilters(req) {
+  const { type, myserv } = v.folderFiltersQuerySchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  const { STATUS, CLIENTS, DEMS, MYVAL_COUNT } = await services.getFolderFilters(
+    type,
+    myserv,
+  );
+
+  return {
+    STATUS,
+    CLIENTS,
+    DEMS,
+    // Le filtre "Mes validations" n'a de sens que si le service de
+    // l'utilisateur doit valider au moins un dossier de l'onglet
+    CAN_VALIDATE: MYVAL_COUNT > 0,
+  };
 }
 
 export async function getGestionnaires() {

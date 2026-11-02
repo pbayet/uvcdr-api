@@ -66,23 +66,79 @@ function getTypeFilter(type) {
 /*                    DOSSIERS — Requête "liste" (allégée)                    */
 /* -------------------------------------------------------------------------- */
 
+// Marqueur FSAENT.APPVRS des dossiers repris de l'ancienne application
+// (APP_FSA.dbo.FSA_SuiviDossier, cf. sql/FSA.reprise_APP_FSA.sql)
+const LEGACY_APPVRS = "REPRISE-APP_FSA";
+
+// Filtres de la liste (recherche + selects), appliqués sur #FOLDERS (alias f).
+// Chaque paramètre NULL désactive son filtre. Les listes sont des tableaux
+// JSON (OPENJSON) plutôt que du CSV : un code client peut contenir une virgule.
+const FOLDER_LIST_FILTERS = `
+        (@SEARCH_VAL IS NULL OR
+            f.ENT_NUMDOS      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
+            f.ENT_NOMDOS      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
+            f.ENT_NOTDOS      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
+            f.ENT_GES_GESNAM  COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
+            f.ENT_DEM_GESNAM  COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
+            f.CLI_BPCNUM      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
+            f.CLI_BPCNAM      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
+            f.CLI_CLINAM      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
+            f.CLI_CLIACT      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
+            f.ENT_DESETA      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL)
+    AND (@STATUS_VAL IS NULL OR f.ENT_CODETA IN (SELECT value FROM OPENJSON(@STATUS_VAL)))
+    AND (@CLIENTS_VAL IS NULL OR f.CLI_BPCNUM IN (SELECT value FROM OPENJSON(@CLIENTS_VAL)))
+    AND (@DEMS_VAL IS NULL OR f.ENT_DEM_NUMDEM IN (SELECT value FROM OPENJSON(@DEMS_VAL)))
+    AND (@MYVAL_VAL IS NULL OR (
+            f.F_MY_REQUIRED = 1 AND (
+                f.F_MY_CODE IN (SELECT value FROM OPENJSON(@MYVAL_VAL))
+                OR (f.F_ONLY_ME = 1 AND EXISTS (
+                    SELECT 1 FROM OPENJSON(@MYVAL_VAL) WHERE value = 'ONLY_ME'))
+            )))
+`;
+
 /**
- * Bloc SELECT/FROM partagé par getFsas / getReadOnlyFsas / getMyFsas.
- * Une seule ligne par dossier (pas de fan-out), avec les agrégats calculés
- * via OUTER APPLY (seek-able grâce aux index de sql/01_indexes.sql) plutôt
- * que par LEFT JOIN + GROUP BY sur des ensembles potentiellement larges —
- * c'est très probablement la principale source de lenteur de l'ancienne
- * usp_GetFoldersList_JSON.
+ * Requête partagée par getFsas / getReadOnlyFsas / getMyFsas.
+ *
+ * Trois étapes, pour ne calculer les colonnes coûteuses (pièces jointes,
+ * champs obligatoires, nomenclatures...) que pour la page renvoyée :
+ *   1. #FOLDERS : tous les dossiers de l'onglet (type + extraWhere), avec les
+ *      seules colonnes nécessaires à la recherche, aux filtres et au tri ;
+ *   2. la page demandée (filtres, tri, OFFSET/FETCH), complétée des colonnes
+ *      d'affichage — 1er jeu de résultats ;
+ *   3. les compteurs TOTAL (après filtres) et TOTAL_ALL (onglet entier) —
+ *      2e jeu de résultats.
+ * Sans @LIMIT_VAL, la "page" contient tous les dossiers filtrés.
  *
  * ENT_MY_VALIDATION_CODE : dernier VALTYPCOD posé par un service dont
  * @USRID_VAL fait partie (FSAGES_UTILISATEURS) sur ce dossier. NULL si
  * @USRID_VAL n'est pas fourni (cas getReadOnlyFsas) ou si aucune validation.
+ *
+ * Filtre "Mes validations" (reprend FsaFolder.myValIsRequired /
+ * getMyValid / onlyMyValIsPending côté front, pour le service @MYSERVGES_VAL) :
+ *   F_MY_REQUIRED : le service doit valider ce dossier ;
+ *   F_MY_CODE     : VAL / REF, sinon NONE (pas encore d'avis) ;
+ *   F_ONLY_ME     : avis du service attendu et tous les autres déjà rendus.
  *
  * @param {string} extraWhere - condition additionnelle déjà écrite en SQL
  *   (ex: "e.NUMGES = @NUMGES_VAL"), ajoutée en ET à la clause WHERE.
  */
 function buildFolderListQuery(extraWhere = "") {
   return `
+    SET NOCOUNT ON;
+
+    -- Services devant valider / ayant rendu un avis : vues coûteuses,
+    -- matérialisées une seule fois plutôt que par dossier
+    SELECT DISTINCT NUMDOS, SERVGES
+    INTO #MSV
+    FROM dbo.vw_FsaServicesMustValidate;
+
+    SELECT DISTINCT NUMDOS, GES_SERVGES AS SERVGES
+    INTO #VS
+    FROM dbo.vw_FsaValidations;
+
+    CREATE CLUSTERED INDEX IX_MSV ON #MSV (NUMDOS);
+    CREATE CLUSTERED INDEX IX_VS ON #VS (NUMDOS);
+
     SELECT
         e.NUMDOS      AS ENT_NUMDOS,
         e.NOMDOS      AS ENT_NOMDOS,
@@ -92,12 +148,18 @@ function buildFolderListQuery(extraWhere = "") {
         e.DELETED     AS ENT_DELETED,
         e.CREDAT      AS ENT_CREDAT,
         cs.EAVDAT     AS ENT_EAVDAT,
+        CAST(CASE WHEN e.APPVRS = '${LEGACY_APPVRS}' THEN 1 ELSE 0 END AS BIT) AS ENT_IS_LEGACY,
 
-        CONCAT(uges.LSTNAM, ' ', uges.FSTNAM) AS ENT_GES_GESNAM,
+        -- Dossiers repris (sans GESUSRID ni titulaire historique du poste) :
+        -- repli sur le créateur d'origine (FSAENT.CREUSR)
+        COALESCE(NULLIF(CONCAT(uges.LSTNAM, ' ', uges.FSTNAM), ' '), e.CREUSR) AS ENT_GES_GESNAM,
         ges.NOMGES    AS ENT_GES_NOMGES,
 
         e.NUMDEM      AS ENT_DEM_NUMDEM,
-        CONCAT(udem.LSTNAM, ' ', udem.FSTNAM) AS ENT_DEM_GESNAM,
+        CASE
+            WHEN e.APPVRS = '${LEGACY_APPVRS}' THEN e.CREUSR
+            ELSE CONCAT(udem.LSTNAM, ' ', udem.FSTNAM)
+        END           AS ENT_DEM_GESNAM,
         dem.NOMGES    AS ENT_DEM_NOMGES,
 
         c.BPCNUM      AS CLI_BPCNUM,
@@ -105,54 +167,184 @@ function buildFolderListQuery(extraWhere = "") {
         c.CLINAM      AS CLI_CLINAM,
         c.CLIACT      AS CLI_CLIACT,
         c.NOMACT      AS CLI_NOMACT,
+        c.CLICCON     AS REQ_CLI_CLICCON,
+        c.CLIPAY      AS REQ_CLI_CLIPAY,
 
         myval.VALTYPCOD              AS ENT_MY_VALIDATION_CODE,
-        ISNULL(pj.PJ_COUNT, 0)       AS ENT_PJ_COUNT,
         ISNULL(valserv.SERVICES, '') AS ENT_VALIDATED_SERVICES,
-        CAST(CASE WHEN refval.NUMDOS IS NOT NULL THEN 1 ELSE 0 END AS BIT) AS ENT_IS_REF
 
+        COALESCE(cs.EAVDAT, e.CREDAT) AS F_SORTDAT,
+        CAST(ISNULL(msv.MY_REQ, 0) AS BIT) AS F_MY_REQUIRED,
+        CASE WHEN myval.VALTYPCOD IN ('VAL', 'REF') THEN myval.VALTYPCOD ELSE 'NONE' END AS F_MY_CODE,
+        CAST(CASE
+            WHEN msv.MY_REQ = 1
+             AND ISNULL(myval.VALTYPCOD, 'NONE') NOT IN ('VAL', 'REF')
+             AND msv.DONE_COUNT = msv.REQ_COUNT - 1
+            THEN 1 ELSE 0
+        END AS BIT) AS F_ONLY_ME
+
+    INTO #FOLDERS
     FROM dbo.FSAENT e
     INNER JOIN dbo.vw_FsaCurrentStatus cs ON cs.NUMDOS = e.NUMDOS
     LEFT JOIN dbo.FSAGES ges ON ges.NUMGES = e.NUMGES
     LEFT JOIN USERSMANAGER.dbo.USERS uges ON uges.USRID = e.GESUSRID
     LEFT JOIN dbo.FSAGES dem ON dem.NUMGES = e.NUMDEM
-    LEFT JOIN USERSMANAGER.dbo.POSITIONS posdem ON posdem.POSCOD = e.NUMDEM
-    LEFT JOIN USERSMANAGER.dbo.USERS udem ON udem.POSID = posdem.POSID
     LEFT JOIN dbo.FSACLIENTS c ON c.NUMDOS = e.NUMDOS
+    -- TOP 1 : un poste peut être partagé par plusieurs utilisateurs, un
+    -- LEFT JOIN POSITIONS -> USERS dupliquait alors la ligne dossier
+    OUTER APPLY (
+        SELECT TOP 1 u.LSTNAM, u.FSTNAM
+        FROM USERSMANAGER.dbo.POSITIONS p
+        INNER JOIN USERSMANAGER.dbo.USERS u ON u.POSID = p.POSID
+        WHERE p.POSCOD = e.NUMDEM
+        ORDER BY u.USRID
+    ) udem
     OUTER APPLY (
         SELECT TOP 1 v.VALTYPCOD
         FROM dbo.FSAVALID v
         INNER JOIN dbo.FSAGES g2 ON g2.NUMGES = v.NUMGES
         INNER JOIN dbo.FSAGES_UTILISATEURS gu ON gu.GESID = g2.GESID
         WHERE v.NUMDOS = e.NUMDOS AND gu.USRID = @USRID_VAL
-        ORDER BY v.CREDAT DESC
+        ORDER BY v.CREDAT DESC, v.VALIDID DESC
     ) myval
     OUTER APPLY (
-        SELECT COUNT(*) AS PJ_COUNT FROM dbo.vw_FolderFiles f WHERE f.NUMDOS = e.NUMDOS
-    ) pj
-    OUTER APPLY (
-        SELECT STRING_AGG(g3.SERVGES, ',') AS SERVICES
-        FROM dbo.vw_FsaValidations v3
-        INNER JOIN dbo.FSAGES g3 ON g3.NUMGES = v3.GES_NUMGES
-        WHERE v3.NUMDOS = e.NUMDOS AND v3.VALTYPCOD <> 'DEL'
+        -- #VS = services ayant rendu un avis (vw_FsaValidations, hors DEL)
+        SELECT STRING_AGG(vs.SERVGES, ',') AS SERVICES
+        FROM #VS vs
+        WHERE vs.NUMDOS = e.NUMDOS
     ) valserv
     OUTER APPLY (
-        SELECT TOP 1 v4.NUMDOS
-        FROM dbo.FSAVALID v4
-        WHERE v4.NUMDOS = e.NUMDOS AND v4.VALTYPCOD = 'REF'
-    ) refval
+        SELECT
+            COUNT(*) AS REQ_COUNT,
+            COUNT(vs.SERVGES) AS DONE_COUNT,
+            MAX(CASE WHEN m.SERVGES = @MYSERVGES_VAL THEN 1 ELSE 0 END) AS MY_REQ
+        FROM #MSV m
+        LEFT JOIN #VS vs ON vs.NUMDOS = m.NUMDOS AND vs.SERVGES = m.SERVGES
+        WHERE m.NUMDOS = e.NUMDOS
+    ) msv
     WHERE (@DELETED_VAL IS NULL OR e.DELETED = @DELETED_VAL)
       AND (
             @CODETA_VAL IS NULL
             OR (@INVERT_CODETA_VAL = 1 AND cs.CODETA <> @CODETA_VAL)
             OR (@INVERT_CODETA_VAL = 0 AND cs.CODETA = @CODETA_VAL)
           )
-      ${extraWhere ? `AND (${extraWhere})` : ""}
-    ORDER BY e.CREDAT DESC;
+      ${extraWhere ? `AND (${extraWhere})` : ""};
+
+    -- Page demandée, complétée des colonnes d'affichage
+    SELECT
+        f.ENT_NUMDOS, f.ENT_NOMDOS, f.ENT_NOTDOS, f.ENT_CODETA, f.ENT_DESETA,
+        f.ENT_DELETED, f.ENT_CREDAT, f.ENT_EAVDAT, f.ENT_IS_LEGACY,
+        f.ENT_GES_GESNAM, f.ENT_GES_NOMGES,
+        f.ENT_DEM_NUMDEM, f.ENT_DEM_GESNAM, f.ENT_DEM_NOMGES,
+        f.CLI_BPCNUM, f.CLI_BPCNAM, f.CLI_CLINAM, f.CLI_CLIACT, f.CLI_NOMACT,
+
+        -- Champs obligatoires (cf. FsaFolder.REQUIRED côté front) : servent
+        -- à la barre de progression de saisie des dossiers brouillons
+        f.REQ_CLI_CLICCON,
+        f.REQ_CLI_CLIPAY,
+        pr.TCLCOD     AS REQ_PRO_TCLCOD,
+        pr.ITMFMT     AS REQ_PRO_ITMFMT,
+        pr.ITMAPP     AS REQ_PRO_ITMAPP,
+        pr.ITMCEP     AS REQ_PRO_ITMCEP,
+        pr.ITMCOU     AS REQ_PRO_ITMCOU,
+        pr.ITMGAM     AS REQ_PRO_ITMGAM,
+        pr.ITMMAR     AS REQ_PRO_ITMMAR,
+        pr.ITMQUA     AS REQ_PRO_ITMQUA,
+        pr.ITMTYP     AS REQ_PRO_ITMTYP,
+        ve.DATMAD     AS REQ_VEN_DATMAD,
+        ve.VOLANN     AS REQ_VEN_VOLANN,
+        ve.PRIANN     AS REQ_VEN_PRIANN,
+        ISNULL(nom.NOM_COUNT, 0)     AS REQ_NOM_COUNT,
+
+        f.ENT_MY_VALIDATION_CODE,
+        ISNULL(pj.PJ_COUNT, 0)       AS ENT_PJ_COUNT,
+        f.ENT_VALIDATED_SERVICES,
+        CAST(CASE WHEN refval.NUMDOS IS NOT NULL THEN 1 ELSE 0 END AS BIT) AS ENT_IS_REF
+
+    FROM (
+        SELECT f.*
+        FROM #FOLDERS f
+        WHERE ${FOLDER_LIST_FILTERS}
+        ORDER BY f.F_SORTDAT DESC, f.ENT_NUMDOS DESC
+        OFFSET ISNULL(@OFFSET_VAL, 0) ROWS
+        FETCH NEXT ISNULL(@LIMIT_VAL, 2147483647) ROWS ONLY
+    ) f
+    LEFT JOIN dbo.FSAPRODUITS pr ON pr.NUMDOS = f.ENT_NUMDOS
+    LEFT JOIN dbo.FSAVENTES ve ON ve.NUMDOS = f.ENT_NUMDOS
+    OUTER APPLY (
+        -- Équivalent de FsaPRODUITS.REAL_NOMENCLATURES (ITMCAT renseigné)
+        SELECT COUNT(*) AS NOM_COUNT
+        FROM dbo.FSANOMENCLATURES n
+        WHERE n.NUMDOS = f.ENT_NUMDOS AND NULLIF(n.ITMCAT, '') IS NOT NULL
+    ) nom
+    OUTER APPLY (
+        SELECT COUNT(*) AS PJ_COUNT FROM dbo.vw_FolderFiles ff WHERE ff.NUMDOS = f.ENT_NUMDOS
+    ) pj
+    OUTER APPLY (
+        SELECT TOP 1 v4.NUMDOS
+        FROM dbo.FSAVALID v4
+        WHERE v4.NUMDOS = f.ENT_NUMDOS AND v4.VALTYPCOD = 'REF'
+    ) refval
+    ORDER BY f.F_SORTDAT DESC, f.ENT_NUMDOS DESC;
+
+    -- Compteurs : après filtres / onglet entier
+    SELECT
+        (SELECT COUNT(*) FROM #FOLDERS f WHERE ${FOLDER_LIST_FILTERS}) AS TOTAL,
+        (SELECT COUNT(*) FROM #FOLDERS) AS TOTAL_ALL;
   `;
 }
 
-export async function getFsas(USRID, type = "default") {
+/**
+ * Paramètres SQL des filtres/pagination de buildFolderListQuery.
+ *
+ * @param {object} [filters]
+ * @param {number} [filters.page]    - page 1-indexée (avec `limit`)
+ * @param {number} [filters.limit]   - taille de page ; omis = tout renvoyer
+ * @param {string} [filters.search]  - texte libre (LIKE, insensible casse/accents)
+ * @param {string[]} [filters.status]  - CODETA
+ * @param {string[]} [filters.clients] - BPCNUM
+ * @param {string[]} [filters.dems]    - NUMGES du demandeur
+ * @param {string[]} [filters.myval]   - NONE / VAL / REF / ONLY_ME
+ * @param {string} [filters.myserv]  - SERVGES de l'utilisateur (filtre "Mes validations")
+ */
+function folderListInputs(filters = {}) {
+  const { page, limit, search, status, clients, dems, myval, myserv } = filters;
+  const toJson = (list) => (list?.length ? JSON.stringify(list) : null);
+
+  return {
+    SEARCH_VAL: {
+      type: sql.NVarChar(210),
+      // [ % _ échappés : la saisie est cherchée littéralement
+      value: search ? `%${search.replace(/[[%_]/g, "[$&]")}%` : null,
+    },
+    STATUS_VAL: { type: sql.NVarChar(sql.MAX), value: toJson(status) },
+    CLIENTS_VAL: { type: sql.NVarChar(sql.MAX), value: toJson(clients) },
+    DEMS_VAL: { type: sql.NVarChar(sql.MAX), value: toJson(dems) },
+    MYVAL_VAL: { type: sql.NVarChar(sql.MAX), value: toJson(myval) },
+    MYSERVGES_VAL: { type: sql.VarChar(50), value: myserv ?? null },
+    OFFSET_VAL: {
+      type: sql.Int,
+      value: limit ? (Math.max(page ?? 1, 1) - 1) * limit : null,
+    },
+    LIMIT_VAL: { type: sql.Int, value: limit ?? null },
+  };
+}
+
+/**
+ * @returns {{ rows: object[], total: number, totalAll: number }}
+ *   rows : la page (ou tous les dossiers filtrés sans `limit`) ;
+ *   total : nombre de dossiers après filtres ; totalAll : onglet entier.
+ */
+function toFolderListResult(result) {
+  const counts = result.recordsets?.[1]?.[0] ?? {};
+  return {
+    rows: result.recordsets?.[0] ?? result.recordset ?? [],
+    total: counts.TOTAL ?? 0,
+    totalAll: counts.TOTAL_ALL ?? 0,
+  };
+}
+
+export async function getFsas(USRID, type = "default", filters = {}) {
   const filter = getTypeFilter(type);
 
   const result = await runQuery({
@@ -164,14 +356,14 @@ export async function getFsas(USRID, type = "default") {
       INVERT_CODETA_VAL: { type: sql.Bit, value: filter.INVERT_CODETA_VAL },
       DELETED_VAL: { type: sql.Bit, value: filter.DELETED_VAL },
       USRID_VAL: { type: sql.Int, value: USRID },
+      ...folderListInputs(filters),
     },
-    errorIfEmpty: "DATA_NOT_FOUND",
   });
 
-  return result.recordset;
+  return toFolderListResult(result);
 }
 
-export async function getReadOnlyFsas(type = "default") {
+export async function getReadOnlyFsas(type = "default", filters = {}) {
   const filter = getTypeFilter(type);
 
   const result = await runQuery({
@@ -186,11 +378,11 @@ export async function getReadOnlyFsas(type = "default") {
       // identique à l'ancien appel, qui ne passait pas non plus @USRID) :
       // ENT_MY_VALIDATION_CODE ressort systématiquement à NULL.
       USRID_VAL: { type: sql.Int, value: null },
+      ...folderListInputs(filters),
     },
-    errorIfEmpty: "DATA_NOT_FOUND",
   });
 
-  return result.recordset;
+  return toFolderListResult(result);
 }
 
 /**
@@ -210,7 +402,7 @@ export async function getReadOnlyFsas(type = "default") {
  * On appelle désormais directement la requête liste, comme les deux autres
  * fonctions de ce bloc.
  */
-export async function getMyFsas(NUMGES, type = "default") {
+export async function getMyFsas(NUMGES, type = "default", filters = {}) {
   const gest = await getGestionnaire(NUMGES);
   if (!gest) throw new Error("DATA_NOT_FOUND");
 
@@ -233,11 +425,87 @@ export async function getMyFsas(NUMGES, type = "default") {
       DELETED_VAL: { type: sql.Bit, value: filter.DELETED_VAL },
       NUMGES_VAL: { type: sql.VarChar(15), value: NUMGES },
       USRID_VAL: { type: sql.Int, value: null },
+      ...folderListInputs(filters),
     },
-    errorIfEmpty: "DATA_NOT_FOUND",
   });
 
-  return result.recordset;
+  return toFolderListResult(result);
+}
+
+/**
+ * Options des filtres de la liste (statuts, clients, demandeurs), calculées
+ * sur TOUS les dossiers de l'onglet — la liste n'en charge qu'une page.
+ *
+ * MYVAL_COUNT : nombre de dossiers de l'onglet que le service `myserv` doit
+ * valider (affichage du filtre "Mes validations").
+ */
+export async function getFolderFilters(type = "default", myserv = null) {
+  const filter = getTypeFilter(type);
+
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    key: `fsa.getFolderFilters.${type}`,
+    query: `
+      SET NOCOUNT ON;
+
+      SELECT e.NUMDOS, e.NUMDEM, cs.CODETA, cs.DESETA
+      INTO #TAB
+      FROM dbo.FSAENT e
+      INNER JOIN dbo.vw_FsaCurrentStatus cs ON cs.NUMDOS = e.NUMDOS
+      WHERE (@DELETED_VAL IS NULL OR e.DELETED = @DELETED_VAL)
+        AND (
+              @CODETA_VAL IS NULL
+              OR (@INVERT_CODETA_VAL = 1 AND cs.CODETA <> @CODETA_VAL)
+              OR (@INVERT_CODETA_VAL = 0 AND cs.CODETA = @CODETA_VAL)
+            );
+
+      -- Un libellé par CODETA : pour ARC, vw_FsaCurrentStatus renvoie
+      -- Validé/Refusé selon le dossier, on garde le libellé de FSASTA
+      SELECT t.CODETA, COALESCE(MAX(s.DESETA), MAX(t.DESETA)) AS DESETA
+      FROM #TAB t
+      LEFT JOIN dbo.FSASTA s ON s.CODETA = t.CODETA
+      GROUP BY t.CODETA
+      ORDER BY DESETA;
+
+      -- Un libellé par code client (le plus fréquent)
+      SELECT c.BPCNUM, MAX(c.BPCNAM) AS BPCNAM
+      FROM #TAB t
+      INNER JOIN dbo.FSACLIENTS c ON c.NUMDOS = t.NUMDOS
+      WHERE NULLIF(c.BPCNUM, '') IS NOT NULL
+      GROUP BY c.BPCNUM
+      ORDER BY MAX(c.BPCNAM), c.BPCNUM;
+
+      -- Libellé = titulaire actuel du poste, à défaut le nom du gestionnaire
+      SELECT d.NUMGES,
+             COALESCE(NULLIF(CONCAT(u.LSTNAM, ' ', u.FSTNAM), ' '), g.NOMGES, d.NUMGES) AS GESNAM
+      FROM (SELECT DISTINCT NUMDEM AS NUMGES FROM #TAB WHERE NUMDEM IS NOT NULL) d
+      LEFT JOIN dbo.FSAGES g ON g.NUMGES = d.NUMGES
+      OUTER APPLY (
+          SELECT TOP 1 us.LSTNAM, us.FSTNAM
+          FROM USERSMANAGER.dbo.POSITIONS p
+          INNER JOIN USERSMANAGER.dbo.USERS us ON us.POSID = p.POSID
+          WHERE p.POSCOD = d.NUMGES
+          ORDER BY us.USRID
+      ) u
+      ORDER BY GESNAM;
+
+      SELECT COUNT(DISTINCT mv.NUMDOS) AS MYVAL_COUNT
+      FROM dbo.vw_FsaServicesMustValidate mv
+      INNER JOIN #TAB t ON t.NUMDOS = mv.NUMDOS
+      WHERE mv.SERVGES = @MYSERVGES_VAL;
+    `,
+    inputs: {
+      CODETA_VAL: { type: sql.VarChar(15), value: filter.CODETA_VAL },
+      INVERT_CODETA_VAL: { type: sql.Bit, value: filter.INVERT_CODETA_VAL },
+      DELETED_VAL: { type: sql.Bit, value: filter.DELETED_VAL },
+      MYSERVGES_VAL: { type: sql.VarChar(50), value: myserv ?? null },
+    },
+  });
+
+  const [STATUS = [], CLIENTS = [], DEMS = [], counts = []] =
+    result.recordsets ?? [];
+
+  return { STATUS, CLIENTS, DEMS, MYVAL_COUNT: counts[0]?.MYVAL_COUNT ?? 0 };
 }
 
 /* -------------------------------------------------------------------------- */
