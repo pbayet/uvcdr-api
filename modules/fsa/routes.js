@@ -58,6 +58,20 @@ router.get("/relaunch/test", async (req, res, next) => {
 /*                                    GETS                                    */
 /* -------------------------------------------------------------------------- */
 
+// Titre d'un lien externe (Drive...) pour préremplir son nom — cf.
+// modules/fsa/linkTitle.js (protections SSRF).
+router.get(
+  "/liens/titre",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.getLienTitre(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.get(
   "/",
   authMiddlewares.authVerifyMiddleware,

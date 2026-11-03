@@ -51,8 +51,8 @@ export const folderByMrvSchema = z.object({
 });
 
 export const cavesQuerySchema = z.object({
-  ASCCI: z.string().trim().min(1).nullish(),
-  NUMFOURN: z.string().trim().min(1).nullish(),
+  ASCCI: z.string().trim().nullish(),
+  NUMFOURN: z.string().trim().nullish(),
 });
 
 export const responsesQuerySchema = z.object({

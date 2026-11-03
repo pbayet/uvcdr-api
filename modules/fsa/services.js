@@ -70,6 +70,20 @@ function getTypeFilter(type) {
 // (APP_FSA.dbo.FSA_SuiviDossier, cf. sql/FSA.reprise_APP_FSA.sql)
 const LEGACY_APPVRS = "REPRISE-APP_FSA";
 
+// Statut effectif d'un dossier (FSAENT e + vw_FsaCurrentStatus cs) : un
+// dossier archivé (ARC) prend son statut sous-jacent, REF si une validation
+// de refus existe, VAL sinon (cf. ENT_IS_REF / setRelEtaDos côté front).
+// Sert au filtre "Statut" : sinon l'onglet Archives ne propose que "Archivé".
+const EFFECTIVE_CODETA_SQL = `
+        CASE
+            WHEN cs.CODETA <> 'ARC' THEN cs.CODETA
+            WHEN EXISTS (
+                SELECT 1 FROM dbo.FSAVALID r
+                WHERE r.NUMDOS = e.NUMDOS AND r.VALTYPCOD = 'REF'
+            ) THEN 'REF'
+            ELSE 'VAL'
+        END`;
+
 // Filtres de la liste (recherche + selects), appliqués sur #FOLDERS (alias f).
 // Chaque paramètre NULL désactive son filtre. Les listes sont des tableaux
 // JSON (OPENJSON) plutôt que du CSV : un code client peut contenir une virgule.
@@ -85,7 +99,7 @@ const FOLDER_LIST_FILTERS = `
             f.CLI_CLINAM      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
             f.CLI_CLIACT      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
             f.ENT_DESETA      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL)
-    AND (@STATUS_VAL IS NULL OR f.ENT_CODETA IN (SELECT value FROM OPENJSON(@STATUS_VAL)))
+    AND (@STATUS_VAL IS NULL OR f.F_CODETA IN (SELECT value FROM OPENJSON(@STATUS_VAL)))
     AND (@CLIENTS_VAL IS NULL OR f.CLI_BPCNUM IN (SELECT value FROM OPENJSON(@CLIENTS_VAL)))
     AND (@DEMS_VAL IS NULL OR f.ENT_DEM_NUMDEM IN (SELECT value FROM OPENJSON(@DEMS_VAL)))
     AND (@MYVAL_VAL IS NULL OR (
@@ -174,6 +188,7 @@ function buildFolderListQuery(extraWhere = "") {
         ISNULL(valserv.SERVICES, '') AS ENT_VALIDATED_SERVICES,
 
         COALESCE(cs.EAVDAT, e.CREDAT) AS F_SORTDAT,
+        ${EFFECTIVE_CODETA_SQL} AS F_CODETA,
         CAST(ISNULL(msv.MY_REQ, 0) AS BIT) AS F_MY_REQUIRED,
         CASE WHEN myval.VALTYPCOD IN ('VAL', 'REF') THEN myval.VALTYPCOD ELSE 'NONE' END AS F_MY_CODE,
         CAST(CASE
@@ -277,8 +292,13 @@ function buildFolderListQuery(extraWhere = "") {
         FROM dbo.FSANOMENCLATURES n
         WHERE n.NUMDOS = f.ENT_NUMDOS AND NULLIF(n.ITMCAT, '') IS NOT NULL
     ) nom
+    -- Fichiers + liens externes (FSALIENS) : un lien compte comme une PJ
+    -- (règle "pièce jointe obligatoire" côté front, cf. FsaFolder.havePJ).
     OUTER APPLY (
-        SELECT COUNT(*) AS PJ_COUNT FROM dbo.vw_FolderFiles ff WHERE ff.NUMDOS = f.ENT_NUMDOS
+        SELECT
+            (SELECT COUNT(*) FROM dbo.vw_FolderFiles ff WHERE ff.NUMDOS = f.ENT_NUMDOS)
+          + (SELECT COUNT(*) FROM dbo.FSALIENS li WHERE li.NUMDOS = f.ENT_NUMDOS AND li.NUMGES IS NULL)
+            AS PJ_COUNT
     ) pj
     OUTER APPLY (
         SELECT TOP 1 v4.NUMDOS
@@ -448,7 +468,7 @@ export async function getFolderFilters(type = "default", myserv = null) {
     query: `
       SET NOCOUNT ON;
 
-      SELECT e.NUMDOS, e.NUMDEM, cs.CODETA, cs.DESETA
+      SELECT e.NUMDOS, e.NUMDEM, ${EFFECTIVE_CODETA_SQL} AS CODETA, cs.DESETA
       INTO #TAB
       FROM dbo.FSAENT e
       INNER JOIN dbo.vw_FsaCurrentStatus cs ON cs.NUMDOS = e.NUMDOS
@@ -459,8 +479,8 @@ export async function getFolderFilters(type = "default", myserv = null) {
               OR (@INVERT_CODETA_VAL = 0 AND cs.CODETA = @CODETA_VAL)
             );
 
-      -- Un libellé par CODETA : pour ARC, vw_FsaCurrentStatus renvoie
-      -- Validé/Refusé selon le dossier, on garde le libellé de FSASTA
+      -- Un libellé par CODETA (statut effectif : un archivé est REF/VAL),
+      -- celui de FSASTA en priorité
       SELECT t.CODETA, COALESCE(MAX(s.DESETA), MAX(t.DESETA)) AS DESETA
       FROM #TAB t
       LEFT JOIN dbo.FSASTA s ON s.CODETA = t.CODETA
@@ -689,6 +709,23 @@ const FOLDER_PJS_QUERY = `
     WHERE NUMDOS = @NUMDOS;
 `;
 
+// Liens externes (Drive, SharePoint...) — cf. sql/03 et 04_FSALIENS*.sql.
+// NUMGES NULL = lien du dossier ; renseigné = lien de la pré-validation de
+// ce gestionnaire (même clé que les fichiers de validation, NUMDOS/NUMGES).
+const FOLDER_LIENS_QUERY = `
+    SELECT LIENID, NUMDOS, LIENURL, LIENNOM, CREUSR, CREDAT
+    FROM dbo.FSALIENS
+    WHERE NUMDOS = @NUMDOS AND NUMGES IS NULL
+    ORDER BY LIENID;
+`;
+
+const VALIDATION_LIENS_QUERY = `
+    SELECT LIENID, NUMDOS, NUMGES, LIENURL, LIENNOM, CREUSR, CREDAT
+    FROM dbo.FSALIENS
+    WHERE NUMDOS = @NUMDOS AND NUMGES IS NOT NULL
+    ORDER BY LIENID;
+`;
+
 const FOLDER_VALIDATIONS_QUERY = `
     SELECT
         VALIDID     AS VAL_VALIDID,
@@ -754,8 +791,15 @@ const FOLDER_VALIDATIONS_FILES_QUERY = `
 export async function getFsa(NUMDOS) {
   const inputs = { NUMDOS: { type: sql.VarChar(50), value: NUMDOS } };
 
-  const [header, nomenclatures, pjs, validations, validationsPjs] =
-    await Promise.all([
+  const [
+    header,
+    nomenclatures,
+    pjs,
+    liens,
+    validations,
+    validationsPjs,
+    validationsLiens,
+  ] = await Promise.all([
       runQuery({
         moduleUrl: import.meta.url,
         key: "fsa.getFsa.header",
@@ -777,6 +821,12 @@ export async function getFsa(NUMDOS) {
       }),
       runQuery({
         moduleUrl: import.meta.url,
+        key: "fsa.getFsa.liens",
+        query: FOLDER_LIENS_QUERY,
+        inputs,
+      }),
+      runQuery({
+        moduleUrl: import.meta.url,
         key: "fsa.getFsa.validations",
         query: FOLDER_VALIDATIONS_QUERY,
         inputs,
@@ -787,14 +837,22 @@ export async function getFsa(NUMDOS) {
         query: FOLDER_VALIDATIONS_FILES_QUERY,
         inputs,
       }),
+      runQuery({
+        moduleUrl: import.meta.url,
+        key: "fsa.getFsa.validations.liens",
+        query: VALIDATION_LIENS_QUERY,
+        inputs,
+      }),
     ]);
 
   return {
     header: header.recordset,
     nomenclatures: nomenclatures.recordset,
     pjs: pjs.recordset,
+    liens: liens.recordset,
     validations: validations.recordset,
     validationsPjs: validationsPjs.recordset,
+    validationsLiens: validationsLiens.recordset,
   };
 }
 
@@ -1887,6 +1945,73 @@ export async function delsertPjs(NUMDOS, FSAPJS = []) {
       requestInsert.input(`PJC${i}`, sql.NVarChar(50), generatePjc());
       requestInsert.input(`PJN${i}`, sql.NVarChar(255), pj.PJN ?? null);
       requestInsert.input(`PJL${i}`, sql.NVarChar(4000), pj.PJL ?? null);
+    });
+
+    await requestInsert.query(insertQuery);
+
+    await transaction.commit();
+    return true;
+  } catch (err) {
+    await transaction.rollback();
+    throw err;
+  }
+}
+
+/**
+ * Supprime tous les liens externes d'un NUMDOS (du dossier, ou de la
+ * pré-validation d'un gestionnaire si NUMGES est fourni) puis insère la
+ * nouvelle liste, dans une seule transaction (même principe que delsertPjs).
+ * Le front envoie toujours la liste complète.
+ *
+ * @param {string} NUMDOS
+ * @param {Array<{LIENURL: string, LIENNOM?: string|null}>} FSALIENS
+ * @param {string|null} CREUSR
+ * @param {string|null} NUMGES - null = liens du dossier
+ * @returns {Promise<boolean>}
+ */
+export async function delsertLiens(
+  NUMDOS,
+  FSALIENS = [],
+  CREUSR = null,
+  NUMGES = null,
+) {
+  if (!NUMDOS) throw new Error("MISSING_PARAMETERS");
+  if (!Array.isArray(FSALIENS)) throw new Error("MISSING_PARAMETERS");
+
+  const db = getDbConnexion(import.meta.url);
+  const transaction = new sql.Transaction(db);
+
+  try {
+    await transaction.begin();
+
+    const requestDelete = new sql.Request(transaction);
+    requestDelete.input("NUMDOS", sql.VarChar(50), NUMDOS);
+    requestDelete.input("NUMGES", sql.VarChar(15), NUMGES);
+    await requestDelete.query(
+      `DELETE FROM [dbo].[FSALIENS]
+       WHERE [NUMDOS] = @NUMDOS
+         AND ((@NUMGES IS NULL AND [NUMGES] IS NULL) OR [NUMGES] = @NUMGES);`,
+    );
+
+    if (FSALIENS.length === 0) {
+      await transaction.commit();
+      return true;
+    }
+
+    const requestInsert = new sql.Request(transaction);
+    requestInsert.input("NUMDOS", sql.VarChar(50), NUMDOS);
+    requestInsert.input("CREUSR", sql.NVarChar(50), CREUSR);
+    requestInsert.input("NUMGES", sql.VarChar(15), NUMGES);
+
+    const insertQuery = `
+      INSERT INTO [dbo].[FSALIENS] ([NUMDOS], [NUMGES], [LIENURL], [LIENNOM], [CREUSR])
+      VALUES
+      ${FSALIENS.map((_, i) => `(@NUMDOS, @NUMGES, @LIENURL${i}, @LIENNOM${i}, @CREUSR)`).join(",")}
+    ;`;
+
+    FSALIENS.forEach((lien, i) => {
+      requestInsert.input(`LIENURL${i}`, sql.NVarChar(2000), lien.LIENURL);
+      requestInsert.input(`LIENNOM${i}`, sql.NVarChar(255), lien.LIENNOM ?? null);
     });
 
     await requestInsert.query(insertQuery);

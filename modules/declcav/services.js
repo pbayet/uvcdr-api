@@ -123,24 +123,33 @@ export async function getTypesCaves() {
 ───────────────────────────────────────────── */
 
 export async function getCaves(ASCCI, NUMFOURN) {
-  const filtered = !!ASCCI && !!NUMFOURN;
+  const ascci = String(ASCCI ?? "").trim();
+  const numfourn = String(NUMFOURN ?? "").trim();
+
+  let where = "";
+
+  if (ascci && numfourn) {
+    where = `
+      WHERE ACCIID = CONCAT(@ASCCI, @NUMFOURN)
+         OR CODACCI = @ASCCI
+    `;
+  } else if (ascci) {
+    where = "WHERE CODACCI = @ASCCI";
+  } else if (numfourn) {
+    where = "WHERE CDFRX3 = @NUMFOURN";
+  }
 
   const result = await runQuery({
     moduleUrl: import.meta.url,
-    key: `declcav.getCaves.${filtered}`,
-    query: filtered
-      ? `
+    key: `declcav.getCaves.${!!ascci}.${!!numfourn}`,
+    query: `
       SELECT *
       FROM V_CAVES
-      WHERE ACCIID = CONCAT(@ASCCI, @NUMFOURN) OR CODACCI = @ASCCI
-      `
-      : `
-      SELECT *
-      FROM V_CAVES
-      `,
+      ${where}
+    `,
     inputs: {
-      ASCCI: { type: sql.NVarChar, value: ASCCI },
-      NUMFOURN: { type: sql.NVarChar, value: NUMFOURN },
+      ASCCI: { type: sql.NVarChar, value: ascci },
+      NUMFOURN: { type: sql.NVarChar, value: numfourn },
     },
   });
 

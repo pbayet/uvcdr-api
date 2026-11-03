@@ -2,6 +2,7 @@ import * as services from "./services.js";
 import * as utils from "./utils.js";
 import * as requestUtils from "../../core/utils/request.utils.js";
 import * as v from "./validators.js";
+import { getLinkTitle } from "./linkTitle.js";
 import * as usersmanagerService from "../usersmanager/services.js";
 import * as usersmanagerUtils from "../usersmanager/utils.js";
 import * as dwhbiService from "../dwhbi/services.js";
@@ -825,6 +826,15 @@ export async function getValTypes() {
   return services.getValTypes();
 }
 
+/** Titre de la page d'un lien externe (préremplit le nom, cf. linkTitle.js). */
+export async function getLienTitre(req) {
+  const { url } = v.lienTitreQuerySchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  return { TITLE: await getLinkTitle(url) };
+}
+
 export async function getValDelays() {
   return services.getValDelays();
 }
@@ -1020,13 +1030,24 @@ export async function duplicateFsa(req) {
 }
 
 export async function postValidation(req) {
-  const { NUMDOS, VALTYPCOD, VALNOT } = v.validationCreateSchema.parse(
+  const {
+    NUMDOS,
+    VALTYPCOD,
+    VALNOT,
+    LIENS_STRINGIFY: LIENS,
+  } = v.validationCreateSchema.parse(
     (await requestUtils.getRequestParams(req)).params,
   );
 
   const { CREUSR, NUMGES } = getUserIdentity(req);
 
   await services.postValidation(NUMDOS, VALTYPCOD, VALNOT, NUMGES, CREUSR);
+
+  // Liens de la pré-validation, rattachés au gestionnaire (même clé que ses
+  // fichiers) ; absents de la requête = inchangés.
+  if (LIENS) {
+    await services.delsertLiens(NUMDOS, LIENS, CREUSR, NUMGES);
+  }
 
   const gestsMustValidate = await services.getGestsMustValidateByNumDos(NUMDOS);
   const formattedGestsMustValidate =
@@ -1189,12 +1210,20 @@ export async function patchFsa(req) {
     FSACLIENT_STRINGIFY: FSACLIENT,
     FSAPRODUITS_STRINGIFY: FSAPRODUITS,
     FSAVENTES_STRINGIFY: FSAVENTES,
+    FSALIENS_STRINGIFY: FSALIENS,
     EAV,
   } = v.fsaPatchSchema.parse((await requestUtils.getRequestParams(req)).params);
 
   const FSANOMENCLATURES = FSAPRODUITS?.NOMENCLATURES;
 
   await services.patchFsaEnt(NUMDOS, ENT_NOMDOS, ENT_NOTDOS, EAV);
+
+  // Liste complète des liens (éventuellement vide = tout supprimer) ;
+  // absente de la requête = liens inchangés.
+  if (FSALIENS) {
+    const { CREUSR } = getUserIdentity(req);
+    await services.delsertLiens(NUMDOS, FSALIENS, CREUSR);
+  }
 
   if (FSAPRODUITS) {
     await services.upsertProduct(NUMDOS, FSAPRODUITS);
@@ -1345,6 +1374,8 @@ export async function deleteValidation(req) {
   const { CREUSR, NUMGES } = getUserIdentity(req);
 
   await services.postValidation(NUMDOS, "DEL", "", NUMGES, CREUSR);
+  // Une validation supprimée repart de zéro : ses liens aussi.
+  await services.delsertLiens(NUMDOS, [], CREUSR, NUMGES);
   return true;
 }
 

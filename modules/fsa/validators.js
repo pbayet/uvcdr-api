@@ -127,10 +127,26 @@ export const fsaDuplicateSchema = z.object({
    VALIDATIONS
 ───────────────────────────────────────────── */
 
+// Lien externe (Drive, SharePoint...) — cf. sql/03_FSALIENS.table.sql.
+// Seuls http(s) sont acceptés : le lien est ouvert tel quel côté front.
+const lienLineSchema = z.object({
+  LIENURL: z
+    .string()
+    .trim()
+    .max(2000, "Le lien est trop long (2000 caractères max).")
+    .url("Le lien n'est pas une URL valide.")
+    .refine((url) => /^https?:\/\//i.test(url), {
+      message: "Le lien doit commencer par http:// ou https://.",
+    }),
+  LIENNOM: z.string().trim().max(255).nullish(),
+});
+
 export const validationCreateSchema = z.object({
   NUMDOS: z.string().trim().min(1, "NUMDOS est obligatoire."),
   VALTYPCOD: z.string().trim().min(1, "VALTYPCOD est obligatoire.").max(15),
   VALNOT: z.string().trim().nullish(),
+  /** Liste COMPLÈTE des liens de cette pré-validation (remplace l'existant). */
+  LIENS_STRINGIFY: jsonArray(lienLineSchema),
 });
 
 export const validationDeleteSchema = z.object({
@@ -279,7 +295,15 @@ export const fsaPatchSchema = z.object({
   FSAPRODUITS_STRINGIFY: jsonObject(produitSchema),
   FSAVENTES_STRINGIFY: jsonObject(venteSchema),
   FSAPJS_STRINGIFY: jsonArray(pjLineSchema),
-  EAV: z.coerce.boolean().optional().default(false),
+  /** Liste COMPLÈTE des liens du dossier (remplace l'existant) ; absente =
+   * liens inchangés. */
+  FSALIENS_STRINGIFY: jsonArray(lienLineSchema),
+  EAV:z.coerce.boolean().optional().default(false),
+});
+
+// GET /fsa/liens/titre?url=... — même contrôle d'URL que pour l'enregistrement.
+export const lienTitreQuerySchema = z.object({
+  url: lienLineSchema.shape.LIENURL,
 });
 
 export const fsaNotesPatchSchema = z.object({

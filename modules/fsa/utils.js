@@ -166,9 +166,20 @@ function mapFolder(row, mustValidateMap) {
     },
 
     FSAPJS: [],
+    FSALIENS: [],
     FSAVALIDS: [],
   };
 }
+
+const mapLienRow = (row) => ({
+  LIENID: row.LIENID,
+  NUMDOS: row.NUMDOS,
+  LIENURL: row.LIENURL,
+  LIENNOM: row.LIENNOM,
+  NUMGES: row.NUMGES ?? null,
+  CREUSR: row.CREUSR,
+  CREDAT: utcToParisIso(row.CREDAT),
+});
 
 function mapNomenclatureRow(headerRow) {
   return (row) => ({
@@ -236,6 +247,8 @@ function mapValidationRow(row) {
     // PJS toujours vide : FSAPJ n'a pas de colonne pour rattacher une pièce
     // jointe à une validation précise (cf. sql/02_views.sql).
     PJS: [],
+    // Liens de la pré-validation (FSALIENS.NUMGES), cf. formatFsasJson.
+    LIENS: [],
   };
 }
 
@@ -266,6 +279,8 @@ export function formatFsasJson(fsaData, gestsMustValidate = []) {
 
   folder.FSAPJS = formatFiles(fsaData.pjs || []);
 
+  folder.FSALIENS = (fsaData.liens || []).map(mapLienRow);
+
   const validationsPjs = formatFiles(fsaData.validationsPjs || []);
 
   folder.FSAVALIDS = uniqBy(
@@ -281,6 +296,12 @@ export function formatFsasJson(fsaData, gestsMustValidate = []) {
       v.PJS = pjs;
     });
   }
+
+  const validationsLiens = (fsaData.validationsLiens || []).map(mapLienRow);
+
+  folder.FSAVALIDS.forEach((v) => {
+    v.LIENS = validationsLiens.filter((l) => l.NUMGES === v.GEST.NUMGES);
+  });
 
   return [folder];
 }
