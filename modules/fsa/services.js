@@ -70,13 +70,56 @@ function getTypeFilter(type) {
 // (APP_FSA.dbo.FSA_SuiviDossier, cf. sql/FSA.reprise_APP_FSA.sql)
 const LEGACY_APPVRS = "REPRISE-APP_FSA";
 
-// Statut effectif d'un dossier (FSAENT e + vw_FsaCurrentStatus cs) : un
-// dossier archivé (ARC) prend son statut sous-jacent, REF si une validation
-// de refus existe, VAL sinon (cf. ENT_IS_REF / setRelEtaDos côté front).
-// Sert au filtre "Statut" : sinon l'onglet Archives ne propose que "Archivé".
+// Statut des dossiers repris, d'après les 5 validations de l'ancienne appli
+// (REPRISE_FSA_SuiviDossier, 'Non' ≈ NULL) : au moins un 'Refus' ou
+// 'Validation Partielle' -> REF, les 5 'Validé' -> VAL. Seuls les dossiers
+// tranchés sont gardés : les autres restent ARC. Matérialisé dans #LEGACY.
+const LEGACY_STATUS_SQL = `
+    SELECT NUMDOS, CODETA, DESETA
+    INTO #LEGACY
+    FROM (
+        SELECT
+            CAST(s.NumDossier AS VARCHAR(50)) AS NUMDOS,
+            CASE
+                WHEN k.NB_REF > 0 THEN 'REF'
+                WHEN k.NB_VAL = 5 THEN 'VAL'
+            END AS CODETA,
+            CASE
+                WHEN k.NB_REF > 0 THEN N'Refusé'
+                WHEN k.NB_VAL = 5 THEN N'Validé'
+            END AS DESETA
+        FROM dbo.REPRISE_FSA_SuiviDossier s
+        CROSS APPLY (
+            SELECT
+                SUM(CASE WHEN v.ETAT COLLATE French_CI_AI = N'Validé' THEN 1 ELSE 0 END) AS NB_VAL,
+                SUM(CASE WHEN v.ETAT COLLATE French_CI_AI IN (N'Refus', N'Validation Partielle') THEN 1 ELSE 0 END) AS NB_REF
+            FROM (VALUES (s.ValidDDO), (s.ValidCG), (s.ValidOENO), (s.ValidDG), (s.ValidMARK)) AS v(ETAT)
+        ) k
+        WHERE s.RN_DOUBLON = 1
+    ) x
+    WHERE CODETA IS NOT NULL;
+
+    CREATE CLUSTERED INDEX IX_LEGACY ON #LEGACY (NUMDOS);`;
+
+// Jointure #LEGACY (alias lg) sur FSAENT e + vw_FsaCurrentStatus cs : seuls
+// les dossiers repris encore archivés prennent le statut de l'ancienne appli.
+const LEGACY_JOIN_SQL = `
+    LEFT JOIN #LEGACY lg
+           ON lg.NUMDOS = e.NUMDOS
+          AND e.APPVRS = '${LEGACY_APPVRS}'
+          AND cs.CODETA = 'ARC'`;
+
+// Statut effectif d'un dossier (FSAENT e + vw_FsaCurrentStatus cs + #LEGACY
+// lg) : un dossier archivé (ARC) prend son statut sous-jacent — pour un
+// dossier repris, celui de l'ancienne appli (ARC s'il n'est pas tranché) ;
+// sinon REF si une validation de refus existe, VAL sinon (cf. ENT_IS_REF /
+// setRelEtaDos côté front). Sert au filtre "Statut" : sinon l'onglet
+// Archives ne propose que "Archivé".
 const EFFECTIVE_CODETA_SQL = `
         CASE
             WHEN cs.CODETA <> 'ARC' THEN cs.CODETA
+            WHEN lg.CODETA IS NOT NULL THEN lg.CODETA
+            WHEN e.APPVRS = '${LEGACY_APPVRS}' THEN 'ARC'
             WHEN EXISTS (
                 SELECT 1 FROM dbo.FSAVALID r
                 WHERE r.NUMDOS = e.NUMDOS AND r.VALTYPCOD = 'REF'
@@ -152,13 +195,15 @@ function buildFolderListQuery(extraWhere = "") {
 
     CREATE CLUSTERED INDEX IX_MSV ON #MSV (NUMDOS);
     CREATE CLUSTERED INDEX IX_VS ON #VS (NUMDOS);
+    ${LEGACY_STATUS_SQL}
 
     SELECT
         e.NUMDOS      AS ENT_NUMDOS,
         e.NOMDOS      AS ENT_NOMDOS,
         e.NOTDOS      AS ENT_NOTDOS,
-        cs.CODETA     AS ENT_CODETA,
-        cs.DESETA     AS ENT_DESETA,
+        -- Dossiers repris archivés : statut de l'ancienne appli (VAL / REF)
+        COALESCE(lg.CODETA, cs.CODETA) AS ENT_CODETA,
+        COALESCE(lg.DESETA, cs.DESETA) AS ENT_DESETA,
         e.DELETED     AS ENT_DELETED,
         e.CREDAT      AS ENT_CREDAT,
         cs.EAVDAT     AS ENT_EAVDAT,
@@ -189,6 +234,7 @@ function buildFolderListQuery(extraWhere = "") {
 
         COALESCE(cs.EAVDAT, e.CREDAT) AS F_SORTDAT,
         ${EFFECTIVE_CODETA_SQL} AS F_CODETA,
+        CAST(CASE WHEN lg.CODETA = 'REF' THEN 1 ELSE 0 END AS BIT) AS F_LEGACY_REF,
         CAST(ISNULL(msv.MY_REQ, 0) AS BIT) AS F_MY_REQUIRED,
         CASE WHEN myval.VALTYPCOD IN ('VAL', 'REF') THEN myval.VALTYPCOD ELSE 'NONE' END AS F_MY_CODE,
         CAST(CASE
@@ -205,6 +251,7 @@ function buildFolderListQuery(extraWhere = "") {
     LEFT JOIN USERSMANAGER.dbo.USERS uges ON uges.USRID = e.GESUSRID
     LEFT JOIN dbo.FSAGES dem ON dem.NUMGES = e.NUMDEM
     LEFT JOIN dbo.FSACLIENTS c ON c.NUMDOS = e.NUMDOS
+    ${LEGACY_JOIN_SQL}
     -- TOP 1 : un poste peut être partagé par plusieurs utilisateurs, un
     -- LEFT JOIN POSITIONS -> USERS dupliquait alors la ligne dossier
     OUTER APPLY (
@@ -274,7 +321,7 @@ function buildFolderListQuery(extraWhere = "") {
         f.ENT_MY_VALIDATION_CODE,
         ISNULL(pj.PJ_COUNT, 0)       AS ENT_PJ_COUNT,
         f.ENT_VALIDATED_SERVICES,
-        CAST(CASE WHEN refval.NUMDOS IS NOT NULL THEN 1 ELSE 0 END AS BIT) AS ENT_IS_REF
+        CAST(CASE WHEN refval.NUMDOS IS NOT NULL OR f.F_LEGACY_REF = 1 THEN 1 ELSE 0 END AS BIT) AS ENT_IS_REF
 
     FROM (
         SELECT f.*
@@ -467,11 +514,14 @@ export async function getFolderFilters(type = "default", myserv = null) {
     key: `fsa.getFolderFilters.${type}`,
     query: `
       SET NOCOUNT ON;
+      ${LEGACY_STATUS_SQL}
 
-      SELECT e.NUMDOS, e.NUMDEM, ${EFFECTIVE_CODETA_SQL} AS CODETA, cs.DESETA
+      SELECT e.NUMDOS, e.NUMDEM, ${EFFECTIVE_CODETA_SQL} AS CODETA,
+             COALESCE(lg.DESETA, cs.DESETA) AS DESETA
       INTO #TAB
       FROM dbo.FSAENT e
       INNER JOIN dbo.vw_FsaCurrentStatus cs ON cs.NUMDOS = e.NUMDOS
+      ${LEGACY_JOIN_SQL}
       WHERE (@DELETED_VAL IS NULL OR e.DELETED = @DELETED_VAL)
         AND (
               @CODETA_VAL IS NULL
