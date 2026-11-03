@@ -85,6 +85,8 @@ function mapFolder(row, mustValidateMap) {
       MODDAT: utcToParisIso(row.ENT_MODDAT),
       DELETED: toBool(row.ENT_DELETED),
       INNO: toBool(row.ENT_INNO),
+      // Dossier repris de l'ancienne application (APP_FSA)
+      IS_OLD: toBool(row.ENT_IS_OLD),
     },
 
     FSACLIENT: {
@@ -380,7 +382,7 @@ function mapFolderListItem(row, mustValidateMap) {
     IS_REF: toBool(row.ENT_IS_REF),
 
     // Dossier repris de l'ancienne application (APP_FSA)
-    IS_LEGACY: toBool(row.ENT_IS_LEGACY),
+    IS_OLD: toBool(row.ENT_IS_OLD),
 
     SRVMSTVAL: mustValidateMap.get(row.ENT_NUMDOS) || [],
   };

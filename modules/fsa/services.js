@@ -207,7 +207,7 @@ function buildFolderListQuery(extraWhere = "") {
         e.DELETED     AS ENT_DELETED,
         e.CREDAT      AS ENT_CREDAT,
         cs.EAVDAT     AS ENT_EAVDAT,
-        CAST(CASE WHEN e.APPVRS = '${LEGACY_APPVRS}' THEN 1 ELSE 0 END AS BIT) AS ENT_IS_LEGACY,
+        CAST(CASE WHEN e.APPVRS = '${LEGACY_APPVRS}' THEN 1 ELSE 0 END AS BIT) AS ENT_IS_OLD,
 
         -- Dossiers repris (sans GESUSRID ni titulaire historique du poste) :
         -- repli sur le créateur d'origine (FSAENT.CREUSR)
@@ -295,7 +295,7 @@ function buildFolderListQuery(extraWhere = "") {
     -- Page demandée, complétée des colonnes d'affichage
     SELECT
         f.ENT_NUMDOS, f.ENT_NOMDOS, f.ENT_NOTDOS, f.ENT_CODETA, f.ENT_DESETA,
-        f.ENT_DELETED, f.ENT_CREDAT, f.ENT_EAVDAT, f.ENT_IS_LEGACY,
+        f.ENT_DELETED, f.ENT_CREDAT, f.ENT_EAVDAT, f.ENT_IS_OLD,
         f.ENT_GES_GESNAM, f.ENT_GES_NOMGES,
         f.ENT_DEM_NUMDEM, f.ENT_DEM_GESNAM, f.ENT_DEM_NOMGES,
         f.CLI_BPCNUM, f.CLI_BPCNAM, f.CLI_CLINAM, f.CLI_CLIACT, f.CLI_NOMACT,
@@ -586,6 +586,7 @@ const FOLDER_HEADER_QUERY = `
     SELECT
         e.ENTID           AS ENT_ENTID,
         e.APPVRS          AS ENT_APPVRS,
+        CAST(CASE WHEN e.APPVRS = '${LEGACY_APPVRS}' THEN 1 ELSE 0 END AS BIT) AS ENT_IS_OLD,
         e.NUMDOS          AS ENT_NUMDOS,
         e.NUMDOSBAS       AS ENT_NUMDOSBAS,
         e.NOMDOS          AS ENT_NOMDOS,
