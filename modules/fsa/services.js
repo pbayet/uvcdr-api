@@ -74,7 +74,8 @@ const LEGACY_APPVRS = "REPRISE-APP_FSA";
 // (REPRISE_FSA_SuiviDossier, 'Non' ≈ NULL) : au moins un 'Refus' ou
 // 'Validation Partielle' -> REF, les 5 'Validé' -> VAL. Seuls les dossiers
 // tranchés sont gardés : les autres restent ARC. Matérialisé dans #LEGACY.
-const LEGACY_STATUS_SQL = `
+// `extraWhere` restreint la reprise lue (ex : un seul dossier pour getFsa).
+const legacyStatusSql = (extraWhere = "") => `
     SELECT NUMDOS, CODETA, DESETA
     INTO #LEGACY
     FROM (
@@ -96,10 +97,13 @@ const LEGACY_STATUS_SQL = `
             FROM (VALUES (s.ValidDDO), (s.ValidCG), (s.ValidOENO), (s.ValidDG), (s.ValidMARK)) AS v(ETAT)
         ) k
         WHERE s.RN_DOUBLON = 1
+          ${extraWhere ? `AND (${extraWhere})` : ""}
     ) x
     WHERE CODETA IS NOT NULL;
 
     CREATE CLUSTERED INDEX IX_LEGACY ON #LEGACY (NUMDOS);`;
+
+const LEGACY_STATUS_SQL = legacyStatusSql();
 
 // Jointure #LEGACY (alias lg) sur FSAENT e + vw_FsaCurrentStatus cs : seuls
 // les dossiers repris encore archivés prennent le statut de l'ancienne appli.
@@ -201,8 +205,10 @@ function buildFolderListQuery(extraWhere = "") {
         e.NUMDOS      AS ENT_NUMDOS,
         e.NOMDOS      AS ENT_NOMDOS,
         e.NOTDOS      AS ENT_NOTDOS,
-        -- Dossiers repris archivés : statut de l'ancienne appli (VAL / REF)
-        COALESCE(lg.CODETA, cs.CODETA) AS ENT_CODETA,
+        -- Dossiers repris archivés : CODETA reste ARC (comme getFsa : le
+        -- front en déduit l'onglet du dossier, cf. getRootNavigate) ; seul
+        -- le libellé prend le statut de l'ancienne appli (Validé / Refusé)
+        cs.CODETA     AS ENT_CODETA,
         COALESCE(lg.DESETA, cs.DESETA) AS ENT_DESETA,
         e.DELETED     AS ENT_DELETED,
         e.CREDAT      AS ENT_CREDAT,
@@ -582,7 +588,11 @@ export async function getFolderFilters(type = "default", myserv = null) {
 /*                     DOSSIER — Requête "détail" (un NUMDOS)                 */
 /* -------------------------------------------------------------------------- */
 
+// #LEGACY limité au dossier demandé : même statut repris que la liste.
 const FOLDER_HEADER_QUERY = `
+    SET NOCOUNT ON;
+    ${legacyStatusSql("CAST(s.NumDossier AS VARCHAR(50)) = @NUMDOS")}
+
     SELECT
         e.ENTID           AS ENT_ENTID,
         e.APPVRS          AS ENT_APPVRS,
@@ -604,7 +614,8 @@ const FOLDER_HEADER_QUERY = `
         ges.VALGES                               AS ENT_GES_VALGES,
         ges.CREGES                               AS ENT_GES_CREGES,
         ges.SERVGES                              AS ENT_GES_SERVGES,
-        CONCAT(uges.LSTNAM, ' ', uges.FSTNAM)    AS ENT_GES_GESNAM,
+        -- Dossiers repris : repli sur le créateur d'origine (cf. liste)
+        COALESCE(NULLIF(CONCAT(uges.LSTNAM, ' ', uges.FSTNAM), ' '), e.CREUSR) AS ENT_GES_GESNAM,
         ges.CREUSR                               AS ENT_GES_CREUSR,
         ges.CREDAT                               AS ENT_GES_CREDAT,
         ges.MODUSR                               AS ENT_GES_MODUSR,
@@ -618,7 +629,10 @@ const FOLDER_HEADER_QUERY = `
         dem.VALGES                               AS ENT_DEM_VALGES,
         dem.CREGES                               AS ENT_DEM_CREGES,
         dem.SERVGES                              AS ENT_DEM_SERVGES,
-        CONCAT(udem.LSTNAM, ' ', udem.FSTNAM)    AS ENT_DEM_GESNAM,
+        CASE
+            WHEN e.APPVRS = '${LEGACY_APPVRS}' THEN e.CREUSR
+            ELSE CONCAT(udem.LSTNAM, ' ', udem.FSTNAM)
+        END                                      AS ENT_DEM_GESNAM,
         dem.CREUSR                               AS ENT_DEM_CREUSR,
         dem.CREDAT                               AS ENT_DEM_CREDAT,
         dem.MODUSR                               AS ENT_DEM_MODUSR,
@@ -626,7 +640,7 @@ const FOLDER_HEADER_QUERY = `
 
         cs.STAID          AS ENT_STAID,
         cs.CODETA         AS ENT_CODETA,
-        cs.DESETA         AS ENT_DESETA,
+        COALESCE(lg.DESETA, cs.DESETA) AS ENT_DESETA,
 
         e.NOTDOS          AS ENT_NOTDOS,
         e.CREUSR          AS ENT_CREUSR,
@@ -717,6 +731,7 @@ const FOLDER_HEADER_QUERY = `
     LEFT JOIN dbo.FSAPAYS pay ON pay.CLIPAY = c.CLIPAY
     LEFT JOIN dbo.FSAPRODUITS pr ON pr.NUMDOS = e.NUMDOS
     LEFT JOIN dbo.FSAVENTES ve ON ve.NUMDOS = e.NUMDOS
+    ${LEGACY_JOIN_SQL}
     WHERE e.NUMDOS = @NUMDOS;
 `;
 

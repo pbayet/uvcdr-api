@@ -127,17 +127,22 @@ export const fsaDuplicateSchema = z.object({
    VALIDATIONS
 ───────────────────────────────────────────── */
 
-// Lien externe (Drive, SharePoint...) — cf. sql/03_FSALIENS.table.sql.
-// Seuls http(s) sont acceptés : le lien est ouvert tel quel côté front.
+// Lien externe (Drive, SharePoint...) ou fichier local / réseau
+// (K:\..., \\serveur\partage\..., envoyé par le front en URL file://) —
+// cf. sql/03_FSALIENS.table.sql.
+// Seuls http(s) et file:// sont acceptés : le lien est ouvert tel quel côté
+// front (un file:// est affiché dans la visionneuse avec son chemin à copier).
+const lienUrlBase = z
+  .string()
+  .trim()
+  .max(2000, "Le lien est trop long (2000 caractères max).")
+  .url("Le lien n'est pas une URL valide.");
+
 const lienLineSchema = z.object({
-  LIENURL: z
-    .string()
-    .trim()
-    .max(2000, "Le lien est trop long (2000 caractères max).")
-    .url("Le lien n'est pas une URL valide.")
-    .refine((url) => /^https?:\/\//i.test(url), {
-      message: "Le lien doit commencer par http:// ou https://.",
-    }),
+  LIENURL: lienUrlBase.refine((url) => /^(https?|file):\/\//i.test(url), {
+    message:
+      "Le lien doit commencer par http://, https:// ou file:// (chemin de fichier).",
+  }),
   LIENNOM: z.string().trim().max(255).nullish(),
 });
 
@@ -301,9 +306,12 @@ export const fsaPatchSchema = z.object({
   EAV:z.coerce.boolean().optional().default(false),
 });
 
-// GET /fsa/liens/titre?url=... — même contrôle d'URL que pour l'enregistrement.
+// GET /fsa/liens/titre?url=... — http(s) uniquement : le serveur va chercher
+// la page, il ne doit jamais lire un fichier local / réseau (file://).
 export const lienTitreQuerySchema = z.object({
-  url: lienLineSchema.shape.LIENURL,
+  url: lienUrlBase.refine((url) => /^https?:\/\//i.test(url), {
+    message: "Le lien doit commencer par http:// ou https://.",
+  }),
 });
 
 export const fsaNotesPatchSchema = z.object({
