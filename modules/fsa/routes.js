@@ -77,8 +77,6 @@ router.get(
   authMiddlewares.authVerifyMiddleware,
   async (req, res, next) => {
     try {
-      console.log("Ceci est un test pour la production");
-      console.log("Et ça c'est un 2eme test pour un 2eme commit");
       res.json(await controllers.getFsas(req));
     } catch (err) {
       next(err);
