@@ -166,3 +166,60 @@ describe("modules/usersmanager/controllers :: getLastVersionDetails", () => {
     await expect(controllers.getLastVersionDetails(buildReq())).rejects.toThrow("DATA_NOT_FOUND");
   });
 });
+
+describe("modules/usersmanager/controllers :: getAppVersions", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("exige APPCOD", async () => {
+    await expect(controllers.getAppVersions(buildReq({ query: {} }))).rejects.toThrow();
+  });
+
+  it("regroupe les lignes par version (VID), dans l'ordre renvoyé", async () => {
+    const base = { APPCOD: "USRMAN", CREUSR_ID: 1, CREUSR_LNAME: "B", CREUSR_FNAME: "P" };
+    services.getAppVersions.mockResolvedValue([
+      { ...base, VID: 2, VNUM: "1.3.1", CID: 10, CTYPE: "ADDED", CTITLE: "a" },
+      { ...base, VID: 2, VNUM: "1.3.1", CID: 11, CTYPE: "FIX", CTITLE: "b" },
+      { ...base, VID: 1, VNUM: "1.3.0", CID: null },
+    ]);
+
+    const result = await controllers.getAppVersions(buildReq({ query: { APPCOD: "USRMAN" } }));
+
+    expect(services.getAppVersions).toHaveBeenCalledWith("USRMAN");
+    expect(result.map((v) => v.VID)).toEqual([2, 1]);
+    expect(result[0].CHANGES).toHaveLength(2);
+    expect(result[1].CHANGES).toHaveLength(0);
+  });
+});
+
+describe("modules/usersmanager/controllers :: setLastVersion / deleteAppVersion", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it("transmet le VID (modification d'une version existante)", async () => {
+    services.insertAppVersion.mockResolvedValue({ VID: 5, VNUM: "1.0.1", CHANGES: [] });
+
+    await controllers.setLastVersion(
+      buildReq({ body: { VID: "5", APPCOD: "USRMAN", VNUM: "1.0.1", CHANGES: "[]" } }),
+    );
+
+    expect(services.insertAppVersion).toHaveBeenCalledWith(1, "USRMAN", "1.0.1", null, null, [], 5);
+  });
+
+  it("VID absent : création / mise à jour par APPCOD + VNUM (comportement historique)", async () => {
+    services.insertAppVersion.mockResolvedValue({ VID: 6, VNUM: "2.0.0", CHANGES: [] });
+
+    await controllers.setLastVersion(buildReq({ body: { APPCOD: "USRMAN", VNUM: "2.0.0" } }));
+
+    expect(services.insertAppVersion).toHaveBeenCalledWith(1, "USRMAN", "2.0.0", null, null, [], null);
+  });
+
+  it("supprime la version demandée", async () => {
+    services.deleteAppVersion.mockResolvedValue(true);
+
+    await expect(controllers.deleteAppVersion(buildReq({ body: { VID: 7 } }))).resolves.toBe(true);
+    expect(services.deleteAppVersion).toHaveBeenCalledWith(7);
+  });
+
+  it("deleteAppVersion exige VID", async () => {
+    await expect(controllers.deleteAppVersion(buildReq({ body: {} }))).rejects.toThrow();
+  });
+});
