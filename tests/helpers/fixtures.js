@@ -36,7 +36,9 @@ export function buildRawUserRow(overrides = {}) {
     SERVICE: JSON.stringify({
       SRVID: 10,
       SRVNAM: "Support",
-      POSITIONS: JSON.stringify([{ POSNAM: "Technicien", POSCOD: "TECH", POSLVL: 3 }]),
+      POSITIONS: JSON.stringify([
+        { POSNAM: "Technicien", POSCOD: "TECH", POSLVL: 3 },
+      ]),
     }),
     PERMISSIONS: JSON.stringify([
       {
