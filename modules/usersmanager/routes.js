@@ -318,7 +318,6 @@ router.get(
   authMiddlewares.authVerifyMiddleware,
   async (req, res, next) => {
     try {
-      console.log("test");
       res.json(await controllers.getAppVersions(req));
     } catch (err) {
       next(err);
