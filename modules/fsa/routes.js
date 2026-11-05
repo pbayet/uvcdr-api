@@ -77,7 +77,6 @@ router.get(
   authMiddlewares.authVerifyMiddleware,
   async (req, res, next) => {
     try {
-      console.log("GET /fsa/ — req.query:", req.query);
       res.json(await controllers.getFsas(req));
     } catch (err) {
       next(err);
