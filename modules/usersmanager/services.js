@@ -920,6 +920,11 @@ export async function delsertUserMailCopies(USRID, SRCUSRIDS) {
  *   sont remplacés que s'ils sont fournis, CREUSR est conservé, et les
  *   changements sont intégralement remplacés (DELETE puis INSERT).
  *
+ * - VID fourni (écran Applications > Versions de users-manager) : la version
+ *   ciblée est mise à jour, y compris son numéro VNUM (renommage) ; erreur
+ *   DATA_NOT_FOUND si elle n'existe pas pour APPCOD, et
+ *   APP_VERSION_ALREADY_EXISTS si le nouveau VNUM est pris par une autre.
+ *
  * Retourne la version (+ UPDATED = 1 si elle existait déjà) et ses CHANGES.
  */
 export async function insertAppVersion(
@@ -929,8 +934,11 @@ export async function insertAppVersion(
   RELEASEDTE,
   SUMMARY,
   CHANGES,
+  VID = null,
 ) {
-  const result = await runQuery({
+  let result;
+  try {
+    result = await runQuery({
     moduleUrl: import.meta.url,
     query: `
     SET NOCOUNT ON;
@@ -942,12 +950,32 @@ export async function insertAppVersion(
       DECLARE @VID INT;
       DECLARE @UPDATED BIT = 0;
 
-      -- Verrou jusqu'à la fin de la transaction : deux publications
-      -- simultanées de la même version ne peuvent pas créer de doublon.
-      SELECT TOP (1) @VID = VID
-      FROM dbo.APPSVERSIONS WITH (UPDLOCK, HOLDLOCK)
-      WHERE APPCOD = @APPCOD AND VNUM = @VNUM
-      ORDER BY VID DESC;
+      IF @VIDIN IS NOT NULL
+      BEGIN
+        SELECT @VID = VID
+        FROM dbo.APPSVERSIONS WITH (UPDLOCK, HOLDLOCK)
+        WHERE VID = @VIDIN AND APPCOD = @APPCOD;
+
+        IF @VID IS NULL
+          THROW 50180, 'Version introuvable.', 1;
+
+        IF EXISTS (
+          SELECT 1 FROM dbo.APPSVERSIONS WITH (UPDLOCK, HOLDLOCK)
+          WHERE APPCOD = @APPCOD AND VNUM = @VNUM AND VID <> @VID
+        )
+          THROW 50181, 'Numéro de version déjà utilisé.', 1;
+
+        UPDATE dbo.APPSVERSIONS SET VNUM = @VNUM WHERE VID = @VID;
+      END
+      ELSE
+      BEGIN
+        -- Verrou jusqu'à la fin de la transaction : deux publications
+        -- simultanées de la même version ne peuvent pas créer de doublon.
+        SELECT TOP (1) @VID = VID
+        FROM dbo.APPSVERSIONS WITH (UPDLOCK, HOLDLOCK)
+        WHERE APPCOD = @APPCOD AND VNUM = @VNUM
+        ORDER BY VID DESC;
+      END;
 
       IF @VID IS NULL
       BEGIN
@@ -999,6 +1027,7 @@ export async function insertAppVersion(
     END CATCH;
     `,
     inputs: {
+      VIDIN: { type: sql.Int, value: VID ?? null },
       APPCOD: { type: sql.NVarChar(20), value: APPCOD },
       VNUM: { type: sql.NVarChar(20), value: VNUM },
       RELEASEDTE: { type: sql.DateTime2(3), value: RELEASEDTE ?? null },
@@ -1009,12 +1038,91 @@ export async function insertAppVersion(
         value: CHANGES?.length ? JSON.stringify(CHANGES) : null,
       },
     },
-  });
+    });
+  } catch (err) {
+    throw toVersionError(err);
+  }
 
   const version = result?.recordsets?.[0]?.[0];
   if (!version) return null;
 
   return { ...version, CHANGES: result?.recordsets?.[1] ?? [] };
+}
+
+// THROW 5018x des requêtes de versions -> clés du registre d'erreurs.
+const VERSION_SQL_ERRORS = {
+  50180: "DATA_NOT_FOUND",
+  50181: "APP_VERSION_ALREADY_EXISTS",
+};
+
+function toVersionError(err) {
+  const key = VERSION_SQL_ERRORS[err?.number];
+  return key ? new Error(key) : err;
+}
+
+/**
+ * Toutes les versions d'une application (plus récente d'abord), lignes
+ * brutes de V_App_Versions_Details (une ligne par changement) — à regrouper
+ * avec utils.formatAppVersions(rows, "VID").
+ */
+export async function getAppVersions(APPCOD) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    SELECT d.[VID], d.[APPCOD], d.[VNUM], d.[RELEASEDTE], d.[SUMMARY],
+           d.[CREUSR_ID], d.[CREUSR_LNAME], d.[CREUSR_FNAME], d.[CREUSR_EMAIL],
+           d.[CID], d.[CTYPE], d.[CTITLE], d.[CDESC]
+    FROM dbo.V_App_Versions_Details AS d
+    WHERE d.APPCOD = @APPCOD
+    ORDER BY d.RELEASEDTE DESC, d.VID DESC, d.CID ASC;
+    `,
+    inputs: { APPCOD: { type: sql.NVarChar(20), value: APPCOD } },
+  });
+
+  return result.recordset ?? [];
+}
+
+/**
+ * Supprime une version, ses changements (APPCHANGES) et les notifications
+ * de lecture associées (USERAPPNOTIF), dans une transaction. Erreur
+ * DATA_NOT_FOUND si la version n'existe pas.
+ */
+export async function deleteAppVersion(VID) {
+  try {
+    await runQuery({
+      moduleUrl: import.meta.url,
+      query: `
+      SET NOCOUNT ON;
+      SET XACT_ABORT ON;
+
+      BEGIN TRAN;
+
+      BEGIN TRY
+        IF NOT EXISTS (
+          SELECT 1 FROM dbo.APPSVERSIONS WITH (UPDLOCK, HOLDLOCK) WHERE VID = @VID
+        )
+          THROW 50180, 'Version introuvable.', 1;
+
+        DELETE FROM dbo.USERAPPNOTIF WHERE VID = @VID;
+        DELETE FROM dbo.APPCHANGES WHERE VID = @VID;
+        DELETE FROM dbo.APPSVERSIONS WHERE VID = @VID;
+
+        COMMIT TRAN;
+      END TRY
+      BEGIN CATCH
+        IF @@TRANCOUNT > 0
+          ROLLBACK TRAN;
+
+        THROW;
+      END CATCH;
+      `,
+      inputs: { VID: { type: sql.Int, value: VID } },
+    });
+  } catch (err) {
+    throw toVersionError(err);
+  }
+
+  return true;
 }
 
 export async function setLastVersionDetailsOpened(USRID, VID) {

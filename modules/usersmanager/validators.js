@@ -92,7 +92,17 @@ export const lastVersionDetailsOpenedSchema = z.object({
   VID: z.coerce.number().int("VID est obligatoire."),
 });
 
+export const appVersionsQuerySchema = z.object({
+  APPCOD: z.string().trim().min(1, "APPCOD est obligatoire.").max(20),
+});
+
+export const deleteAppVersionSchema = z.object({
+  VID: z.coerce.number().int("VID est obligatoire."),
+});
+
 export const lastVersionSchema = z.object({
+  // Fourni pour modifier une version existante (y compris son VNUM).
+  VID: z.coerce.number().int().nullish(),
   APPCOD: z.string().trim().min(1, "APPCOD est obligatoire.").max(20),
   VNUM: z.string().trim().min(1, "VNUM est obligatoire.").max(20),
   RELEASEDTE: z.coerce.date().nullish(),

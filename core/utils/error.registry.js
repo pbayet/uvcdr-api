@@ -284,6 +284,19 @@ export const ERROR_REGISTRY = {
     HTTP_RESPONSE_CODE: 404,
   },
 
+  // Levée par modules/usersmanager/services.js (insertAppVersion) : lors de
+  // la modification d'une version existante (VID fourni), le nouveau numéro
+  // est déjà utilisé par une autre version de la même application.
+  APP_VERSION_ALREADY_EXISTS: {
+    CODE: 1310,
+    MESSAGE: { en: "Version already exists", fr: "Version déjà existante" },
+    DESCRIPTION: {
+      en: "Another version of this application already uses this version number.",
+      fr: "Une autre version de cette application utilise déjà ce numéro de version.",
+    },
+    HTTP_RESPONSE_CODE: 409,
+  },
+
   OUTLOOK_NOT_CONFIGURED: {
     CODE: 1401,
     MESSAGE: {

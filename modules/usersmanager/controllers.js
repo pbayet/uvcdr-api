@@ -156,6 +156,18 @@ export async function getLastVersionDetails(req) {
   return formattedDetails[0];
 }
 
+/**
+ * GET /versions?APPCOD=... — historique complet des versions d'une
+ * application (plus récente d'abord), avec leurs changements.
+ */
+export async function getAppVersions(req) {
+  const { APPCOD } = v.appVersionsQuerySchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  return utils.formatAppVersions(await services.getAppVersions(APPCOD), "VID");
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                   POSTS                                    */
 /* -------------------------------------------------------------------------- */
@@ -348,7 +360,7 @@ export async function upsertApplication(req) {
 }
 
 export async function setLastVersion(req) {
-  const { APPCOD, VNUM, RELEASEDTE, SUMMARY, CHANGES } =
+  const { VID, APPCOD, VNUM, RELEASEDTE, SUMMARY, CHANGES } =
     v.lastVersionSchema.parse(
       (await requestUtils.getRequestParams(req)).params,
     );
@@ -363,11 +375,22 @@ export async function setLastVersion(req) {
     RELEASEDTE ?? null,
     SUMMARY ?? null,
     CHANGES ?? [],
+    VID ?? null,
   );
 
   if (!version) throw new Error("DATA_NOT_FOUND");
 
   return version;
+}
+
+export async function deleteAppVersion(req) {
+  const { VID } = v.deleteAppVersionSchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  await services.deleteAppVersion(VID);
+
+  return true;
 }
 
 export async function setLastVersionDetailsOpened(req) {

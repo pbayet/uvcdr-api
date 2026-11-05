@@ -65,14 +65,16 @@ export function formatApplications(rows = []) {
 /**
  * Regroupe les lignes de V_App_Last_Version_Details (jointes aux
  * changements/APPCHANGES) en une entrée par version d'application.
+ * `groupBy` : "APPCOD" (une entrée par application, défaut) ou "VID" (une
+ * entrée par version, pour l'historique complet d'une application).
  */
-export function formatAppVersions(rows) {
+export function formatAppVersions(rows, groupBy = "APPCOD") {
   if (!Array.isArray(rows) || rows.length === 0) return [];
 
   const appMap = new Map();
 
   for (const row of rows) {
-    let app = appMap.get(row.APPCOD);
+    let app = appMap.get(row[groupBy]);
 
     if (!app) {
       app = {
@@ -91,7 +93,7 @@ export function formatAppVersions(rows) {
         CHANGES: [],
         _changeSet: new Set(),
       };
-      appMap.set(row.APPCOD, app);
+      appMap.set(row[groupBy], app);
     }
 
     if (row.CID && !app._changeSet.has(row.CID)) {

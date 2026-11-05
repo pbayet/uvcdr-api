@@ -313,6 +313,30 @@ router.post(
   },
 );
 
+router.get(
+  "/versions",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.getAppVersions(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.delete(
+  "/version",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.deleteAppVersion(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.post(
   "/last-version-details/opened",
   authMiddlewares.authVerifyMiddleware,

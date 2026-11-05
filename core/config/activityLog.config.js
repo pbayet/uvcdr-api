@@ -244,6 +244,18 @@ export const ROUTES_TO_SAVE_IN_BASE = [
   },
   {
     method: "POST",
+    route: "/api/usersmanager/last-version",
+    appcode: "USRMAN",
+    comment: "Création/modification d'une version applicative",
+  },
+  {
+    method: "DELETE",
+    route: "/api/usersmanager/version",
+    appcode: "USRMAN",
+    comment: "Suppression d'une version applicative",
+  },
+  {
+    method: "POST",
     route: "/api/usersmanager/last-version-details/opened",
     appcode: "USRMAN",
     comment: "Marquage d'une notification de version comme lue",
