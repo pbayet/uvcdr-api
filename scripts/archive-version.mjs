@@ -7,7 +7,7 @@
  *   (ex. BACKs/APIs/_archives/UNIS API/V1.1.0)
  * Si cette archive existe déjà, elle est supprimée puis recréée (écrasement).
  *
- * Exclus : node_modules, .git, logs, tmp, uploads (fichiers des utilisateurs),
+ * Exclus : node_modules, .git, package-lock.json, logs, tmp, uploads (fichiers des utilisateurs),
  * coverage, loadtest/reports et fichiers verrous Office (~$*).
  *
  * Utilisation : npm run archive
@@ -22,7 +22,18 @@ const projectName = basename(projectDir);
 const archivesRoot = join(dirname(projectDir), '_archives');
 
 // Chemins exclus, relatifs à la racine du projet.
-const EXCLUDED_PATHS = new Set(['node_modules', '.git', 'logs', 'tmp', '.tmp', '.temp', 'uploads', 'coverage', join('loadtest', 'reports')]);
+const EXCLUDED_PATHS = new Set([
+  'node_modules',
+  '.git',
+  'package-lock.json',
+  'logs',
+  'tmp',
+  '.tmp',
+  '.temp',
+  'uploads',
+  'coverage',
+  join('loadtest', 'reports'),
+]);
 const isExcluded = (src) => {
   const rel = relative(projectDir, src);
   return EXCLUDED_PATHS.has(rel) || basename(src) === 'node_modules' || basename(src).startsWith('~$');
