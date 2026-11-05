@@ -1,5 +1,6 @@
 # Dépendances
 node_modules/
+package-lock.json
 
 # Logs (rotation gérée par winston-daily-rotate-file, mais on ne les commit jamais)
 logs/
