@@ -908,6 +908,115 @@ export async function delsertUserMailCopies(USRID, SRCUSRIDS) {
   return result?.recordset?.[0]?.USRID ?? null;
 }
 
+/**
+ * Enregistre une version applicative (APPCOD + VNUM) et ses changements
+ * (CHANGES = [{ CTYPE, CTITLE, CDESC }]), le tout dans une seule transaction.
+ *
+ * - Version inexistante : INSERT dans APPSVERSIONS (RELEASEDTE absente = date
+ *   courante, CREUSR = USRID du créateur, jointure USERS.USRID dans
+ *   V_App_Versions_Details), puis INSERT des changements dans APPCHANGES.
+ * - Version déjà existante : mise à jour EN PLACE (même VID, pour conserver
+ *   les notifications déjà lues de USERAPPNOTIF) — RELEASEDTE et SUMMARY ne
+ *   sont remplacés que s'ils sont fournis, CREUSR est conservé, et les
+ *   changements sont intégralement remplacés (DELETE puis INSERT).
+ *
+ * Retourne la version (+ UPDATED = 1 si elle existait déjà) et ses CHANGES.
+ */
+export async function insertAppVersion(
+  USRID,
+  APPCOD,
+  VNUM,
+  RELEASEDTE,
+  SUMMARY,
+  CHANGES,
+) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRAN;
+
+    BEGIN TRY
+      DECLARE @VID INT;
+      DECLARE @UPDATED BIT = 0;
+
+      -- Verrou jusqu'à la fin de la transaction : deux publications
+      -- simultanées de la même version ne peuvent pas créer de doublon.
+      SELECT TOP (1) @VID = VID
+      FROM dbo.APPSVERSIONS WITH (UPDLOCK, HOLDLOCK)
+      WHERE APPCOD = @APPCOD AND VNUM = @VNUM
+      ORDER BY VID DESC;
+
+      IF @VID IS NULL
+      BEGIN
+        DECLARE @NEW TABLE (VID INT);
+
+        INSERT INTO dbo.APPSVERSIONS (APPCOD, VNUM, RELEASEDTE, CREUSR, SUMMARY)
+        OUTPUT INSERTED.VID INTO @NEW
+        VALUES (@APPCOD, @VNUM, COALESCE(@RELEASEDTE, SYSDATETIME()), @CREUSR, @SUMMARY);
+
+        SET @VID = (SELECT TOP (1) VID FROM @NEW);
+      END
+      ELSE
+      BEGIN
+        SET @UPDATED = 1;
+
+        UPDATE dbo.APPSVERSIONS
+        SET RELEASEDTE = COALESCE(@RELEASEDTE, RELEASEDTE),
+            SUMMARY    = COALESCE(@SUMMARY, SUMMARY)
+        WHERE VID = @VID;
+
+        DELETE FROM dbo.APPCHANGES WHERE VID = @VID;
+      END;
+
+      IF @CHANGES IS NOT NULL AND ISJSON(@CHANGES) = 1
+      BEGIN
+        INSERT INTO dbo.APPCHANGES (VID, CTYPE, CTITLE, CDESC)
+        SELECT @VID, j.CTYPE, j.CTITLE, j.CDESC
+        FROM OPENJSON(@CHANGES)
+        WITH (
+          CTYPE  NVARCHAR(20)   '$.CTYPE',
+          CTITLE NVARCHAR(200)  '$.CTITLE',
+          CDESC  NVARCHAR(4000) '$.CDESC'
+        ) AS j;
+      END;
+
+      COMMIT TRAN;
+
+      SELECT VID, APPCOD, VNUM, RELEASEDTE, CREUSR, SUMMARY, @UPDATED AS UPDATED
+      FROM dbo.APPSVERSIONS WHERE VID = @VID;
+
+      SELECT CID, VID, CTYPE, CTITLE, CDESC
+      FROM dbo.APPCHANGES WHERE VID = @VID ORDER BY CID;
+    END TRY
+    BEGIN CATCH
+      IF @@TRANCOUNT > 0
+        ROLLBACK TRAN;
+
+      THROW;
+    END CATCH;
+    `,
+    inputs: {
+      APPCOD: { type: sql.NVarChar(20), value: APPCOD },
+      VNUM: { type: sql.NVarChar(20), value: VNUM },
+      RELEASEDTE: { type: sql.DateTime2(3), value: RELEASEDTE ?? null },
+      CREUSR: { type: sql.NVarChar(50), value: String(USRID) },
+      SUMMARY: { type: sql.NVarChar(1000), value: SUMMARY ?? null },
+      CHANGES: {
+        type: sql.NVarChar(sql.MAX),
+        value: CHANGES?.length ? JSON.stringify(CHANGES) : null,
+      },
+    },
+  });
+
+  const version = result?.recordsets?.[0]?.[0];
+  if (!version) return null;
+
+  return { ...version, CHANGES: result?.recordsets?.[1] ?? [] };
+}
+
 export async function setLastVersionDetailsOpened(USRID, VID) {
   await runQuery({
     moduleUrl: import.meta.url,

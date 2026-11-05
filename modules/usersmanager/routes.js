@@ -302,6 +302,18 @@ router.get("/last-version-details", async (req, res, next) => {
 });
 
 router.post(
+  "/last-version",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.setLastVersion(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.post(
   "/last-version-details/opened",
   authMiddlewares.authVerifyMiddleware,
   async (req, res, next) => {

@@ -92,7 +92,26 @@ export const lastVersionDetailsOpenedSchema = z.object({
   VID: z.coerce.number().int("VID est obligatoire."),
 });
 
-export const THEMES = ["light", "dark", "system"];
+export const lastVersionSchema = z.object({
+  APPCOD: z.string().trim().min(1, "APPCOD est obligatoire.").max(20),
+  VNUM: z.string().trim().min(1, "VNUM est obligatoire.").max(20),
+  RELEASEDTE: z.coerce.date().nullish(),
+  SUMMARY: z.string().trim().max(1000).nullish(),
+  CHANGES: z
+    .preprocess(
+      (val) => (typeof val === "string" ? JSON.parse(val) : val),
+      z.array(
+        z.object({
+          CTYPE: z.string().trim().min(1, "CTYPE est obligatoire.").max(20),
+          CTITLE: z.string().trim().min(1, "CTITLE est obligatoire.").max(200),
+          CDESC: z.string().trim().max(4000).nullish(),
+        }),
+      ),
+    )
+    .nullish(),
+});
+
+export const THEMES =["light", "dark", "system"];
 
 // Codes applicatifs « de base » (portail HOME, BAS) : absents de la table
 // APPLICATIONS, ils n'ont pas de thème propre et utilisent le thème par

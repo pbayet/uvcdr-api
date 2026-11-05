@@ -347,6 +347,29 @@ export async function upsertApplication(req) {
   return applications[0];
 }
 
+export async function setLastVersion(req) {
+  const { APPCOD, VNUM, RELEASEDTE, SUMMARY, CHANGES } =
+    v.lastVersionSchema.parse(
+      (await requestUtils.getRequestParams(req)).params,
+    );
+
+  const USRID = req?.payload?.data?.id;
+  if (!USRID) throw new Error("MISSING_PARAMETERS");
+
+  const version = await services.insertAppVersion(
+    USRID,
+    APPCOD,
+    VNUM,
+    RELEASEDTE ?? null,
+    SUMMARY ?? null,
+    CHANGES ?? [],
+  );
+
+  if (!version) throw new Error("DATA_NOT_FOUND");
+
+  return version;
+}
+
 export async function setLastVersionDetailsOpened(req) {
   const { VID } = v.lastVersionDetailsOpenedSchema.parse(
     (await requestUtils.getRequestParams(req)).params,
@@ -437,7 +460,11 @@ export async function setTheme(req) {
   const USRID = req?.payload?.data?.id;
   if (!USRID) throw new Error("MISSING_PARAMETERS");
 
-  const done = await services.setUserTheme(USRID, APPCOD ?? null, THEME ?? null);
+  const done = await services.setUserTheme(
+    USRID,
+    APPCOD ?? null,
+    THEME ?? null,
+  );
   if (!done) throw new Error("DATA_NOT_FOUND");
 
   return getThemes(req);
