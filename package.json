@@ -16,12 +16,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "load-test": "node loadtest/run.js"
+    "load-test": "node loadtest/run.js",
+    "archive": "node scripts/archive-version.mjs",
+    "release": "node scripts/release.mjs"
   },
   "author": "Paul Bayet",
   "license": "ISC",
   "dependencies": {
-    "@azure/msal-node": "^6.0.0",
+    "@azure/msal-node": "^7.2.0",
     "argon2": "^0.44.0",
     "cors": "^2.8.5",
     "dotenv": "^17.4.2",
@@ -34,7 +36,7 @@
     "ms": "^2.1.3",
     "mssql": "^4.2.0",
     "multer": "^2.1.1",
-    "nodemailer": "^9.0.3",
+    "nodemailer": "^10.3.1",
     "sharp": "^0.35.5",
     "ulid": "^3.0.2",
     "winston": "^3.18.3",
@@ -43,12 +45,12 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
-    "@eslint/js": "^10.0.1",
+    "@eslint/js": "^9.39.5",
     "@vitest/coverage-v8": "^5.0.3",
     "autocannon": "^2.0.1",
-    "eslint": "^10.6.0",
+    "eslint": "^9.39.5",
     "globals": "^15.13.0",
-    "nodemon": "^3.1.14",
+    "nodemon": "^3.1.11",
     "supertest": "^7.1.1",
     "vitest": "^5.0.3"
   },
