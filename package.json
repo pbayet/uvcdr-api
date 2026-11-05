@@ -1,6 +1,6 @@
 {
   "name": "uvcdr-api",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "API UVCDR - reconstruction ciblée (module ticketing) suite à l'audit technique du 02/07/2026",
   "main": "app.js",
   "type": "module",
