@@ -760,10 +760,8 @@ export async function getFolderFilters(req) {
     (await requestUtils.getRequestParams(req)).params,
   );
 
-  const { STATUS, CLIENTS, DEMS, MYVAL_COUNT } = await services.getFolderFilters(
-    type,
-    myserv,
-  );
+  const { STATUS, CLIENTS, DEMS, MYVAL_COUNT } =
+    await services.getFolderFilters(type, myserv);
 
   return {
     STATUS,

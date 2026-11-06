@@ -2,6 +2,13 @@ import sql from "mssql";
 import crypto from "crypto";
 import { runQuery, getDbConnexion } from "../../core/utils/db.utils.js";
 
+/** Convertit une valeur (Date | chaîne ISO | null) en Date valide ou null. */
+function toSqlDate(value) {
+  if (value === null || value === undefined || value === "") return null;
+  const d = value instanceof Date ? value : new Date(value);
+  return isNaN(d.getTime()) ? null : d;
+}
+
 /* ═══════════════════════════════════════════════════════════════
    FSA — Services (Fiches Suivi Affaires)
 
@@ -1939,7 +1946,9 @@ export async function upsertVente(NUMDOS, FSAVENTE) {
     `,
     inputs: {
       NUMDOS: { type: sql.VarChar(50), value: NUMDOS },
-      DATMAD: { type: sql.DateTime, value: FSAVENTE.DATMAD ?? null },
+      // DATMAD peut arriver en chaîne ISO (ex. duplication : FSAVENTES issu de
+      // formatFsasJson → utcToParisIso) ; tedious exige un objet Date.
+      DATMAD: { type: sql.DateTime, value: toSqlDate(FSAVENTE.DATMAD) },
       ONESHO: { type: sql.Bit, value: FSAVENTE.ONESHO ? 1 : 0 },
       VOLANN: { type: sql.Decimal(18, 6), value: FSAVENTE.VOLANN ?? null },
       VOLANN1: { type: sql.Decimal(18, 6), value: FSAVENTE.VOLANN1 ?? null },
