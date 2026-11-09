@@ -25,7 +25,20 @@ const UPLOAD_PATH = process.env.UPLOAD_PATH;
  * (encore) de synchronisation temps réel.
  */
 function notifyTicketAttachmentChange(type, entityType, entityId) {
-  if (entityType !== "TCKCOD" || !entityId) return;
+  if (!entityId) return;
+
+  // FAQ (modules/faq) : pièces jointes d'une publication (FAQPST, ENTITYID =
+  // PSTID) ou d'une réponse (FAQANS, ENTITYID = ANSID). Un seul évènement,
+  // le front recharge la discussion concernée.
+  if (entityType === "FAQPST" || entityType === "FAQANS") {
+    broadcastToAll({
+      type: "faq.attachments.updated",
+      payload: { ENTITYTYPE: entityType, ENTITYID: String(entityId) },
+    });
+    return;
+  }
+
+  if (entityType !== "TCKCOD") return;
   broadcastToAll({ type, payload: { TCKCOD: entityId } });
 }
 

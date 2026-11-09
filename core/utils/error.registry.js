@@ -556,6 +556,36 @@ export const ERROR_REGISTRY = {
     HTTP_RESPONSE_CODE: 409,
   },
 
+  // modules/faq/controllers.createCategory / updateCategory : nom unique
+  // parmi les catégories actives (cf. UQ_FAQCATEGORIES_NAME_ACTIVE).
+  FAQ_CATEGORY_NAME_EXISTS: {
+    CODE: 1606,
+    MESSAGE: {
+      en: "Category already exists",
+      fr: "Catégorie déjà existante",
+    },
+    DESCRIPTION: {
+      en: "An active category already uses this name.",
+      fr: "Une catégorie active porte déjà ce nom.",
+    },
+    HTTP_RESPONSE_CODE: 409,
+  },
+
+  // modules/faq/controllers.updatePost : le statut choisi doit appartenir
+  // au même type (QUESTION / SUGGESTION) que la publication.
+  FAQ_INVALID_STATUS: {
+    CODE: 1607,
+    MESSAGE: {
+      en: "Invalid status",
+      fr: "Statut invalide",
+    },
+    DESCRIPTION: {
+      en: "This status does not apply to this type of post.",
+      fr: "Ce statut ne s'applique pas à ce type de publication.",
+    },
+    HTTP_RESPONSE_CODE: 422,
+  },
+
   // ── 1700 VINIDOC (modules/vinidoc) ──
   VINIDOC_SHEET_NOT_FOUND: {
     CODE: 1701,
