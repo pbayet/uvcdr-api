@@ -1,0 +1,171 @@
+# Déploiement de l'API sur le serveur de test ou de prod.
+#
+# Lancé par « npm run deploy:test » / « npm run deploy » / « npm run deploy:all »
+# (scripts/deploy.mjs), ou à la main : Actions > Deploy > Run workflow.
+# Jamais automatiquement sur push.
+#
+# Chaque cible tourne sur le runner auto-hébergé qui porte son label :
+#   test  → runner du serveur de dev (VM-DEV), label "test"
+#   prod  → runner du serveur de prod (VM-APPS), label "prod"
+# Le dossier de l'API est lu dans le .env du runner (API_DIR, écrit par
+# scripts/install-runner.ps1).
+#
+# Sur le serveur, le runner (compte SERVICE RÉSEAU) :
+#   1. met le dossier de l'API à jour (prod : main uniquement, en fast-forward),
+#   2. lance npm install si package.json a changé,
+#   3. signale les scripts SQL à appliquer à la main,
+#   4. réécrit restart.trigger : PM2 surveille ce seul fichier et redémarre l'API,
+#   5. attend qu'elle réponde sur /api/test avec un process neuf.
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Serveur cible
+        type: choice
+        options: [test, prod]
+        default: test
+        required: true
+      branch:
+        description: Branche à déployer (prod = main uniquement)
+        type: string
+        default: main
+        required: true
+
+run-name: Deploy ${{ inputs.target }} (${{ inputs.branch }})
+
+concurrency:
+  group: deploy-${{ inputs.target }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, "${{ inputs.target }}"]
+    timeout-minutes: 15
+    env:
+      TARGET: ${{ inputs.target }}
+      BRANCH: ${{ inputs.branch }}
+      RUN_ID: ${{ github.run_id }}
+    defaults:
+      run:
+        # Le runner écrit le script en UTF-8 sans BOM et Windows PowerShell 5.1 le lirait
+        # en ANSI (accents cassés, « → » lu comme un guillemet) : on le relit en UTF-8.
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression ([IO.File]::ReadAllText('{0}', [Text.Encoding]::UTF8))"
+    steps:
+      - name: Mise à jour et redémarrage de l'API
+        run: |
+          $ErrorActionPreference = 'Continue'
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $start = Get-Date
+
+          function Show-Logs {
+            foreach ($sub in 'errors', 'success') {
+              $f = Get-ChildItem "logs\$sub" -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($f) {
+                Write-Host "`n--- 40 dernières lignes de logs\$sub\$($f.Name) ---"
+                Get-Content $f.FullName -Tail 40 -Encoding UTF8
+              }
+            }
+          }
+          function Fail($msg) {
+            Write-Host "::error::$msg"
+            Show-Logs
+            exit 1
+          }
+
+          # ── Configuration ──────────────────────────────────────────
+          $apiDir = if ($env:API_DIR) { $env:API_DIR } else { $env:PROD_DIR }
+          $healthUrl = if ($env:API_URL) { $env:API_URL } else { 'http://localhost:3001/api/test' }
+          if (-not $apiDir) { Fail "API_DIR non défini : l'ajouter dans le fichier .env du runner (C:\actions-runners\uvcdr-api\.env) puis redémarrer le service." }
+          if ($env:BRANCH -notmatch '^[A-Za-z0-9._/-]+$') { Fail "Nom de branche invalide : $env:BRANCH" }
+          if ($env:TARGET -eq 'prod' -and $env:BRANCH -ne 'main') { Fail "La prod ne se déploie que depuis main (reçu : $env:BRANCH)." }
+          Set-Location $apiDir
+
+          function Get-ApiStatus {
+            try { return Invoke-RestMethod -Uri $healthUrl -TimeoutSec 5 -UseBasicParsing } catch { return $null }
+          }
+
+          # ── 1. Récupération du code ────────────────────────────────
+          $before = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { Fail "git ne peut pas lire $apiDir (safe.directory ou droits manquants : relancer scripts/install-runner.ps1)." }
+          Write-Host "Version actuelle : $(git describe --tags --always) ($before)"
+
+          git fetch --tags origin $env:BRANCH
+          if ($LASTEXITCODE -ne 0) { Fail "git fetch de $env:BRANCH a échoué." }
+
+          if ($env:TARGET -eq 'prod') {
+            $current = (git branch --show-current).Trim()
+            if ($current -ne 'main') { Fail "Le dossier de prod est sur « $current » et non sur main : à corriger à la main." }
+            git merge --ff-only "origin/main"
+            if ($LASTEXITCODE -ne 0) { Fail "Mise à jour impossible en fast-forward (modifications locales sur le serveur ? historique divergent ?)." }
+          } else {
+            # Test : la branche demandée remplace ce qui était déployé (fichiers ignorés conservés : .env, uploads, logs…).
+            git checkout -f -B $env:BRANCH "origin/$env:BRANCH"
+            if ($LASTEXITCODE -ne 0) { Fail "Passage sur la branche $env:BRANCH impossible." }
+          }
+
+          $after = (git rev-parse HEAD).Trim()
+          $changed = @(git diff --name-only $before $after)
+          if ($before -eq $after) {
+            Write-Host "Code déjà à jour ($($after.Substring(0,7))) : redémarrage quand même."
+          } else {
+            Write-Host "`nCommits déployés :"
+            git log --oneline "$before..$after"
+          }
+
+          # ── 2. Dépendances ─────────────────────────────────────────
+          if ($changed -contains 'package.json' -or -not (Test-Path node_modules)) {
+            Write-Host "`npackage.json a changé → npm install"
+            npm.cmd install --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { Fail "npm install a échoué." }
+          }
+
+          # ── 3. Scripts SQL (jamais appliqués automatiquement) ──────
+          $sql = @($changed | Where-Object { $_ -like 'scripts/sql/*' })
+          foreach ($f in $sql) { Write-Host "::warning::Script SQL à appliquer sur la base $env:TARGET : $f" }
+
+          # ── 4. Redémarrage via le fichier surveillé par PM2 ────────
+          $old = Get-ApiStatus
+          $oldPid = if ($old -and $old.pid) { $old.pid } else { '?' }
+          Write-Host "`nRedémarrage de l'API (PID actuel : $oldPid)..."
+          $triggerAt = Get-Date
+          Set-Content restart.trigger -Encoding ASCII -Value "$($triggerAt.ToString('s')) $after $env:RUN_ID"
+
+          # ── 5. Vérification : process neuf + /api/test répond ──────
+          $expected = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $deadline = (Get-Date).AddSeconds(90)
+          $status = $null
+          $fresh = $false
+          do {
+            Start-Sleep -Seconds 3
+            $status = Get-ApiStatus
+            $fresh = $status -and $status.uptime -le ((Get-Date) - $triggerAt).TotalSeconds + 1
+          } until ($fresh -or (Get-Date) -gt $deadline)
+
+          if (-not $status) { Fail "L'API ne répond pas sur $healthUrl après redémarrage." }
+          if (-not $fresh)  { Fail "L'API n'a pas redémarré (uptime $($status.uptime) s) : PM2 a-t-il été relancé avec son ecosystem (watch restart.trigger) ?" }
+
+          Write-Host ""
+          Write-Host "✅ API redémarrée (PID $oldPid → $($status.pid))"
+          Write-Host "✅ API à jour et en ligne : v$($status.version) [$($status.environment)] — $env:BRANCH @ $($after.Substring(0,7))"
+          if ($status.version -ne $expected) {
+            Write-Host "::warning::L'API annonce v$($status.version) alors que package.json indique v$expected."
+          }
+
+          # Résumé affiché sur la page du run GitHub
+          $summary = @"
+          ### ✅ API déployée ($env:TARGET)
+          | | |
+          |---|---|
+          | Version | v$($status.version) |
+          | Branche | ``$env:BRANCH`` @ ``$($after.Substring(0,7))`` |
+          | PID | $oldPid → $($status.pid) |
+          | Durée | $([int]((Get-Date) - $start).TotalSeconds) s |
+          "@
+          if ($sql.Count) { $summary += "`n`n⚠️ **Scripts SQL à appliquer à la main :**`n" + (($sql | ForEach-Object { "- ``$_``" }) -join "`n") }
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

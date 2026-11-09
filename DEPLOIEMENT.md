@@ -79,9 +79,17 @@ git merge feat/ma-modif
 npm run release
 ```
 
+**5. Déploie** :
+
+```bash
+npm run deploy
+```
+
+Le script pousse `main`, lance le workflow GitHub et suit son exécution jusqu'au redémarrage de l'API (voir « Déploiement (npm run deploy) » plus bas). Pour tester une branche sur le serveur de test avant de la fusionner : `npm run deploy:test` depuis cette branche.
+
 ### Sur le serveur de prod
 
-> Les étapes 5 à 9 sont **automatiques** dès que le push arrive sur `main` (voir « Déploiement automatique » plus bas). Suis l'avancement dans l'onglet **Actions** du dépôt GitHub. Seule l'étape 7 (scripts SQL) reste manuelle : le déploiement affiche un avertissement listant les scripts à appliquer.
+> Les étapes ci-dessous sont faites par `npm run deploy`. Seule l'étape 7 (scripts SQL) reste manuelle : le déploiement affiche un avertissement listant les scripts à appliquer.
 >
 > Procédure manuelle, si le runner est arrêté :
 
@@ -121,27 +129,35 @@ Vérifie que l'API démarre sans erreur et teste un ou deux appels.
 
 ---
 
-## Déploiement automatique (GitHub Actions)
+## Déploiement (npm run deploy)
 
-Le workflow [.github/workflows/deploy-prod.yml](.github/workflows/deploy-prod.yml) se déclenche à chaque push sur `main` (et à la demande via **Actions > Déploiement prod > Run workflow**). Il tourne sur un **runner auto-hébergé installé sur le serveur de prod** : c'est le serveur qui va chercher les tâches chez GitHub, aucun port n'est à ouvrir.
+Rien n'est déployé automatiquement sur push : comme pour les fronts, le déploiement se lance depuis le PC de dev.
 
-Il fait `git pull --ff-only`, `npm install` si `package.json` a changé, puis réécrit le fichier `restart.trigger`. PM2 surveille ce seul fichier (`watch` dans `ecosystem.prod.config.cjs`) et redémarre l'API. Le runner attend ensuite que `/api/test` réponde avec un **process neuf**. Le runner n'appelle jamais `pm2` : il tourne sous SERVICE RÉSEAU, comme pour les fronts, sans mot de passe. La console du run affiche :
+| Commande | Cible | Branche déployée |
+|---|---|---|
+| `npm run deploy` | prod (VM-APPS, runner `prod`) | `main` uniquement |
+| `npm run deploy:test` | test (VM-DEV, runner `test`) | branche courante |
+| `npm run deploy:all` | prod puis test | `main` |
+
+[scripts/deploy.mjs](scripts/deploy.mjs) vérifie qu'il n'y a pas de modifications non commitées, pousse la branche, lance le workflow [.github/workflows/deploy.yml](.github/workflows/deploy.yml) (`gh workflow run`) et suit son exécution. Prérequis : GitHub CLI connectée (`gh auth login`). Le workflow peut aussi être lancé à la main : **Actions > Deploy > Run workflow**.
+
+Sur le serveur, le runner auto-hébergé de la cible met à jour le dossier de l'API (prod : `main` en fast-forward ; test : la branche demandée), lance `npm install` si `package.json` a changé, puis réécrit `restart.trigger`. PM2 surveille ce seul fichier (`watch` dans `ecosystem.<cible>.config.cjs`) et redémarre l'API. Le runner attend ensuite que `/api/test` réponde avec un **process neuf**. Il n'appelle jamais `pm2` : il tourne sous SERVICE RÉSEAU, sans mot de passe. La console affiche à la fin :
 
 ```
 ✅ API redémarrée (PID 1234 → 5678)
-✅ API à jour et en ligne : v1.1.3 [production] — commit ae8dac7
+✅ API à jour et en ligne : v1.1.3 [production] — main @ ae8dac7
 ```
 
 En cas d'échec, le run passe au rouge et affiche les dernières lignes des fichiers de `logs/errors` et `logs/success`.
 
-### Installation du runner (une seule fois, sur le serveur)
+### Installation du runner (une seule fois, sur chaque serveur)
 
 Le script [scripts/install-runner.ps1](scripts/install-runner.ps1) fait tout (même principe que pour les fronts).
 
 1. Sur GitHub : **Settings > Actions > Runners > New self-hosted runner > Windows x64**. Note le **jeton**, la **version** et le **SHA-256** affichés.
 2. Sur le serveur, ouvre PowerShell **en tant qu'administrateur** (n'importe quel compte admin).
-3. Renseigne le haut du script (`$apiDir`, `$token`, `$version`, `$sha256`), puis colle-le dans la console ou lance-le. Il installe le service sous SERVICE RÉSEAU, donne à ce compte le droit de modifier le dossier de l'API (`icacls`) et l'autorise dans Git (`safe.directory`). `git`, `node` et `npm` doivent être dans le PATH **système** : le script le vérifie.
-4. Le chemin de l'API est écrit dans `C:\actions-runners\uvcdr-api\.env` (`PROD_DIR=...`) : rien à configurer côté GitHub.
+3. Renseigne le haut du script (`$apiDir`, `$label` = `prod` sur VM-APPS ou `test` sur VM-DEV, `$token`, `$version`, `$sha256`), puis colle-le dans la console ou lance-le. Il installe le service sous SERVICE RÉSEAU, donne à ce compte le droit de modifier le dossier de l'API (`icacls`) et l'autorise dans Git (`safe.directory`). `git`, `node` et `npm` doivent être dans le PATH **système** : le script le vérifie.
+4. Le chemin de l'API est écrit dans `C:\actions-runners\uvcdr-api\.env` (`API_DIR=...`) : rien à configurer côté GitHub.
 5. Le dépôt est **public** : dans **Settings > Actions > General**, choisis *Require approval for all external contributors* pour qu'une pull request venant d'un fork ne puisse pas exécuter de code sur le serveur. Le plus sûr reste de passer le dépôt en **privé**.
 6. Avec le compte qui fait tourner PM2, recharge PM2 depuis le fichier de config pour qu'il surveille `restart.trigger` (un `pm2 reload` seul garde l'ancienne config) :
 
@@ -151,7 +167,9 @@ pm2 start ecosystem.prod.config.cjs
 pm2 save
 ```
 
-7. Teste : **Actions > Déploiement prod > Run workflow**.
+Sur le serveur de test, même chose avec `ecosystem.test.config.cjs` (process « UVCDR API TEST », `NODE_ENV=development`), après avoir arrêté l'ancien process de l'API.
+
+7. Teste depuis le PC de dev : `npm run deploy` (prod) ou `npm run deploy:test` (test).
 
 ### Supprimer le runner
 

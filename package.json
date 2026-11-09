@@ -18,7 +18,11 @@
     "test:coverage": "vitest run --coverage",
     "load-test": "node loadtest/run.js",
     "archive": "node scripts/archive-version.mjs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "deploy": "node scripts/deploy.mjs prod",
+    "deploy:test": "node scripts/deploy.mjs test",
+    "deploy:all": "npm run deploy && npm run deploy:test",
+    "pm2:test": "pm2 start ecosystem.test.config.cjs && pm2 logs \"UVCDR API TEST\""
   },
   "author": "Paul Bayet",
   "license": "ISC",

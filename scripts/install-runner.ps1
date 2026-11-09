@@ -1,16 +1,18 @@
-﻿# Installe le runner GitHub Actions qui déploie l'API (workflow .github/workflows/deploy-prod.yml).
+﻿# Installe le runner GitHub Actions qui déploie l'API (workflow .github/workflows/deploy.yml,
+# lancé par npm run deploy / deploy:test / deploy:all).
 #
-# À lancer UNE FOIS sur le serveur, dans un PowerShell « Exécuter en tant qu'administrateur ».
+# À lancer UNE FOIS sur chaque serveur (VM-APPS pour la prod, VM-DEV pour le test),
+# dans un PowerShell « Exécuter en tant qu'administrateur ».
 # Le script peut aussi être copié-collé tel quel dans la console.
 #
 # Comme pour les fronts, le runner tourne sous SERVICE RÉSEAU (aucun mot de passe).
 # Il n'appelle jamais pm2 : il réécrit restart.trigger, que PM2 surveille
-# (watch dans ecosystem.prod.config.cjs) pour redémarrer l'API.
+# (watch dans ecosystem.prod.config.cjs / ecosystem.test.config.cjs) pour redémarrer l'API.
 & {
   # ── À renseigner ───────────────────────────────────────────────
   $projet  = "uvcdr-api"               # nom du dépôt GitHub : pbayet/<projet>
-  $apiDir  = "D:\SITES\API"            # dossier de l'API en prod (clone Git existant)
-  $label   = "prod"                    # doit correspondre à runs-on du workflow
+  $apiDir  = "D:\SITES\API"            # dossier de l'API (clone Git existant) : D:\SITES\API sur VM-APPS
+  $label   = "prod"                    # "test" (VM-DEV), "prod" (VM-APPS)
   $token   = "XXXXXXXXXXXXXXXXXXXXXXXXXXXXX"   # jeton GitHub, valable 1 h
   $version = "2.338.2"                 # version affichée par GitHub
   $sha256  = "a1f17aa987fc8158bc7521d284912267a0d01b7c2c4684b33c86783b5e8221cc"
@@ -61,8 +63,8 @@
   Write-Host "V Extrait dans $runnerDir" -ForegroundColor Green
 
   # 3. Variable lue par le workflow (fichier .env du runner, injecté dans chaque job)
-  Set-Content "$runnerDir\.env" -Encoding ASCII -Value "PROD_DIR=$apiDir"
-  Write-Host "V PROD_DIR=$apiDir écrit dans $runnerDir\.env" -ForegroundColor Green
+  Set-Content "$runnerDir\.env" -Encoding ASCII -Value "API_DIR=$apiDir"
+  Write-Host "V API_DIR=$apiDir écrit dans $runnerDir\.env" -ForegroundColor Green
 
   # 4. Enregistrement sur GitHub et installation du service (compte SERVICE RÉSEAU)
   $configArgs = @(
@@ -89,6 +91,6 @@
 
   # 6. Vérification
   Get-Service "actions.runner.pbayet-$projet.*" | Format-Table Name, Status, StartType
-  Write-Host "Reste à faire une fois : relancer PM2 depuis ecosystem.prod.config.cjs (voir DEPLOIEMENT.md)" -ForegroundColor Cyan
-  Write-Host "Puis tester : GitHub > Actions > Déploiement prod > Run workflow" -ForegroundColor Cyan
+  Write-Host "Reste à faire une fois : relancer PM2 depuis ecosystem.$label.config.cjs (voir DEPLOIEMENT.md)" -ForegroundColor Cyan
+  Write-Host "Puis tester depuis le PC de dev : npm run deploy$(if ($label -eq 'test') { ':test' })" -ForegroundColor Cyan
 }
