@@ -101,6 +101,35 @@ jobs:
           if ($env:TARGET -eq 'prod') {
             $current = (git branch --show-current).Trim()
             if ($current -ne 'main') { Fail "Le dossier de prod est sur « $current » et non sur main : à corriger à la main." }
+
+            # Chemins exclus de la prod (scripts/deploy-prod-exclude.txt, lu dans la version à déployer) :
+            # git sparse-checkout les retire du dossier et ne les remet plus.
+            $exclude = @(git show "origin/main:scripts/deploy-prod-exclude.txt" 2>$null |
+              ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') })
+            if ($exclude.Count) {
+              # Motifs écrits dans un fichier ASCII sans BOM et passés à git par une redirection
+              # cmd : surtout PAS « $patterns | git ... --stdin » depuis PowerShell, qui peut
+              # préfixer la 1re ligne d'un BOM ; « /* » ne correspond alors plus à rien et Git retire TOUT.
+              $patterns = @('/*') + ($exclude | ForEach-Object { '!/' + $_.TrimStart('/') })
+              $patternFile = Join-Path $env:RUNNER_TEMP "sparse-$env:RUN_ID.txt"
+              if (-not $env:RUNNER_TEMP) { $patternFile = Join-Path ([IO.Path]::GetTempPath()) "sparse-$env:RUN_ID.txt" }
+              [IO.File]::WriteAllText($patternFile, (($patterns -join "`n") + "`n"), (New-Object Text.ASCIIEncoding))
+              cmd /c "git sparse-checkout set --no-cone --stdin < `"$patternFile`""
+              $sparseExit = $LASTEXITCODE
+              try { [IO.File]::Delete($patternFile) } catch { }
+              if ($sparseExit -ne 0) { Fail "git sparse-checkout set a échoué." }
+              # Garde-fou : si un motif était faux, on rétablit tout plutôt que de démarrer une API vide.
+              if (-not ((Test-Path app.js) -and (Test-Path package.json) -and (Test-Path core) -and (Test-Path modules))) {
+                git sparse-checkout disable
+                Fail "Le sparse-checkout a retiré des fichiers essentiels : désactivé, vérifier scripts/deploy-prod-exclude.txt."
+              }
+              Write-Host "Exclus de la prod : $($exclude -join ', ')"
+            } elseif ((git config --bool core.sparseCheckout) -eq 'true') {
+              git sparse-checkout disable
+              if ($LASTEXITCODE -ne 0) { Fail "git sparse-checkout disable a échoué." }
+              Write-Host "Plus aucun chemin exclu de la prod."
+            }
+
             git merge --ff-only "origin/main"
             if ($LASTEXITCODE -ne 0) { Fail "Mise à jour impossible en fast-forward (modifications locales sur le serveur ? historique divergent ?)." }
           } else {

@@ -150,6 +150,16 @@ Sur le serveur, le runner auto-hébergé de la cible met à jour le dossier de l
 
 En cas d'échec, le run passe au rouge et affiche les dernières lignes des fichiers de `logs/errors` et `logs/success`.
 
+### Fichiers exclus de la prod (declcav)
+
+Les chemins listés dans [scripts/deploy-prod-exclude.txt](scripts/deploy-prod-exclude.txt) ne sont **jamais** déployés en prod : à chaque `npm run deploy`, le workflow applique un `git sparse-checkout` qui les retire du dossier de prod et ne les y remet plus, même s'ils changent sur `main`. Le serveur de test reçoit tout.
+
+Actuellement exclus : le module `modules/declcav/` et `config/db/declcav.db.config.js`. Sans declcav, l'API démarre normalement ; la connexion des caves (appcode `DCLING`) est refusée (cf. `core/middlewares/auth.middleware.js`).
+
+- Pas besoin de supprimer ces fichiers à la main : le prochain déploiement prod le fait. S'ils ont déjà été supprimés, ce n'est pas gênant.
+- Pour remettre un chemin en prod : retire sa ligne du fichier, commite, puis `npm run deploy`.
+- Sur le serveur, `git status` reste propre ; `git sparse-checkout list` affiche les motifs appliqués.
+
 ### Installation du runner (une seule fois, sur chaque serveur)
 
 Le script [scripts/install-runner.ps1](scripts/install-runner.ps1) fait tout (même principe que pour les fronts).

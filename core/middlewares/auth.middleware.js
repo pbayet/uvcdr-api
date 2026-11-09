@@ -15,8 +15,20 @@ import {
   postLoginStats,
 } from "../../modules/usersmanager/services.js";
 import { formatUsers } from "../../modules/usersmanager/utils.js";
-import { getCavesPW, getCave } from "../../modules/declcav/services.js";
 import { logger } from "../../config/logger.config.js";
+
+// Le module declcav peut être absent du serveur : il est exclu du déploiement
+// prod (scripts/deploy-prod-exclude.txt). Import facultatif : sans lui, la
+// connexion "mot de passe cave" (DCLING) est refusée comme un identifiant
+// inconnu, et le reste de l'API fonctionne normalement.
+const declcavServices = await import("../../modules/declcav/services.js").catch(
+  (err) => {
+    if (err?.code === "ERR_MODULE_NOT_FOUND" && /declcav/.test(err.message)) {
+      return null;
+    }
+    throw err;
+  },
+);
 
 /**
  * Périmètre par rapport à V1.0.0 : cette V1.1.0 reconstruit ce dont
@@ -149,8 +161,8 @@ export async function loginMiddleware(req, res, next) {
     checkBruteForce(email);
     checkBruteForce(ip);
 
-    if (appcode === "DCLING") {
-      const [cave] = await getCavesPW(email);
+    if (appcode === "DCLING" && declcavServices) {
+      const [cave] = await declcavServices.getCavesPW(email);
 
       if (cave?.PASSHSH && (await verifyPassword(cave.PASSHSH, password))) {
         const payload = jwtUtils.generatePayload(
@@ -410,11 +422,12 @@ export const authVerifyMiddleware = async (req, res, next) => {
     if (payload.application === "DCLING" && !!payload.isCave) {
       const caveId = payload?.data?.id;
       if (!caveId) throw new Error("INVALID_TOKEN");
+      if (!declcavServices) throw new Error("USER_NOT_FOUND"); // declcav absent du serveur
 
       const cave = await requestUtils.getCachedResult(
         `authcheck.cave.${caveId}`,
         async () => {
-          const rows = await getCave(caveId);
+          const rows = await declcavServices.getCave(caveId);
           return rows[0] || null;
         },
         5 * 60 * 1000,

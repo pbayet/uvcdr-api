@@ -1,0 +1,13 @@
+# Chemins JAMAIS déployés sur le serveur de prod.
+#
+# Appliqué à chaque « npm run deploy » par le workflow .github/workflows/deploy.yml
+# (git sparse-checkout) : ces fichiers sont retirés du dossier de prod et n'y
+# reviennent plus, même s'ils changent sur main. Le serveur de test reçoit tout.
+#
+# Un chemin par ligne, relatif à la racine du dépôt ; dossier = finir par « / ».
+# Supprimer une ligne (puis déployer) remet le chemin en prod.
+
+# Module declcav (déclarations de cave) et sa configuration de base de données.
+# Sans lui, la connexion des caves (DCLING) est refusée (cf. core/middlewares/auth.middleware.js).
+modules/declcav/
+config/db/declcav.db.config.js
