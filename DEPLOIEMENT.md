@@ -81,6 +81,10 @@ npm run release
 
 ### Sur le serveur de prod
 
+> Les étapes 5 à 9 sont **automatiques** dès que le push arrive sur `main` (voir « Déploiement automatique » plus bas). Suis l'avancement dans l'onglet **Actions** du dépôt GitHub. Seule l'étape 7 (scripts SQL) reste manuelle : le déploiement affiche un avertissement listant les scripts à appliquer.
+>
+> Procédure manuelle, si le runner est arrêté :
+
 **5. Récupère le code :**
 
 ```bash
@@ -114,6 +118,40 @@ pm2 logs "UVCDR API PROD"
 ```
 
 Vérifie que l'API démarre sans erreur et teste un ou deux appels.
+
+---
+
+## Déploiement automatique (GitHub Actions)
+
+Le workflow [.github/workflows/deploy-prod.yml](.github/workflows/deploy-prod.yml) se déclenche à chaque push sur `main` (et à la demande via **Actions > Déploiement prod > Run workflow**). Il tourne sur un **runner auto-hébergé installé sur le serveur de prod** : c'est le serveur qui va chercher les tâches chez GitHub, aucun port n'est à ouvrir.
+
+Il fait `git pull --ff-only`, `npm install` si `package.json` a changé, `pm2 reload`, puis attend que `/api/test` réponde avec un **nouveau PID**. La console du run affiche :
+
+```
+✅ API redémarrée (PID 1234 → 5678)
+✅ API à jour et en ligne : v1.1.3 [production] — commit ae8dac7
+```
+
+En cas d'échec, le run passe au rouge et affiche les 60 dernières lignes de `pm2 logs`.
+
+### Installation du runner (une seule fois, sur le serveur)
+
+1. Sur GitHub : **Settings > Actions > Runners > New self-hosted runner > Windows x64**. Exécute les commandes affichées dans un dossier dédié, par ex. `C:\actions-runner` (**pas** dans le dossier de l'API).
+2. Pendant `config.cmd` :
+   - *labels supplémentaires* : `uvcdr-prod`
+   - *run as service* : `Y`
+   - *compte du service* : **le compte Windows qui lance PM2** (celui avec lequel tu fais `pm2 list` aujourd'hui). Sinon le runner ne voit pas les process PM2 (autre `PM2_HOME`) et Git refuse le dossier (« dubious ownership »).
+3. Sur GitHub : **Settings > Secrets and variables > Actions > Variables > New repository variable** : `PROD_DIR` = chemin du dossier de l'API en prod (ex. `D:\API\uvcdr-api`).
+4. Le dépôt est **public** : dans **Settings > Actions > General**, choisis *Require approval for all external contributors* pour qu'une pull request venant d'un fork ne puisse pas exécuter de code sur le serveur. Le plus sûr reste de passer le dépôt en **privé**.
+5. Recharge PM2 depuis le fichier de config pour appliquer `watch: false` (un `pm2 reload` seul garde l'ancienne config) :
+
+```bash
+pm2 delete "UVCDR API PROD"
+pm2 start ecosystem.prod.config.cjs
+pm2 save
+```
+
+6. Teste : **Actions > Déploiement prod > Run workflow**.
 
 ---
 

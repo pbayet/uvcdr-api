@@ -4,6 +4,7 @@ import "./config/env.js"; // DOIT rester le premier import (cf. commentaire dans
 import express from "express";
 import cors from "cors";
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 
 import corsOptions from "./config/cors.config.js";
 import { logger } from "./config/logger.config.js";
@@ -32,6 +33,12 @@ import {
 // Filet de sécurité process-level (cf. audit dette technique 4.8) : V1.0.0 ne
 // gérait que SIGINT/SIGTERM. Une exception async non interceptée pouvait
 // planter le process silencieusement, sans le nettoyage de gracefulShutdown.
+// Version lue dans package.json : process.env.npm_package_version n'existe
+// que via "npm run", pas quand PM2 lance app.js directement.
+const API_VERSION = JSON.parse(
+  readFileSync(new URL("./package.json", import.meta.url), "utf8"),
+).version;
+
 process.on("uncaughtException", (err) => {
   logger.error(`[UNCAUGHT EXCEPTION] ${err?.stack || err?.message || err}`);
 });
@@ -74,7 +81,7 @@ process.on("unhandledRejection", (reason) => {
       success: true,
       message: "API is running",
       environment: process.env.NODE_ENV,
-      version: process.env.npm_package_version,
+      version: API_VERSION,
       timestamp: new Date().toISOString(),
       uptime: Math.round(process.uptime()),
     });
@@ -256,6 +263,7 @@ process.on("unhandledRejection", (reason) => {
   server.listen(PORT, () => {
     logger.info(
       formatLog(`[API START] [${process.env.NODE_ENV?.toUpperCase()}]`, {
+        Version: API_VERSION,
         Listening: "http://localhost:" + PORT,
         "Route test": `http://localhost:${PORT}/${process.env.API_BASE_ROUTE}/test`,
         "Base route": `/${process.env.API_BASE_ROUTE}`,

@@ -1,0 +1,128 @@
+# Déploiement automatique de l'API en production.
+#
+# À chaque push sur main (ou lancement manuel depuis l'onglet Actions), le
+# runner auto-hébergé installé SUR LE SERVEUR DE PROD :
+#   1. fait le git pull dans le dossier de prod,
+#   2. lance npm install si package.json a changé,
+#   3. signale les scripts SQL à appliquer à la main,
+#   4. recharge l'API avec PM2,
+#   5. attend qu'elle réponde sur /api/test avec un process neuf.
+#
+# Mise en place du runner : voir DEPLOIEMENT.md, section « Déploiement automatique ».
+
+name: Déploiement prod
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Jamais deux déploiements en même temps ; un nouveau push attend la fin du précédent.
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: [self-hosted, windows, uvcdr-prod]
+    timeout-minutes: 15
+    env:
+      PROD_DIR: ${{ vars.PROD_DIR }}
+      PM2_APP: UVCDR API PROD
+      HEALTH_URL: http://localhost:3001/api/test
+    defaults:
+      run:
+        shell: powershell
+    steps:
+      - name: Déployer et vérifier
+        run: |
+          $ErrorActionPreference = 'Continue'
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $start = Get-Date
+
+          function Fail($msg) {
+            Write-Host "::error::$msg"
+            Write-Host "`n--- 60 dernières lignes de logs PM2 ---"
+            pm2.cmd logs "$env:PM2_APP" --lines 60 --nostream
+            exit 1
+          }
+          function Get-ApiStatus {
+            try {
+              return Invoke-RestMethod -Uri $env:HEALTH_URL -TimeoutSec 5 -UseBasicParsing
+            } catch { return $null }
+          }
+
+          if (-not $env:PROD_DIR) { Fail "Variable PROD_DIR non définie (Settings > Secrets and variables > Actions > Variables)." }
+          Set-Location $env:PROD_DIR
+
+          # ── 1. Récupération du code ────────────────────────────────
+          $before = (git rev-parse HEAD).Trim()
+          Write-Host "Version actuelle : $(git describe --tags --always) ($before)"
+
+          git pull --ff-only origin main
+          if ($LASTEXITCODE -ne 0) { Fail "git pull a échoué (modifications locales sur le serveur ? historique divergent ?)." }
+
+          $after = (git rev-parse HEAD).Trim()
+          if ($before -eq $after -and '${{ github.event_name }}' -ne 'workflow_dispatch') {
+            Write-Host "✅ Déjà à jour, rien à redémarrer."
+            exit 0
+          }
+
+          $changed = @(git diff --name-only $before $after)
+          Write-Host "`nCommits déployés :"
+          git log --oneline "$before..$after"
+
+          # ── 2. Dépendances ─────────────────────────────────────────
+          if ($changed -contains 'package.json') {
+            Write-Host "`npackage.json a changé → npm install"
+            npm.cmd install --no-audit --no-fund
+            if ($LASTEXITCODE -ne 0) { Fail "npm install a échoué." }
+          }
+
+          # ── 3. Scripts SQL (jamais appliqués automatiquement) ──────
+          $sql = @($changed | Where-Object { $_ -like 'scripts/sql/*' })
+          foreach ($f in $sql) { Write-Host "::warning::Script SQL à appliquer sur la base de prod : $f" }
+
+          # ── 4. Redémarrage ─────────────────────────────────────────
+          $oldPid = (pm2.cmd pid "$env:PM2_APP" | Out-String).Trim()
+          Write-Host "`nRedémarrage PM2 (PID actuel : $oldPid)..."
+          pm2.cmd reload "$env:PM2_APP"
+          if ($LASTEXITCODE -ne 0) { Fail "pm2 reload a échoué." }
+
+          # ── 5. Vérification : nouveau process + /api/test répond ───
+          $expected = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          $deadline = (Get-Date).AddSeconds(90)
+          $status = $null
+          do {
+            Start-Sleep -Seconds 3
+            $newPid = (pm2.cmd pid "$env:PM2_APP" | Out-String).Trim()
+            $status = Get-ApiStatus
+            $restarted = $newPid -and $newPid -ne '0' -and $newPid -ne $oldPid
+            $fresh = $status -and $status.uptime -le ((Get-Date) - $start).TotalSeconds
+          } until (($restarted -and $fresh) -or (Get-Date) -gt $deadline)
+
+          if (-not $restarted) { Fail "PM2 n'a pas relancé l'API (PID toujours $oldPid ou process arrêté)." }
+          if (-not $fresh)     { Fail "L'API ne répond pas sur $env:HEALTH_URL après redémarrage." }
+
+          Write-Host ""
+          Write-Host "✅ API redémarrée (PID $oldPid → $newPid)"
+          Write-Host "✅ API à jour et en ligne : v$($status.version) [$($status.environment)] — commit $($after.Substring(0,7))"
+          if ($status.version -ne $expected) {
+            Write-Host "::warning::L'API annonce v$($status.version) alors que package.json indique v$expected."
+          }
+
+          # Résumé affiché sur la page du run GitHub
+          $summary = @"
+          ### ✅ API déployée en production
+          | | |
+          |---|---|
+          | Version | v$($status.version) |
+          | Commit | ``$($after.Substring(0,7))`` |
+          | PID | $oldPid → $newPid |
+          | Durée | $([int]((Get-Date) - $start).TotalSeconds) s |
+          "@
+          if ($sql.Count) { $summary += "`n`n⚠️ **Scripts SQL à appliquer à la main :**`n" + (($sql | ForEach-Object { "- ``$_``" }) -join "`n") }
+          $summary | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

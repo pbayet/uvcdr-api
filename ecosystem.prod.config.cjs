@@ -6,7 +6,7 @@ module.exports = {
       cwd: "./",
       instances: 1,
       exec_mode: "fork",
-      watch: true,
+      watch: false, // OBLIGATOIRE : sinon PM2 redémarre en plein git pull (cf. DEPLOIEMENT.md)
       ignore_watch: [
         "assets",
         "node_modules",
