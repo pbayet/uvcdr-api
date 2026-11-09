@@ -27,11 +27,10 @@ permissions:
 
 jobs:
   deploy:
-    runs-on: [self-hosted, windows, uvcdr-prod]
+    runs-on: [self-hosted, prod]
     timeout-minutes: 15
+    # PROD_DIR et PM2_APP viennent du fichier .env du runner (écrit par scripts/install-runner.ps1).
     env:
-      PROD_DIR: ${{ vars.PROD_DIR }}
-      PM2_APP: UVCDR API PROD
       HEALTH_URL: http://localhost:3001/api/test
     defaults:
       run:
@@ -42,6 +41,7 @@ jobs:
           $ErrorActionPreference = 'Continue'
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $start = Get-Date
+          if (-not $env:PM2_APP) { $env:PM2_APP = 'UVCDR API PROD' }
 
           function Fail($msg) {
             Write-Host "::error::$msg"
@@ -55,7 +55,7 @@ jobs:
             } catch { return $null }
           }
 
-          if (-not $env:PROD_DIR) { Fail "Variable PROD_DIR non définie (Settings > Secrets and variables > Actions > Variables)." }
+          if (-not $env:PROD_DIR) { Fail "PROD_DIR non défini : l'ajouter dans le fichier .env du runner (C:\actions-runners\uvcdr-api\.env) puis redémarrer le service." }
           Set-Location $env:PROD_DIR
 
           # ── 1. Récupération du code ────────────────────────────────

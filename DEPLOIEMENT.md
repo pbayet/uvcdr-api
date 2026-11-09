@@ -136,14 +136,14 @@ En cas d'échec, le run passe au rouge et affiche les 60 dernières lignes de `p
 
 ### Installation du runner (une seule fois, sur le serveur)
 
-1. Sur GitHub : **Settings > Actions > Runners > New self-hosted runner > Windows x64**. Exécute les commandes affichées dans un dossier dédié, par ex. `C:\actions-runner` (**pas** dans le dossier de l'API).
-2. Pendant `config.cmd` :
-   - *labels supplémentaires* : `uvcdr-prod`
-   - *run as service* : `Y`
-   - *compte du service* : **le compte Windows qui lance PM2** (celui avec lequel tu fais `pm2 list` aujourd'hui). Sinon le runner ne voit pas les process PM2 (autre `PM2_HOME`) et Git refuse le dossier (« dubious ownership »).
-3. Sur GitHub : **Settings > Secrets and variables > Actions > Variables > New repository variable** : `PROD_DIR` = chemin du dossier de l'API en prod (ex. `D:\API\uvcdr-api`).
-4. Le dépôt est **public** : dans **Settings > Actions > General**, choisis *Require approval for all external contributors* pour qu'une pull request venant d'un fork ne puisse pas exécuter de code sur le serveur. Le plus sûr reste de passer le dépôt en **privé**.
-5. Recharge PM2 depuis le fichier de config pour appliquer `watch: false` (un `pm2 reload` seul garde l'ancienne config) :
+Le script [scripts/install-runner.ps1](scripts/install-runner.ps1) fait tout (même principe que pour les fronts).
+
+1. Sur GitHub : **Settings > Actions > Runners > New self-hosted runner > Windows x64**. Note le **jeton**, la **version** et le **SHA-256** affichés.
+2. Sur le serveur, ouvre PowerShell **en tant qu'administrateur**, avec **le compte Windows qui fait tourner PM2** (celui de `pm2 list`).
+3. Renseigne le haut du script (`$apiDir`, `$token`, `$version`, `$sha256`), puis colle-le dans la console ou lance-le. Il demande le mot de passe du compte : le service du runner tourne sous ce compte (et non sous SERVICE RÉSEAU comme pour les fronts), sinon il ne verrait pas le process PM2 et Git refuserait le dossier (« dubious ownership »).
+4. Le chemin de l'API est écrit dans `C:\actions-runners\uvcdr-api\.env` (`PROD_DIR=...`) : rien à configurer côté GitHub.
+5. Le dépôt est **public** : dans **Settings > Actions > General**, choisis *Require approval for all external contributors* pour qu'une pull request venant d'un fork ne puisse pas exécuter de code sur le serveur. Le plus sûr reste de passer le dépôt en **privé**.
+6. Recharge PM2 depuis le fichier de config pour appliquer `watch: false` (un `pm2 reload` seul garde l'ancienne config) :
 
 ```bash
 pm2 delete "UVCDR API PROD"
@@ -151,7 +151,16 @@ pm2 start ecosystem.prod.config.cjs
 pm2 save
 ```
 
-6. Teste : **Actions > Déploiement prod > Run workflow**.
+7. Teste : **Actions > Déploiement prod > Run workflow**.
+
+### Supprimer le runner
+
+Dans PowerShell administrateur, avec un jeton de suppression (**Settings > Actions > Runners > le runner > Remove**) :
+
+```powershell
+cd C:\actions-runners\uvcdr-api
+.\config.cmd remove --token XXXXXXXXXXXXXXXXXXXX
+```
 
 ---
 
