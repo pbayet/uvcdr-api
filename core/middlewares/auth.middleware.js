@@ -360,6 +360,8 @@ export async function loginAppMiddleware(req, res, next) {
     email = user.EMAIL;
     connexionSuccessful = true;
 
+    console.log(`[LOGIN_APP] email=${email} appcode=${appcode} permissionLevel=${userPermission.PRMLVL}`, myNewToken);
+
     res.status(200).json(myNewToken);
   } catch (err) {
     connexionSuccessful = false;
