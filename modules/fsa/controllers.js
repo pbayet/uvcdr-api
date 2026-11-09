@@ -640,8 +640,6 @@ export async function dailyRelaunch(NUMGES = null) {
     }, {}),
   );
 
-  console.log(valEmails, dossiersByEmail);
-
   for (const group of dossiersByEmail) {
     await notifyFsaEvent({
       template: "fsa/reminder",

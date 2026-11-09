@@ -16,8 +16,6 @@ export async function getFiles(META) {
       ? `SELECT ${SELECT_COLUMNS} FROM ATTACHMENTS WHERE ENTITYTYPE = @ENTITYTYPE AND ENTITYID = @ENTITYID AND DELETEDAT IS NULL`
       : `SELECT ${SELECT_COLUMNS} FROM ATTACHMENTS WHERE DELETEDAT IS NULL`;
 
-  console.log(query);
-
   const result = await runQuery({
     moduleUrl: import.meta.url,
     dbConnectionName: "attachments",
@@ -190,8 +188,6 @@ export async function signAttachment(fileCode, signedBy) {
     err.status = 404;
     throw err;
   }
-
-  console.log(attachment);
 
   const keyVersion = signingService.getCurrentKeyVersion();
   const signatureValue = signingService.computeSignature(

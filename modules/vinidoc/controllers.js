@@ -758,7 +758,6 @@ export async function searchArticles(req) {
   const CODVRACS = await services.listSheetCodvracs();
   const rows = await services.searchArticles({ ...filters, CODVRACS });
   const articles = rows.map(utils.articleFromRow);
-  console.log(articles);
 
   // Statut de la fiche qui serait utilisée (badge « non validée » au front).
   const sheets = await services.findSheetsByCodvrac([
@@ -781,9 +780,6 @@ export async function getArticle(req) {
   const { COD_ARTICLE } = v.articleParam.parse(req.params);
   const row = await getArticleOrThrow(COD_ARTICLE);
   const article = utils.articleFromRow(row);
-
-  console.log(row);
-  console.log(article);
 
   const [sheets, params] = await Promise.all([
     services.findSheetsByCodvrac(article.CODVRACS),
@@ -1322,7 +1318,13 @@ export async function generate(req) {
     }
 
     logger.info(
-      `[VINIDOC] Génération ${FORMAT} | fiche ${SHTID} ${VERNUM ? `v${VERNUM}` : "saisie en cours (non validée)"} | modèle ${TPLID} | ${LNGCOD} | HVE=${HVE} BIO=${BIO} | ${PACKAGING} | ${COD_ARTICLE}${Object.keys(LOGISTICS).length ? ` (logistique corrigée : ${Object.entries(LOGISTICS).map(([k, val]) => `${k}=${val}`).join(", ")})` : ""}${SHEET || TRANSLATION ? ` | fiche ajustée localement : ${[SHEET && "caractéristiques", TRANSLATION && `textes ${LNGCOD}`].filter(Boolean).join(", ")}` : ""} | ${USR}`,
+      `[VINIDOC] Génération ${FORMAT} | fiche ${SHTID} ${VERNUM ? `v${VERNUM}` : "saisie en cours (non validée)"} | modèle ${TPLID} | ${LNGCOD} | HVE=${HVE} BIO=${BIO} | ${PACKAGING} | ${COD_ARTICLE}${
+        Object.keys(LOGISTICS).length
+          ? ` (logistique corrigée : ${Object.entries(LOGISTICS)
+              .map(([k, val]) => `${k}=${val}`)
+              .join(", ")})`
+          : ""
+      }${SHEET || TRANSLATION ? ` | fiche ajustée localement : ${[SHEET && "caractéristiques", TRANSLATION && `textes ${LNGCOD}`].filter(Boolean).join(", ")}` : ""} | ${USR}`,
     );
 
     return {

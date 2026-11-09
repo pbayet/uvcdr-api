@@ -153,8 +153,6 @@ export async function getAudits(req) {
   const query = v.auditsQuerySchema.parse(await params(req));
   const isCave = utils.isCaveToken(req);
 
-  console.log("tests");
-
   const rows = await services.listAudits({
     // Une cave ne peut JAMAIS lister les audits d'une autre cave, quel que
     // soit le CAVEID envoyé.

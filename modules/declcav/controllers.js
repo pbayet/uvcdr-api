@@ -594,8 +594,6 @@ export async function getFolderByMrv(req) {
     ).params,
   );
 
-  console.log("DELLLLLLLLLLLLLLLLLLLLLLLLLL", DEL);
-
   const rawFolders = await services.getFolderByMrv(MRVCOD, DEL);
   const formattedFolders = utils.formatFolders(rawFolders);
 
