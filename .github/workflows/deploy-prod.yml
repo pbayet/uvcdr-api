@@ -1,14 +1,15 @@
 # Déploiement automatique de l'API en production.
 #
 # À chaque push sur main (ou lancement manuel depuis l'onglet Actions), le
-# runner auto-hébergé installé SUR LE SERVEUR DE PROD :
+# runner auto-hébergé installé SUR LE SERVEUR DE PROD (compte SERVICE RÉSEAU) :
 #   1. fait le git pull dans le dossier de prod,
 #   2. lance npm install si package.json a changé,
 #   3. signale les scripts SQL à appliquer à la main,
-#   4. recharge l'API avec PM2,
+#   4. réécrit restart.trigger : PM2 surveille ce seul fichier et redémarre l'API,
 #   5. attend qu'elle réponde sur /api/test avec un process neuf.
 #
-# Mise en place du runner : voir DEPLOIEMENT.md, section « Déploiement automatique ».
+# Le runner n'appelle jamais pm2 : il n'a pas besoin de tourner sous le compte de PM2.
+# Mise en place du runner : scripts/install-runner.ps1 (voir DEPLOIEMENT.md).
 
 name: Déploiement prod
 
@@ -29,7 +30,7 @@ jobs:
   deploy:
     runs-on: [self-hosted, prod]
     timeout-minutes: 15
-    # PROD_DIR et PM2_APP viennent du fichier .env du runner (écrit par scripts/install-runner.ps1).
+    # PROD_DIR vient du fichier .env du runner (écrit par scripts/install-runner.ps1).
     env:
       HEALTH_URL: http://localhost:3001/api/test
     defaults:
@@ -41,12 +42,20 @@ jobs:
           $ErrorActionPreference = 'Continue'
           [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
           $start = Get-Date
-          if (-not $env:PM2_APP) { $env:PM2_APP = 'UVCDR API PROD' }
 
+          function Show-Logs {
+            foreach ($sub in 'errors', 'success') {
+              $f = Get-ChildItem "logs\$sub" -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1
+              if ($f) {
+                Write-Host "`n--- 40 dernières lignes de logs\$sub\$($f.Name) ---"
+                Get-Content $f.FullName -Tail 40 -Encoding UTF8
+              }
+            }
+          }
           function Fail($msg) {
             Write-Host "::error::$msg"
-            Write-Host "`n--- 60 dernières lignes de logs PM2 ---"
-            pm2.cmd logs "$env:PM2_APP" --lines 60 --nostream
+            Show-Logs
             exit 1
           }
           function Get-ApiStatus {
@@ -60,6 +69,7 @@ jobs:
 
           # ── 1. Récupération du code ────────────────────────────────
           $before = (git rev-parse HEAD).Trim()
+          if ($LASTEXITCODE -ne 0) { Fail "git ne peut pas lire $env:PROD_DIR (safe.directory ou droits manquants : relancer scripts/install-runner.ps1)." }
           Write-Host "Version actuelle : $(git describe --tags --always) ($before)"
 
           git pull --ff-only origin main
@@ -86,29 +96,29 @@ jobs:
           $sql = @($changed | Where-Object { $_ -like 'scripts/sql/*' })
           foreach ($f in $sql) { Write-Host "::warning::Script SQL à appliquer sur la base de prod : $f" }
 
-          # ── 4. Redémarrage ─────────────────────────────────────────
-          $oldPid = (pm2.cmd pid "$env:PM2_APP" | Out-String).Trim()
-          Write-Host "`nRedémarrage PM2 (PID actuel : $oldPid)..."
-          pm2.cmd reload "$env:PM2_APP"
-          if ($LASTEXITCODE -ne 0) { Fail "pm2 reload a échoué." }
+          # ── 4. Redémarrage via le fichier surveillé par PM2 ────────
+          $old = Get-ApiStatus
+          $oldPid = if ($old -and $old.pid) { $old.pid } else { '?' }
+          Write-Host "`nRedémarrage de l'API (PID actuel : $oldPid)..."
+          $triggerAt = Get-Date
+          Set-Content restart.trigger -Encoding ASCII -Value "$($triggerAt.ToString('s')) $after ${{ github.run_id }}"
 
-          # ── 5. Vérification : nouveau process + /api/test répond ───
+          # ── 5. Vérification : process neuf + /api/test répond ──────
           $expected = (Get-Content package.json -Raw | ConvertFrom-Json).version
           $deadline = (Get-Date).AddSeconds(90)
           $status = $null
+          $fresh = $false
           do {
             Start-Sleep -Seconds 3
-            $newPid = (pm2.cmd pid "$env:PM2_APP" | Out-String).Trim()
             $status = Get-ApiStatus
-            $restarted = $newPid -and $newPid -ne '0' -and $newPid -ne $oldPid
-            $fresh = $status -and $status.uptime -le ((Get-Date) - $start).TotalSeconds
-          } until (($restarted -and $fresh) -or (Get-Date) -gt $deadline)
+            $fresh = $status -and $status.uptime -le ((Get-Date) - $triggerAt).TotalSeconds + 1
+          } until ($fresh -or (Get-Date) -gt $deadline)
 
-          if (-not $restarted) { Fail "PM2 n'a pas relancé l'API (PID toujours $oldPid ou process arrêté)." }
-          if (-not $fresh)     { Fail "L'API ne répond pas sur $env:HEALTH_URL après redémarrage." }
+          if (-not $status) { Fail "L'API ne répond pas sur $env:HEALTH_URL après redémarrage." }
+          if (-not $fresh)  { Fail "L'API n'a pas redémarré (uptime $($status.uptime) s) : PM2 a-t-il été relancé avec ecosystem.prod.config.cjs (watch restart.trigger) ?" }
 
           Write-Host ""
-          Write-Host "✅ API redémarrée (PID $oldPid → $newPid)"
+          Write-Host "✅ API redémarrée (PID $oldPid → $($status.pid))"
           Write-Host "✅ API à jour et en ligne : v$($status.version) [$($status.environment)] — commit $($after.Substring(0,7))"
           if ($status.version -ne $expected) {
             Write-Host "::warning::L'API annonce v$($status.version) alors que package.json indique v$expected."
@@ -121,7 +131,7 @@ jobs:
           |---|---|
           | Version | v$($status.version) |
           | Commit | ``$($after.Substring(0,7))`` |
-          | PID | $oldPid → $newPid |
+          | PID | $oldPid → $($status.pid) |
           | Durée | $([int]((Get-Date) - $start).TotalSeconds) s |
           "@
           if ($sql.Count) { $summary += "`n`n⚠️ **Scripts SQL à appliquer à la main :**`n" + (($sql | ForEach-Object { "- ``$_``" }) -join "`n") }

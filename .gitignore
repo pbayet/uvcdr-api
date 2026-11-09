@@ -32,3 +32,6 @@ loadtest/reports/
 diag-pwd.mjs
 AUDIT_~1.DOC
 TABLES.sql
+
+# Fichier touché par le déploiement automatique pour redémarrer l'API (PM2 watch)
+restart.trigger

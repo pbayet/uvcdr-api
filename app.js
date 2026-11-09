@@ -88,6 +88,7 @@ process.on("unhandledRejection", (reason) => {
       version: API_VERSION,
       timestamp: new Date().toISOString(),
       uptime: Math.round(process.uptime()),
+      pid: process.pid,
     });
   });
 

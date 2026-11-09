@@ -6,7 +6,10 @@ module.exports = {
       cwd: "./",
       instances: 1,
       exec_mode: "fork",
-      watch: false, // OBLIGATOIRE : sinon PM2 redémarre en plein git pull (cf. DEPLOIEMENT.md)
+      // Seul ce fichier est surveillé : le déploiement automatique (runner GitHub)
+      // le réécrit après git pull + npm install pour faire redémarrer l'API.
+      // Ne jamais remettre watch: true (PM2 redémarrerait en plein git pull).
+      watch: ["restart.trigger"],
       ignore_watch: [
         "assets",
         "node_modules",

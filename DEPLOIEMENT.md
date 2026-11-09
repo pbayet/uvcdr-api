@@ -36,7 +36,7 @@ Les fichiers ignorés par Git ne sont pas touchés : `.env`, `uploads/`, `logs/`
 
 - Le `.env` de prod est présent à la racine.
 - `git status` affiche « nothing to commit ».
-- Dans `ecosystem.prod.config.cjs`, `watch` vaut **`false`**. Sinon, PM2 redémarre l'API en plein `git pull`.
+- Dans `ecosystem.prod.config.cjs`, `watch` vaut **`["restart.trigger"]`** et jamais `true`. Sinon, PM2 redémarre l'API en plein `git pull`.
 
 ---
 
@@ -125,25 +125,25 @@ Vérifie que l'API démarre sans erreur et teste un ou deux appels.
 
 Le workflow [.github/workflows/deploy-prod.yml](.github/workflows/deploy-prod.yml) se déclenche à chaque push sur `main` (et à la demande via **Actions > Déploiement prod > Run workflow**). Il tourne sur un **runner auto-hébergé installé sur le serveur de prod** : c'est le serveur qui va chercher les tâches chez GitHub, aucun port n'est à ouvrir.
 
-Il fait `git pull --ff-only`, `npm install` si `package.json` a changé, `pm2 reload`, puis attend que `/api/test` réponde avec un **nouveau PID**. La console du run affiche :
+Il fait `git pull --ff-only`, `npm install` si `package.json` a changé, puis réécrit le fichier `restart.trigger`. PM2 surveille ce seul fichier (`watch` dans `ecosystem.prod.config.cjs`) et redémarre l'API. Le runner attend ensuite que `/api/test` réponde avec un **process neuf**. Le runner n'appelle jamais `pm2` : il tourne sous SERVICE RÉSEAU, comme pour les fronts, sans mot de passe. La console du run affiche :
 
 ```
 ✅ API redémarrée (PID 1234 → 5678)
 ✅ API à jour et en ligne : v1.1.3 [production] — commit ae8dac7
 ```
 
-En cas d'échec, le run passe au rouge et affiche les 60 dernières lignes de `pm2 logs`.
+En cas d'échec, le run passe au rouge et affiche les dernières lignes des fichiers de `logs/errors` et `logs/success`.
 
 ### Installation du runner (une seule fois, sur le serveur)
 
 Le script [scripts/install-runner.ps1](scripts/install-runner.ps1) fait tout (même principe que pour les fronts).
 
 1. Sur GitHub : **Settings > Actions > Runners > New self-hosted runner > Windows x64**. Note le **jeton**, la **version** et le **SHA-256** affichés.
-2. Sur le serveur, ouvre PowerShell **en tant qu'administrateur**, avec **le compte Windows qui fait tourner PM2** (celui de `pm2 list`).
-3. Renseigne le haut du script (`$apiDir`, `$token`, `$version`, `$sha256`), puis colle-le dans la console ou lance-le. Il demande le mot de passe du compte : le service du runner tourne sous ce compte (et non sous SERVICE RÉSEAU comme pour les fronts), sinon il ne verrait pas le process PM2 et Git refuserait le dossier (« dubious ownership »).
+2. Sur le serveur, ouvre PowerShell **en tant qu'administrateur** (n'importe quel compte admin).
+3. Renseigne le haut du script (`$apiDir`, `$token`, `$version`, `$sha256`), puis colle-le dans la console ou lance-le. Il installe le service sous SERVICE RÉSEAU, donne à ce compte le droit de modifier le dossier de l'API (`icacls`) et l'autorise dans Git (`safe.directory`). `git`, `node` et `npm` doivent être dans le PATH **système** : le script le vérifie.
 4. Le chemin de l'API est écrit dans `C:\actions-runners\uvcdr-api\.env` (`PROD_DIR=...`) : rien à configurer côté GitHub.
 5. Le dépôt est **public** : dans **Settings > Actions > General**, choisis *Require approval for all external contributors* pour qu'une pull request venant d'un fork ne puisse pas exécuter de code sur le serveur. Le plus sûr reste de passer le dépôt en **privé**.
-6. Recharge PM2 depuis le fichier de config pour appliquer `watch: false` (un `pm2 reload` seul garde l'ancienne config) :
+6. Avec le compte qui fait tourner PM2, recharge PM2 depuis le fichier de config pour qu'il surveille `restart.trigger` (un `pm2 reload` seul garde l'ancienne config) :
 
 ```bash
 pm2 delete "UVCDR API PROD"
