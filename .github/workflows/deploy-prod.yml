@@ -35,7 +35,9 @@ jobs:
       HEALTH_URL: http://localhost:3001/api/test
     defaults:
       run:
-        shell: powershell
+        # Le runner écrit le script en UTF-8 sans BOM et Windows PowerShell 5.1 le lirait
+        # en ANSI (accents cassés, « → » lu comme un guillemet) : on le relit en UTF-8.
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "Invoke-Expression ([IO.File]::ReadAllText('{0}', [Text.Encoding]::UTF8))"
     steps:
       - name: Déployer et vérifier
         run: |
