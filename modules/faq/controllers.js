@@ -657,6 +657,39 @@ export async function deleteAnswer(req) {
 }
 
 /* ─────────────────────────────────────────────
+   Pièces jointes (contrôle d'accès pour /api/files)
+───────────────────────────────────────────── */
+
+/**
+ * Appelé par modules/files avant l'ajout ou la suppression d'une pièce
+ * jointe FAQ (ENTITYTYPE "FAQPST" / "FAQANS") : seuls l'auteur de la
+ * publication / de la réponse et les modérateurs y sont autorisés. Lève
+ * ACCESS_DENIED_WO_LOGOUT sinon (ou DATA_NOT_FOUND si l'entité n'existe pas).
+ */
+export async function assertCanManageAttachments(req, entityType, entityId) {
+  const { POST, ANSWER } = services.ATTACHMENT_TYPES;
+  if (entityType !== POST && entityType !== ANSWER) return;
+
+  const ctx = await utils.getUserContext(req);
+  if (ctx.ISMOD) return;
+
+  const id = Number(entityId);
+  if (!Number.isInteger(id) || id <= 0) throw new Error("DATA_NOT_FOUND");
+
+  let ownerId;
+  if (entityType === services.ATTACHMENT_TYPES.POST) {
+    ownerId = (await services.getPostRaw(id))?.CREUSR;
+  } else if (entityType === services.ATTACHMENT_TYPES.ANSWER) {
+    ownerId = (await services.getAnswerRaw(id))?.CREUSR;
+  } else {
+    return;
+  }
+
+  if (ownerId == null) throw new Error("DATA_NOT_FOUND");
+  if (Number(ownerId) !== ctx.USRID) throw new Error("ACCESS_DENIED_WO_LOGOUT");
+}
+
+/* ─────────────────────────────────────────────
    Base de connaissance & statistiques
 ───────────────────────────────────────────── */
 

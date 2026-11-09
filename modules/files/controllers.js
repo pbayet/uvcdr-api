@@ -42,10 +42,26 @@ function notifyTicketAttachmentChange(type, entityType, entityId) {
   broadcastToAll({ type, payload: { TCKCOD: entityId } });
 }
 
+/** Pièces jointes du module FAQ (cf. modules/faq/services.ATTACHMENT_TYPES). */
+const FAQ_ENTITY_TYPES = new Set(["FAQPST", "FAQANS"]);
+
+/**
+ * Pièce jointe FAQ : ajout / suppression réservés à l'auteur de la
+ * publication ou de la réponse et aux modérateurs. Import à la demande pour
+ * ne pas lier le chargement de ce module générique à celui de la FAQ.
+ */
+async function assertFaqAttachmentAccess(req, entityType, entityId) {
+  if (!FAQ_ENTITY_TYPES.has(entityType)) return;
+  const faq = await import("../faq/controllers.js");
+  await faq.assertCanManageAttachments(req, entityType, entityId);
+}
+
 export async function uploadFiles(req) {
   const payload = uploadFilesSchema.parse(
     (await requestUtils.getRequestParams(req)).params,
   );
+
+  await assertFaqAttachmentAccess(req, payload.entitytyp, payload.entityid);
 
   const ignoreIfExist =
     payload.ignoreIfExist === "true" || payload.ignoreIfExist === "1";
@@ -88,6 +104,24 @@ export async function deleteFiles(req) {
   const { metas: validatedMetas } = deleteFilesSchema.parse({
     metas: jsonMetas,
   });
+
+  // Contrôle d'accès des pièces jointes FAQ AVANT toute suppression (une
+  // requête refusée ne doit rien supprimer, même partiellement).
+  for (const meta of validatedMetas) {
+    if (meta.entity) {
+      await assertFaqAttachmentAccess(
+        req,
+        meta.entity.entityName,
+        meta.entity.entityId,
+      );
+    }
+    if (meta.filecode) {
+      const [file] = await services.getFiles({ FILECODE: meta.filecode });
+      if (file) {
+        await assertFaqAttachmentAccess(req, file.ENTITYTYPE, file.ENTITYID);
+      }
+    }
+  }
 
   for (const meta of validatedMetas) {
     if (meta.entity) {
