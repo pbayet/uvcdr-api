@@ -52,6 +52,10 @@ process.on("unhandledRejection", (reason) => {
   const app = express();
   const server = createServer(app);
 
+  console.log(
+    `[API START] [${process.env.NODE_ENV?.toUpperCase()}] Version ${API_VERSION}, Test 8`,
+  );
+
   // Connecter toutes les bases avant de charger les routes
   await initDatabases();
 
