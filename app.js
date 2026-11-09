@@ -53,7 +53,7 @@ process.on("unhandledRejection", (reason) => {
   const server = createServer(app);
 
   console.log(
-    `[API START] [${process.env.NODE_ENV?.toUpperCase()}] Version ${API_VERSION}, TETETETETETETEET`,
+    `[API START] [${process.env.NODE_ENV?.toUpperCase()}] Version ${API_VERSION}, Test`,
   );
 
   // Connecter toutes les bases avant de charger les routes
