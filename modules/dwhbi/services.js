@@ -479,7 +479,7 @@ export async function getNomenclatureByPFI(PFI) {
       a.BV_COD_FORMAT AS CODFMT,
       a.BV_FORMAT_A AS LFMT,
       a.BV_FORMAT_L AS LLFMT,
-      a.COEF_FORMAT AS COEFFMT,
+      a.CAPACITE AS COEFFMT,
       a.COD_CATEG AS CODCAT,
       a.CATEGORIE_TYP_PRODUIT_FINI AS LCAT,
       a.CATEGORIE_ARTICLE AS LLCAT,
