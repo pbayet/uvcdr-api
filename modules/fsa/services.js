@@ -1646,6 +1646,10 @@ export async function postGestionnaire(
     return true;
   } catch (err) {
     await transaction.rollback();
+    // 2601 / 2627 : violation d'unicité (UQ_FSAGES_NUMGES) → code déjà pris.
+    if (err?.number === 2601 || err?.number === 2627) {
+      throw new Error("FSA_GESTIONNAIRE_ALREADY_EXISTS");
+    }
     throw err;
   }
 }

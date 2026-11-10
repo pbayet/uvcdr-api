@@ -586,6 +586,22 @@ export const ERROR_REGISTRY = {
     HTTP_RESPONSE_CODE: 422,
   },
 
+  // ── 1800 FSA (modules/fsa) ──
+  // modules/fsa/services.postGestionnaire : le code (NUMGES) est déjà
+  // utilisé par un autre gestionnaire (UQ_FSAGES_NUMGES).
+  FSA_GESTIONNAIRE_ALREADY_EXISTS: {
+    CODE: 1801,
+    MESSAGE: {
+      en: "Manager already exists",
+      fr: "Gestionnaire déjà existant",
+    },
+    DESCRIPTION: {
+      en: "A manager with this code already exists.",
+      fr: "Un gestionnaire existe déjà avec ce code.",
+    },
+    HTTP_RESPONSE_CODE: 409,
+  },
+
   // ── 1700 VINIDOC (modules/vinidoc) ──
   VINIDOC_SHEET_NOT_FOUND: {
     CODE: 1701,
