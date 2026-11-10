@@ -5,6 +5,7 @@ import { runQuery } from "../../core/utils/db.utils.js";
    FAQ — Services
    Tables (cf. sql/FAQ.tables.sql) :
      FAQPOSTS, FAQANSWERS, FAQANSWERLIKES, FAQCATEGORIES, FAQSTATUSES,
+     FAQPOSTLIKES (cf. sql/FAQPOSTLIKES.table.sql),
      FAQKEYWORDS, FAQMODERATORS, FAQTICKETS
    Cross-base :
      USERSMANAGER.dbo.USERS         (nom / email des auteurs)
@@ -35,13 +36,31 @@ SELECT
   (SELECT COUNT(*) FROM dbo.FAQANSWERLIKES l
      INNER JOIN dbo.FAQANSWERS an ON an.ANSID = l.ANSID
      WHERE an.PSTID = p.PSTID AND an.DLTD = 0) AS LIKECOUNT,
+  -- "J'aime" sur la publication elle-même (FAQPOSTLIKES), distincts de ceux
+  -- reçus par ses réponses (LIKECOUNT ci-dessus).
+  (SELECT COUNT(*) FROM dbo.FAQPOSTLIKES pl WHERE pl.PSTID = p.PSTID) AS POSTLIKECOUNT,
+  CASE WHEN EXISTS (
+    SELECT 1 FROM dbo.FAQPOSTLIKES pl WHERE pl.PSTID = p.PSTID AND pl.USRID = @USRID
+  ) THEN 1 ELSE 0 END AS POSTLIKED,
+  -- L'utilisateur courant a liké au moins une réponse (active) de ce post
+  -- (filtre « Mes likes » côté front).
+  CASE WHEN EXISTS (
+    SELECT 1 FROM dbo.FAQANSWERLIKES l
+    INNER JOIN dbo.FAQANSWERS an ON an.ANSID = l.ANSID
+    WHERE an.PSTID = p.PSTID AND an.DLTD = 0 AND l.USRID = @USRID
+  ) THEN 1 ELSE 0 END AS ANSLIKED,
   (SELECT MAX(an.CREDAT) FROM dbo.FAQANSWERS an
      WHERE an.PSTID = p.PSTID AND an.DLTD = 0) AS LASTANSDAT,
   (SELECT MIN(an.VALDAT) FROM dbo.FAQANSWERS an
      WHERE an.PSTID = p.PSTID AND an.DLTD = 0 AND an.VALIDATED = 1) AS FIRSTVALDAT,
   (SELECT STRING_AGG(k.KEYWORD, '|') FROM dbo.FAQKEYWORDS k
      WHERE k.PSTID = p.PSTID) AS KEYWORDS,
-  ft.TCKID, ft.TCKCOD
+  ft.TCKID, ft.TCKCOD,
+  -- Épinglage PERSONNEL de l'utilisateur courant (FAQUSERPINS) ; l'épinglage
+  -- GÉNÉRAL (modérateurs) reste FAQPOSTS.PINNED.
+  CASE WHEN EXISTS (
+    SELECT 1 FROM dbo.FAQUSERPINS up WHERE up.PSTID = p.PSTID AND up.USRID = @USRID
+  ) THEN 1 ELSE 0 END AS MYPIN
 FROM dbo.FAQPOSTS AS p
 LEFT JOIN dbo.FAQCATEGORIES AS c ON c.CATID = p.CATID
 LEFT JOIN dbo.FAQSTATUSES AS s ON s.STSID = p.STSID
@@ -102,7 +121,7 @@ export async function getPosts(ctx, filters = {}) {
         OR p.BODY LIKE @SEARCH
         OR EXISTS (SELECT 1 FROM dbo.FAQKEYWORDS k WHERE k.PSTID = p.PSTID AND k.KEYWORD LIKE @SEARCH)
       )
-    ORDER BY p.PINNED DESC, COALESCE(
+    ORDER BY p.PINNED DESC, MYPIN DESC, COALESCE(
       (SELECT MAX(an.CREDAT) FROM dbo.FAQANSWERS an WHERE an.PSTID = p.PSTID AND an.DLTD = 0),
       p.UPDDAT, p.CREDAT
     ) DESC
@@ -206,7 +225,11 @@ export async function getPostRaw(PSTID) {
   const result = await runQuery({
     moduleUrl: import.meta.url,
     query: `${SELECT_POSTS} WHERE p.PSTID = @PSTID`,
-    inputs: { PSTID: { type: sql.Int, value: PSTID } },
+    inputs: {
+      PSTID: { type: sql.Int, value: PSTID },
+      // Pas d'utilisateur : MYPIN vaut toujours 0 en lecture brute.
+      USRID: { type: sql.Int, value: null },
+    },
   });
 
   return result.recordset[0] ?? null;
@@ -302,6 +325,8 @@ export async function deletePostPermanently(PSTID) {
         WHERE an.PSTID = @PSTID;
       DELETE FROM dbo.FAQTICKETS WHERE PSTID = @PSTID;
       DELETE FROM dbo.FAQKEYWORDS WHERE PSTID = @PSTID;
+      DELETE FROM dbo.FAQUSERPINS WHERE PSTID = @PSTID;
+      DELETE FROM dbo.FAQPOSTLIKES WHERE PSTID = @PSTID;
       DELETE FROM dbo.FAQANSWERS WHERE PSTID = @PSTID;
       DELETE FROM dbo.FAQPOSTS WHERE PSTID = @PSTID;
     COMMIT;
@@ -422,6 +447,69 @@ export async function moveStatus(PSTID, CODE, FROM_CODES = []) {
   });
 }
 
+/** Épinglage personnel (FAQUSERPINS) d'une publication pour USRID. */
+export async function setUserPin(PSTID, USRID, PINNED) {
+  await runQuery({
+    moduleUrl: import.meta.url,
+    query: PINNED
+      ? `
+      INSERT INTO dbo.FAQUSERPINS (USRID, PSTID)
+      SELECT @USRID, @PSTID
+      WHERE NOT EXISTS (
+        SELECT 1 FROM dbo.FAQUSERPINS WHERE USRID = @USRID AND PSTID = @PSTID
+      )`
+      : `DELETE FROM dbo.FAQUSERPINS WHERE USRID = @USRID AND PSTID = @PSTID`,
+    inputs: {
+      PSTID: { type: sql.Int, value: PSTID },
+      USRID: { type: sql.Int, value: USRID },
+    },
+  });
+}
+
+/**
+ * "J'aime" sur une publication (FAQPOSTLIKES) pour USRID — idempotent.
+ * Renvoie le nouveau total de likes de la publication.
+ */
+export async function setPostLike(PSTID, USRID, LIKED) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    ${
+      LIKED
+        ? `INSERT INTO dbo.FAQPOSTLIKES (PSTID, USRID)
+      SELECT @PSTID, @USRID
+      WHERE NOT EXISTS (
+        SELECT 1 FROM dbo.FAQPOSTLIKES WHERE PSTID = @PSTID AND USRID = @USRID
+      );`
+        : `DELETE FROM dbo.FAQPOSTLIKES WHERE PSTID = @PSTID AND USRID = @USRID;`
+    }
+    SELECT COUNT(*) AS POSTLIKECOUNT FROM dbo.FAQPOSTLIKES WHERE PSTID = @PSTID;
+    `,
+    inputs: {
+      PSTID: { type: sql.Int, value: PSTID },
+      USRID: { type: sql.Int, value: USRID },
+    },
+  });
+
+  return result.recordset[0]?.POSTLIKECOUNT ?? 0;
+}
+
+export async function getPostLikers(PSTID) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    SELECT l.USRID, COALESCE(${USER_NAME("u")}, CONCAT('Utilisateur #', l.USRID)) AS USRNAM, l.CREDAT
+      FROM dbo.FAQPOSTLIKES AS l
+      LEFT JOIN USERSMANAGER.dbo.USERS AS u ON u.USRID = l.USRID
+     WHERE l.PSTID = @PSTID
+     ORDER BY l.CREDAT DESC
+    `,
+    inputs: { PSTID: { type: sql.Int, value: PSTID } },
+  });
+
+  return result.recordset;
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                  RÉPONSES                                  */
 /* -------------------------------------------------------------------------- */
@@ -443,7 +531,17 @@ LEFT JOIN USERSMANAGER.dbo.USERS AS v ON v.USRID = an.VALDBY
 LEFT JOIN dbo.FAQTICKETS AS ft ON ft.ANSID = an.ANSID
 `;
 
-export async function getAnswers({ USRID, ISMOD }, PSTIDS, { onlyValidated = false } = {}) {
+/**
+ * Réponses des publications PSTIDS.
+ *   - onlyValidated : bonnes réponses uniquement (base de connaissance) ;
+ *   - withLiked     : avec onlyValidated, ajoute les réponses (actives)
+ *                     likées par USRID, même non retenues.
+ */
+export async function getAnswers(
+  { USRID, ISMOD },
+  PSTIDS,
+  { onlyValidated = false, withLiked = false } = {},
+) {
   if (!PSTIDS.length) return [];
 
   const result = await runQuery({
@@ -452,13 +550,23 @@ export async function getAnswers({ USRID, ISMOD }, PSTIDS, { onlyValidated = fal
     ${SELECT_ANSWERS}
     WHERE an.PSTID IN (SELECT CAST([value] AS INT) FROM OPENJSON(@PSTIDS))
       AND (@ISMOD = 1 OR an.DLTD = 0)
-      AND (@ONLYVAL = 0 OR (an.VALIDATED = 1 AND an.DLTD = 0))
+      AND (
+        @ONLYVAL = 0
+        OR (an.DLTD = 0 AND (
+          an.VALIDATED = 1
+          OR (@WITHLIKED = 1 AND EXISTS (
+            SELECT 1 FROM dbo.FAQANSWERLIKES wl
+            WHERE wl.ANSID = an.ANSID AND wl.USRID = @USRID
+          ))
+        ))
+      )
     ORDER BY an.VALIDATED DESC, an.CREDAT ASC
     `,
     inputs: {
       USRID: { type: sql.Int, value: USRID },
       ISMOD: { type: sql.Bit, value: ISMOD ? 1 : 0 },
       ONLYVAL: { type: sql.Bit, value: onlyValidated ? 1 : 0 },
+      WITHLIKED: { type: sql.Bit, value: withLiked ? 1 : 0 },
       PSTIDS: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(PSTIDS) },
     },
   });

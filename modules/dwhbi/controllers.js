@@ -106,8 +106,7 @@ export async function getMsNomenclatureCategories(req) {
 
   return requestUtils.getCachedResult(
     `dwhbi_ms_nomenclature_categories_${CODCATCOM}_${FMT}_${BASQTY}`,
-    async () =>
-      services.getMsNomenclatureCategories(CODCATCOM, FMT, BASQTY),
+    async () => services.getMsNomenclatureCategories(CODCATCOM, FMT, BASQTY),
   );
 }
 

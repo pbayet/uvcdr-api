@@ -3,7 +3,10 @@ import * as utils from "./utils.js";
 import * as v from "./validators.js";
 import * as requestUtils from "../../core/utils/request.utils.js";
 import * as ticketingServices from "../ticketing/services.js";
-import { broadcastToAll } from "../../config/websocket/wsManager.js";
+import {
+  broadcastToAll,
+  broadcastToUsers,
+} from "../../config/websocket/wsManager.js";
 import {
   sendTemplatedMail,
   renderDetailsList,
@@ -377,6 +380,51 @@ export async function deletePost(req) {
   return { PSTID: pstid, DLTD, PERM };
 }
 
+/**
+ * Épinglage PERSONNEL : ouvert à tous, propre au compte de l'utilisateur
+ * (FAQUSERPINS). L'épinglage général (PINNED, visible par tous) reste
+ * réservé aux modérateurs via updatePost. Seul l'utilisateur concerné est
+ * notifié en temps réel (ses autres onglets).
+ */
+export async function setUserPin(req) {
+  const ctx = await utils.getUserContext(req);
+  const { pstid } = await params(req, v.pstidParamSchema);
+  const { PINNED } = await params(req, v.postUserPinSchema);
+
+  await loadVisiblePost(ctx, pstid);
+  await services.setUserPin(pstid, ctx.USRID, PINNED);
+  broadcastToUsers([ctx.USRID], {
+    type: "faq.post.mypin",
+    payload: { PSTID: pstid, MYPIN: PINNED },
+  });
+  return { PSTID: pstid, MYPIN: PINNED };
+}
+
+/**
+ * "J'aime" sur une publication (FAQPOSTLIKES) : ouvert à tous ceux qui la
+ * voient, comme likeAnswer. Le nouveau total est diffusé à tous pour mettre
+ * à jour les compteurs sans recharger.
+ */
+export async function likePost(req) {
+  const ctx = await utils.getUserContext(req);
+  const { pstid } = await params(req, v.pstidParamSchema);
+  const { LIKED } = await params(req, v.postLikeSchema);
+
+  const post = await loadVisiblePost(ctx, pstid);
+  if (post.DLTD) throw new Error("DATA_NOT_FOUND");
+
+  const POSTLIKECOUNT = await services.setPostLike(pstid, ctx.USRID, LIKED);
+  emit("faq.post.liked", { PSTID: pstid, POSTLIKECOUNT });
+  return { PSTID: pstid, POSTLIKED: LIKED, POSTLIKECOUNT };
+}
+
+export async function getPostLikers(req) {
+  const ctx = await utils.getUserContext(req);
+  const { pstid } = await params(req, v.pstidParamSchema);
+  await loadVisiblePost(ctx, pstid);
+  return services.getPostLikers(pstid);
+}
+
 export async function registerView(req) {
   const ctx = await utils.getUserContext(req);
   const { pstid } = await params(req, v.pstidParamSchema);
@@ -694,8 +742,9 @@ export async function assertCanManageAttachments(req, entityType, entityId) {
 ───────────────────────────────────────────── */
 
 /**
- * Questions résolues (au moins une bonne réponse), avec leurs seules
- * réponses validées.
+ * Questions résolues (au moins une bonne réponse), avec leurs réponses
+ * validées, plus celles que l'utilisateur courant a likées (affichées à
+ * part côté front).
  */
 export async function getKnowledgeBase(req) {
   const ctx = await utils.getUserContext(req);
@@ -706,12 +755,13 @@ export async function getKnowledgeBase(req) {
   const answers = await services.getAnswers(
     { ...ctx, ISMOD: false },
     rows.map((r) => r.PSTID),
-    { onlyValidated: true },
+    { onlyValidated: true, withLiked: true },
   );
 
   return (await attachFiles(utils.attachAnswers(rows, answers))).sort(
       (a, b) =>
         Number(b.PINNED) - Number(a.PINNED) ||
+        Number(b.MYPIN) - Number(a.MYPIN) ||
         b.VIEWS - a.VIEWS ||
         new Date(b.CREDAT).getTime() - new Date(a.CREDAT).getTime(),
     );

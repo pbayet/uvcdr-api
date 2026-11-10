@@ -95,6 +95,16 @@ export const postDeleteSchema = z.object({
   PERM: bool.default(false),
 });
 
+/** Épinglage personnel (PUT /posts/:pstid/pin). */
+export const postUserPinSchema = z.object({
+  PINNED: bool.default(true),
+});
+
+/** "J'aime" sur une publication (PUT /posts/:pstid/like). */
+export const postLikeSchema = z.object({
+  LIKED: bool.default(true),
+});
+
 export const postConvertSchema = z.object({
   TYPE: z.enum(POST_TYPES),
 });

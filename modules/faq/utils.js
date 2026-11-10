@@ -129,11 +129,19 @@ export function formatPost(row, answers = undefined) {
     /** Date de la première bonne réponse retenue (null si aucune). */
     FIRSTVALDAT: row.FIRSTVALDAT ?? null,
     PINNED: !!row.PINNED,
+    /** Épinglée par l'utilisateur courant (épinglage personnel). */
+    MYPIN: !!row.MYPIN,
     VIEWS: row.VIEWS ?? 0,
     DLTD: !!row.DLTD,
     ANSWERCOUNT: row.ANSWERCOUNT ?? 0,
     VALIDATEDCOUNT: row.VALIDATEDCOUNT ?? 0,
     LIKECOUNT: row.LIKECOUNT ?? 0,
+    /** "J'aime" sur la publication elle-même (FAQPOSTLIKES). */
+    POSTLIKECOUNT: row.POSTLIKECOUNT ?? 0,
+    /** Likée par l'utilisateur courant. */
+    POSTLIKED: !!row.POSTLIKED,
+    /** L'utilisateur courant a liké au moins une réponse de ce post. */
+    ANSLIKED: !!row.ANSLIKED,
     KEYWORDS: row.KEYWORDS ? String(row.KEYWORDS).split("|") : [],
     TICKET: row.TCKID ? { TCKID: row.TCKID, TCKCOD: row.TCKCOD } : null,
     ...(answers ? { ANSWERS: answers.map(formatAnswer) } : {}),
