@@ -773,7 +773,7 @@ export async function getFolderFilters(req) {
 
 export async function getGestionnaires() {
   const rawGestionnaires = await services.getGestionnaires();
-  return utils.formatGestionnaires(rawGestionnaires);
+  return utils.formatGestionnairesByService(rawGestionnaires);
 }
 
 export async function getStatusGest(req) {

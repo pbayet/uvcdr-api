@@ -937,7 +937,13 @@ export async function getFsa(NUMDOS) {
 // INNER JOIN volontaire sur FSAGES_UTILISATEURS/USERS : un service sans
 // aucun utilisateur habilité ne ressortait déjà pas de l'ancienne vue
 // (formatGestionnaires regroupe par USRID), on garde ce comportement.
-function gestionnairesQuery(extraWhere = "") {
+//
+// `includeWithoutUsers` : LEFT JOIN pour faire aussi ressortir les services
+// FSAGES sans aucun utilisateur habilité (ex. créés par la reprise APP_FSA,
+// étape 4.1, qui n'alimente pas FSAGES_UTILISATEURS). Sans ça, l'écran
+// Paramètres > Gestionnaires les classe à tort en « Potentiels ».
+function gestionnairesQuery(extraWhere = "", { includeWithoutUsers = false } = {}) {
+  const join = includeWithoutUsers ? "LEFT JOIN" : "INNER JOIN";
   return `
     SELECT
         g.GESID,
@@ -953,8 +959,8 @@ function gestionnairesQuery(extraWhere = "") {
         gu.USRID,
         CONCAT(u.LSTNAM, ' ', u.FSTNAM) AS GESNAM
     FROM dbo.FSAGES g
-    INNER JOIN dbo.FSAGES_UTILISATEURS gu ON gu.GESID = g.GESID
-    INNER JOIN USERSMANAGER.dbo.USERS u ON u.USRID = gu.USRID
+    ${join} dbo.FSAGES_UTILISATEURS gu ON gu.GESID = g.GESID
+    ${join} USERSMANAGER.dbo.USERS u ON u.USRID = gu.USRID
     ${extraWhere ? `WHERE ${extraWhere}` : ""}
     ORDER BY g.NOMGES;
   `;
@@ -973,7 +979,7 @@ export async function getGestionnaire(NUMGES) {
 export async function getGestionnaires() {
   const result = await runQuery({
     moduleUrl: import.meta.url,
-    query: gestionnairesQuery(),
+    query: gestionnairesQuery("", { includeWithoutUsers: true }),
   });
 
   return result.recordset;

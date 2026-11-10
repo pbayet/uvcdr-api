@@ -473,6 +473,48 @@ export function formatGestionnaires(rows = []) {
 }
 
 /**
+ * Variante de formatGestionnaires pour GET /fsa/gestionnaires : UNE entrée
+ * par service (GESID), y compris les services sans aucun utilisateur
+ * habilité (ENBUSRS = [], USRID = null).
+ *
+ * formatGestionnaires regroupe par USRID : un service disparaissait donc
+ * dès que (a) il n'avait aucun utilisateur habilité, ou (b) son/ses
+ * utilisateur(s) étaient déjà habilités sur un autre service traité avant
+ * (ORDER BY NOMGES). Les consommateurs front de cette route ne lisent que
+ * NUMGES / VALGES / CREGES / ENBUSRS, jamais USRID.
+ */
+export function formatGestionnairesByService(rows = []) {
+  const gestsMap = new Map();
+
+  for (const row of rows) {
+    let gest = gestsMap.get(row.GESID);
+
+    if (!gest) {
+      gest = {
+        USRID: row.USRID ?? null,
+        GESID: row.GESID,
+        NUMGES: row.NUMGES,
+        NOMGES: row.NOMGES,
+        VALGES: row.VALGES,
+        CREGES: row.CREGES,
+        SERVGES: row.SERVGES,
+        ENBUSRS: [],
+        GESNAM: row.USRID == null ? "" : row.GESNAM,
+        CREUSR: row.CREUSR,
+        CREDAT: utcToParisIso(row.CREDAT),
+        MODUSR: row.MODUSR,
+        MODDAT: utcToParisIso(row.MODDAT),
+      };
+      gestsMap.set(row.GESID, gest);
+    }
+
+    if (row.USRID != null) gest.ENBUSRS.push(Number(row.USRID));
+  }
+
+  return Array.from(gestsMap.values());
+}
+
+/**
  * Correctif (cf. audit) : V1.0.0 testait `formatted.lenght` (faute de frappe
  * sur `.length`, toujours `undefined` donc toujours faux) — la branche de
  * retour anticipé `{ VALGES: false, CREGES: false }` n'était donc jamais
