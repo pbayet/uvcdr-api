@@ -1313,6 +1313,36 @@ export async function patchFsaNotes(req) {
   return true;
 }
 
+export async function patchFsaPrixRevise(req) {
+  const { NUMDOS, ANNEE, PRIREV, REVNOT } = v.fsaPrixRevisePatchSchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  const { NUMGES } = getUserIdentity(req);
+
+  const updated = await services.patchPrixRevise(
+    NUMDOS,
+    ANNEE,
+    PRIREV,
+    REVNOT,
+    NUMGES,
+  );
+
+  if (!updated) {
+    const err = new Error(
+      "Révision impossible : le dossier doit être en attente de validation et vous devez en être le gestionnaire ou le demandeur.",
+    );
+    err.status = 403;
+    throw err;
+  }
+
+  const gestsMustValidate = await services.getGestsMustValidate();
+  const formattedGests = utils.formatGestsMustValidate(gestsMustValidate);
+  const rawFsa = await services.getFsa(NUMDOS);
+
+  return utils.formatFsasJson(rawFsa, formattedGests)[0];
+}
+
 export async function patchGestionnaires(req) {
   const { GESTS } = v.gestionnairesPatchSchema.parse(
     (await requestUtils.getRequestParams(req)).params,

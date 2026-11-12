@@ -319,6 +319,17 @@ export const fsaNotesPatchSchema = z.object({
   NOTDOS: z.string().trim().nullish(),
 });
 
+export const fsaPrixRevisePatchSchema = z.object({
+  NUMDOS: z.string().trim().min(1, "NUMDOS est obligatoire."),
+  ANNEE: z.coerce.number().int().min(0).max(2),
+  // null / vide = suppression de la révision
+  PRIREV: z.preprocess(
+    (val) => (val === "" || val === undefined ? null : val),
+    z.coerce.number().nonnegative("Le tarif doit être positif.").nullable(),
+  ),
+  REVNOT: z.string().trim().max(250).nullish(),
+});
+
 /* ─────────────────────────────────────────────
    SETTINGS — PATCH (paramètres globaux, table singleton FSASETTINGS)
 ───────────────────────────────────────────── */

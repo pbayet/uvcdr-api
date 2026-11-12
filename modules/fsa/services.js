@@ -719,6 +719,12 @@ const FOLDER_HEADER_QUERY = `
         ve.PRIANN         AS VEN_PRIANN,
         ve.PRIANN1        AS VEN_PRIANN1,
         ve.PRIANN2        AS VEN_PRIANN2,
+        ve.PRIREV         AS VEN_PRIREV,
+        ve.PRIREV1        AS VEN_PRIREV1,
+        ve.PRIREV2        AS VEN_PRIREV2,
+        ve.REVNOT         AS VEN_REVNOT,
+        ve.REVNOT1        AS VEN_REVNOT1,
+        ve.REVNOT2        AS VEN_REVNOT2,
         ve.PVC            AS VEN_PVC,
         ve.VENNOT         AS VEN_VENNOT,
         ve.FRANCO         AS VEN_FRANCO,
@@ -2122,6 +2128,57 @@ function generatePjc(length = 30) {
   }
 
   return result;
+}
+
+// Colonnes FSAVENTES par année (0 = N, 1 = N+1, 2 = N+2). Liste blanche :
+// les noms de colonnes sont interpolés dans la requête, jamais la saisie.
+const PRIX_REVISE_COLUMNS = {
+  0: { price: "PRIREV", note: "REVNOT" },
+  1: { price: "PRIREV1", note: "REVNOT1" },
+  2: { price: "PRIREV2", note: "REVNOT2" },
+};
+
+/**
+ * Enregistre (ou efface, PRIREV = null) le tarif révisé d'une année.
+ * Ne met à jour que si le dossier est en attente de validation (EAV), non
+ * supprimé, et que l'utilisateur en est le gestionnaire ou le demandeur.
+ * @param {string} NUMDOS - Numéro du dossier
+ * @param {0|1|2} ANNEE - Année (0 = N, 1 = N+1, 2 = N+2)
+ * @param {number|null} PRIREV - Tarif révisé (null = supprimer la révision)
+ * @param {string|null} REVNOT - Motif de la révision
+ * @param {string} NUMGES - Poste de l'utilisateur connecté
+ * @returns {Promise<boolean>} True si une ligne a été mise à jour
+ */
+export async function patchPrixRevise(NUMDOS, ANNEE, PRIREV, REVNOT, NUMGES) {
+  const cols = PRIX_REVISE_COLUMNS[ANNEE];
+  if (!NUMDOS || !cols || !NUMGES) throw new Error("MISSING_PARAMETERS");
+
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+      UPDATE ve
+         SET ve.[${cols.price}] = @PRIREV,
+             ve.[${cols.note}] = @REVNOT
+        FROM dbo.FSAVENTES ve
+       INNER JOIN dbo.FSAENT e ON e.NUMDOS = ve.NUMDOS
+       INNER JOIN dbo.vw_FsaCurrentStatus cs ON cs.NUMDOS = e.NUMDOS
+       WHERE ve.NUMDOS = @NUMDOS
+         AND cs.CODETA = 'EAV'
+         AND ISNULL(e.DELETED, 0) = 0
+         AND (e.NUMGES = @NUMGES OR e.NUMDEM = @NUMGES);
+    `,
+    inputs: {
+      NUMDOS: { type: sql.VarChar(50), value: NUMDOS },
+      PRIREV: { type: sql.Decimal(18, 6), value: PRIREV ?? null },
+      REVNOT: {
+        type: sql.NVarChar(250),
+        value: PRIREV == null ? null : REVNOT || null,
+      },
+      NUMGES: { type: sql.VarChar(50), value: NUMGES },
+    },
+  });
+
+  return (result?.rowsAffected?.[0] ?? 0) > 0;
 }
 
 /**

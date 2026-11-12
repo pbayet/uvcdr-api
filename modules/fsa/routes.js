@@ -372,6 +372,20 @@ router.patch(
   },
 );
 
+// Tarif révisé d'une année (dossier en attente de validation) — cf.
+// sql/05_FSAVENTES_PRIREV.alter.sql.
+router.patch(
+  "/prix-revise",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.patchFsaPrixRevise(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.patch(
   "/gestionnaires",
   authMiddlewares.authVerifyMiddleware,
