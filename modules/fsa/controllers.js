@@ -1330,7 +1330,7 @@ export async function patchFsaPrixRevise(req) {
 
   if (!updated) {
     const err = new Error(
-      "Révision impossible : le dossier doit être en attente de validation et vous devez en être le gestionnaire ou le demandeur.",
+      "Révision du tarif cible impossible : le dossier doit être en attente de validation et vous devez en être le gestionnaire ou le demandeur.",
     );
     err.status = 403;
     throw err;

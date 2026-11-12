@@ -325,7 +325,7 @@ export const fsaPrixRevisePatchSchema = z.object({
   // null / vide = suppression de la révision
   PRIREV: z.preprocess(
     (val) => (val === "" || val === undefined ? null : val),
-    z.coerce.number().nonnegative("Le tarif doit être positif.").nullable(),
+    z.coerce.number().nonnegative("Le tarif cible doit être positif.").nullable(),
   ),
   REVNOT: z.string().trim().max(250).nullish(),
 });
