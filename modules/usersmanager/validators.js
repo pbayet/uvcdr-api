@@ -96,6 +96,78 @@ export const appVersionsQuerySchema = z.object({
   APPCOD: z.string().trim().min(1, "APPCOD est obligatoire.").max(20),
 });
 
+/** Plafond dur du nombre de lignes renvoyées par GET /global/activity. */
+export const ACTIVITY_MAX_LIMIT = 20000;
+export const ACTIVITY_DEFAULT_LIMIT = 5000;
+
+const optionalDate = z
+  .union([z.string().trim(), z.date()])
+  .nullish()
+  .transform((value, ctx) => {
+    if (value === null || value === undefined || value === "") return undefined;
+    const d = value instanceof Date ? value : new Date(value);
+    if (Number.isNaN(d.getTime())) {
+      ctx.addIssue({ code: "custom", message: "Date invalide." });
+      return z.NEVER;
+    }
+    return d;
+  });
+
+const optionalEmail = z
+  .string()
+  .trim()
+  .max(320)
+  .nullish()
+  .transform((value) => value || undefined);
+
+/**
+ * GET /global/activity — journal d'activité global (écran DEV). Tous les
+ * paramètres sont optionnels : sans rien, renvoie les ACTIVITY_DEFAULT_LIMIT
+ * événements les plus récents (actions + connexions).
+ */
+export const generalActivityQuerySchema = z
+  .object({
+    FROM: optionalDate,
+    TO: optionalDate,
+    EMAIL: optionalEmail,
+    DEVEMAIL: optionalEmail,
+    // "1"/"true" → uniquement les actions faites "en tant que" (DEVEMAIL non NULL)
+    DEVONLY: z
+      .union([z.boolean(), z.string()])
+      .nullish()
+      .transform((v) => v === true || v === "1" || v === "true"),
+    SOURCE: z
+      .enum(["ACTIVITY", "LOGIN"])
+      .nullish()
+      .transform((v) => v || undefined),
+    LIMIT: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(ACTIVITY_MAX_LIMIT)
+      .default(ACTIVITY_DEFAULT_LIMIT),
+  })
+  .refine((d) => !d.FROM || !d.TO || d.FROM <= d.TO, {
+    message: "FROM doit être antérieure à TO.",
+  });
+
+/** GET /global/activity/stats — période (défaut : 30 derniers jours, max 2 ans). */
+export const activityStatsQuerySchema = z
+  .object({ FROM: optionalDate, TO: optionalDate })
+  .transform(({ FROM, TO }) => {
+    const to = TO ?? new Date();
+    const from = FROM ?? new Date(to.getTime() - 30 * 86_400_000);
+    return { FROM: from, TO: to };
+  })
+  .refine((d) => d.FROM <= d.TO, { message: "FROM doit être antérieure à TO." })
+  .refine((d) => d.TO.getTime() - d.FROM.getTime() <= 731 * 86_400_000, {
+    message: "Période limitée à 2 ans.",
+  });
+
+export const activityParamsQuerySchema = z.object({
+  LOG_ID: z.coerce.number().int("LOG_ID est obligatoire.").positive(),
+});
+
 export const deleteAppVersionSchema = z.object({
   VID: z.coerce.number().int("VID est obligatoire."),
 });

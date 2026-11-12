@@ -401,7 +401,10 @@ export async function loginAppMiddleware(req, res, next) {
 
     next(err);
   } finally {
-    await postLoginStats(connexionSuccessful, email, appcode).catch(() => {});
+    // devEmail → LOGINHISTORY.DEVEMAIL (connexion "en tant que").
+    await postLoginStats(connexionSuccessful, email, appcode, devEmail).catch(
+      () => {},
+    );
     logger.info(
       `[LOGIN_ATTEMPT] email=${email || "unknown"}${devEmail ? ` dev=${devEmail}` : ""} ip=${req?.ip && req?.ip !== "::1" ? req?.ip : "unknown"} success=${connexionSuccessful} appcode=${appcode || "unknown"}`,
     );

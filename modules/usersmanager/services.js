@@ -142,54 +142,356 @@ export async function getHomeApplications(user) {
   });
 }
 
-export async function getGeneralActivity() {
+/*
+ * Journal d'activité : les deux sources sont lues DIRECTEMENT (et non via la
+ * vue GLOBALACTIVITY) pour que chaque branche profite de ses propres index
+ * (USERSACTIVITY.CREDAT / LOGINHISTORY.LOGIN_DATE, cf.
+ * sql/GLOBALACTIVITY_DEVEMAIL_PERF.sql) : chaque branche ne remonte que ses
+ * TOP (@LIMIT) lignes les plus récentes, déjà filtrées, avant la fusion —
+ * au lieu de trier l'union complète des deux tables.
+ *
+ * PARAMS (nvarchar(max), ~2 Ko en moyenne, jusqu'à 25 Ko) n'est PAS renvoyé
+ * dans la liste : seul HAS_PARAMS l'est, le contenu est chargé à la demande
+ * via getActivityParams (≈ 9 Mo économisés sur 5000 lignes).
+ */
+const ACTIVITY_BRANCH_COLUMNS = `
+    ID AS LOG_ID,
+    CREDAT AS EVENT_DATE,
+    USEREMAIL AS EMAIL,
+    DEVEMAIL,
+    SUCCESS,
+    METHOD,
+    ROUTE,
+    COMMENT,
+    IPADRESS,
+    DURATIONMS,
+    APPCOD,
+    'ACTIVITY' AS SOURCE`;
+
+const LOGIN_BRANCH_COLUMNS = `
+    LOGID AS LOG_ID,
+    LOGIN_DATE AS EVENT_DATE,
+    EMAIL,
+    DEVEMAIL,
+    SUCCESS,
+    CAST(NULL AS varchar(10)) AS METHOD,
+    CAST(NULL AS nvarchar(300)) AS ROUTE,
+    CAST(NULL AS nvarchar(300)) AS COMMENT,
+    CAST(NULL AS varchar(45)) AS IPADRESS,
+    CAST(NULL AS int) AS DURATIONMS,
+    APPCOD,
+    'LOGIN' AS SOURCE`;
+
+const whereClause = (conditions) =>
+  conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+
+/**
+ * @param {object} [filters]
+ * @param {Date}    [filters.from]     - borne basse (incluse) sur la date
+ * @param {Date}    [filters.to]       - borne haute (incluse) sur la date
+ * @param {string}  [filters.email]    - compte concerné (USEREMAIL / EMAIL)
+ * @param {string}  [filters.devEmail] - dev aux commandes (impersonation)
+ * @param {boolean} [filters.devOnly]  - uniquement les lignes avec DEVEMAIL
+ * @param {"ACTIVITY"|"LOGIN"} [filters.source] - une seule des deux sources
+ * @param {number}  [filters.limit=5000] - nombre max de lignes renvoyées
+ */
+export async function getGeneralActivity({
+  from,
+  to,
+  email,
+  devEmail,
+  devOnly = false,
+  source,
+  limit = 5000,
+} = {}) {
+  const inputs = { LIMIT: { type: sql.Int, value: limit } };
+  const activityWhere = [];
+  const loginWhere = [];
+
+  if (from) {
+    inputs.FROM = { type: sql.DateTime2, value: from };
+    activityWhere.push("CREDAT >= @FROM");
+    loginWhere.push("LOGIN_DATE >= @FROM");
+  }
+  if (to) {
+    inputs.TO = { type: sql.DateTime2, value: to };
+    activityWhere.push("CREDAT <= @TO");
+    loginWhere.push("LOGIN_DATE <= @TO");
+  }
+  if (email) {
+    inputs.EMAIL = { type: sql.NVarChar(320), value: email };
+    activityWhere.push("USEREMAIL = @EMAIL");
+    loginWhere.push("EMAIL = @EMAIL");
+  }
+  if (devEmail) {
+    inputs.DEVEMAIL = { type: sql.NVarChar(320), value: devEmail };
+    activityWhere.push("DEVEMAIL = @DEVEMAIL");
+    loginWhere.push("DEVEMAIL = @DEVEMAIL");
+  } else if (devOnly) {
+    activityWhere.push("DEVEMAIL IS NOT NULL");
+    loginWhere.push("DEVEMAIL IS NOT NULL");
+  }
+
+  const branches = [];
+
+  if (source !== "LOGIN") {
+    branches.push(`SELECT * FROM (
+      SELECT TOP (@LIMIT) ${ACTIVITY_BRANCH_COLUMNS},
+        CAST(CASE WHEN PARAMS IS NULL OR DATALENGTH(PARAMS) = 0 THEN 0 ELSE 1 END AS bit) AS HAS_PARAMS
+      FROM [GENERALACTIVITY].[dbo].[USERSACTIVITY]
+      ${whereClause(activityWhere)}
+      ORDER BY CREDAT DESC
+    ) AS ua`);
+  }
+
+  if (source !== "ACTIVITY") {
+    branches.push(`SELECT * FROM (
+      SELECT TOP (@LIMIT) ${LOGIN_BRANCH_COLUMNS},
+        CAST(0 AS bit) AS HAS_PARAMS
+      FROM [USERSMANAGER].[dbo].[LOGINHISTORY]
+      ${whereClause(loginWhere)}
+      ORDER BY LOGIN_DATE DESC
+    ) AS lh`);
+  }
+
   const result = await runQuery({
     moduleUrl: import.meta.url,
     dbConnectionName: "generalactivity",
-    query: `SELECT TOP 5000 * FROM GLOBALACTIVITY ORDER BY [EVENT_DATE] DESC`,
+    query: `SELECT TOP (@LIMIT) * FROM (
+      ${branches.join("\n      UNION ALL\n      ")}
+    ) AS t
+    ORDER BY EVENT_DATE DESC`,
+    inputs,
   });
 
   return result.recordset;
 }
 
-export async function getUserActivity(EMAIL, SOURCE) {
+/*
+ * Statistiques d'activité (page Statistiques, onglet "Activité") : tout est
+ * agrégé côté SQL (quelques centaines de lignes au plus renvoyées), jamais
+ * les logs bruts.
+ *
+ * ⚠️ CREDAT / LOGIN_DATE sont remplis par SYSDATETIME() sur un serveur à
+ * l'heure de Paris : ce sont des heures LOCALES, pas UTC. Les regroupements
+ * par jour / heure se font donc tels quels, et les bornes de période sont
+ * converties en heure murale de Paris (toParisWallClock).
+ */
+const PARIS = (col) => col;
+
+/**
+ * Date JS → même instant exprimé en heure murale de Paris, portée par les
+ * champs UTC (forme attendue par mssql pour comparer à une colonne locale).
+ */
+export function toParisWallClock(date) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Europe/Paris",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    })
+      .formatToParts(date)
+      .map((p) => [p.type, p.value]),
+  );
+  return new Date(
+    Date.UTC(
+      Number(parts.year),
+      Number(parts.month) - 1,
+      Number(parts.day),
+      Number(parts.hour) % 24,
+      Number(parts.minute),
+      Number(parts.second),
+      date.getMilliseconds(),
+    ),
+  );
+}
+
+const STATS_TOP = 15;
+
+export async function getActivityStats({ from, to }) {
+  const inputs = {
+    FROM: { type: sql.DateTime2, value: toParisWallClock(from) },
+    TO: { type: sql.DateTime2, value: toParisWallClock(to) },
+  };
+  const UA = `[GENERALACTIVITY].[dbo].[USERSACTIVITY]`;
+  const LH = `[USERSMANAGER].[dbo].[LOGINHISTORY]`;
+  const UA_WHERE = `CREDAT >= @FROM AND CREDAT <= @TO`;
+  const LH_WHERE = `LOGIN_DATE >= @FROM AND LOGIN_DATE <= @TO`;
+
+  const q = (query) =>
+    runQuery({
+      moduleUrl: import.meta.url,
+      dbConnectionName: "generalactivity",
+      query,
+      inputs,
+    }).then((r) => r.recordset);
+
+  const [
+    totals,
+    daily,
+    byHour,
+    byApp,
+    topUsers,
+    topActions,
+    failedLogins,
+    byDev,
+    lastLogins,
+  ] = await Promise.all([
+    q(`SELECT
+        (SELECT COUNT(*) FROM ${UA} WHERE ${UA_WHERE}) AS ACTIONS,
+        (SELECT COUNT(*) FROM ${UA} WHERE ${UA_WHERE} AND SUCCESS = 0) AS ACTIONS_FAILED,
+        (SELECT COUNT(*) FROM ${UA} WHERE ${UA_WHERE} AND DEVEMAIL IS NOT NULL) AS ACTIONS_DEV,
+        (SELECT AVG(CAST(DURATIONMS AS float)) FROM ${UA} WHERE ${UA_WHERE}) AS AVG_DURATIONMS,
+        (SELECT COUNT(*) FROM ${LH} WHERE ${LH_WHERE}) AS LOGINS,
+        (SELECT COUNT(*) FROM ${LH} WHERE ${LH_WHERE} AND SUCCESS = 0) AS LOGINS_FAILED,
+        (SELECT COUNT(DISTINCT EMAIL) FROM (
+            SELECT USEREMAIL AS EMAIL FROM ${UA} WHERE ${UA_WHERE}
+            UNION ALL
+            SELECT EMAIL FROM ${LH} WHERE ${LH_WHERE} AND SUCCESS = 1
+        ) u WHERE EMAIL IS NOT NULL AND EMAIL <> '') AS ACTIVE_USERS`),
+
+    q(`SELECT DAY, SUM(ACTIONS) AS ACTIONS, SUM(LOGINS) AS LOGINS, SUM(FAILED) AS FAILED
+       FROM (
+         SELECT CAST(${PARIS("CREDAT")} AS date) AS DAY, 1 AS ACTIONS, 0 AS LOGINS,
+                CASE WHEN SUCCESS = 0 THEN 1 ELSE 0 END AS FAILED
+         FROM ${UA} WHERE ${UA_WHERE}
+         UNION ALL
+         SELECT CAST(${PARIS("LOGIN_DATE")} AS date), 0, 1,
+                CASE WHEN SUCCESS = 0 THEN 1 ELSE 0 END
+         FROM ${LH} WHERE ${LH_WHERE}
+       ) t
+       GROUP BY DAY ORDER BY DAY`),
+
+    q(`SELECT HOUR, SUM(ACTIONS) AS ACTIONS, SUM(LOGINS) AS LOGINS
+       FROM (
+         SELECT DATEPART(hour, ${PARIS("CREDAT")}) AS HOUR, 1 AS ACTIONS, 0 AS LOGINS
+         FROM ${UA} WHERE ${UA_WHERE}
+         UNION ALL
+         SELECT DATEPART(hour, ${PARIS("LOGIN_DATE")}), 0, 1
+         FROM ${LH} WHERE ${LH_WHERE}
+       ) t
+       GROUP BY HOUR ORDER BY HOUR`),
+
+    q(`SELECT APPCOD, SUM(ACTIONS) AS ACTIONS, SUM(LOGINS) AS LOGINS,
+              COUNT(DISTINCT EMAIL) AS USERS
+       FROM (
+         SELECT ISNULL(NULLIF(APPCOD, ''), '—') AS APPCOD, USEREMAIL AS EMAIL, 1 AS ACTIONS, 0 AS LOGINS
+         FROM ${UA} WHERE ${UA_WHERE}
+         UNION ALL
+         SELECT ISNULL(NULLIF(APPCOD, ''), '—'), EMAIL, 0, 1
+         FROM ${LH} WHERE ${LH_WHERE} AND SUCCESS = 1
+       ) t
+       GROUP BY APPCOD ORDER BY SUM(ACTIONS) + SUM(LOGINS) DESC`),
+
+    q(`SELECT TOP (${STATS_TOP}) EMAIL, SUM(ACTIONS) AS ACTIONS, SUM(LOGINS) AS LOGINS,
+              SUM(FAILED) AS FAILED, MAX(EVENT_DATE) AS LAST_EVENT
+       FROM (
+         SELECT USEREMAIL AS EMAIL, 1 AS ACTIONS, 0 AS LOGINS,
+                CASE WHEN SUCCESS = 0 THEN 1 ELSE 0 END AS FAILED, CREDAT AS EVENT_DATE
+         FROM ${UA} WHERE ${UA_WHERE}
+         UNION ALL
+         SELECT EMAIL, 0, 1, CASE WHEN SUCCESS = 0 THEN 1 ELSE 0 END, LOGIN_DATE
+         FROM ${LH} WHERE ${LH_WHERE}
+       ) t
+       WHERE EMAIL IS NOT NULL AND EMAIL <> ''
+       GROUP BY EMAIL ORDER BY SUM(ACTIONS) + SUM(LOGINS) DESC`),
+
+    q(`SELECT TOP (${STATS_TOP})
+              ISNULL(NULLIF(COMMENT, ''), ROUTE) AS LABEL, MAX(APPCOD) AS APPCOD,
+              COUNT(*) AS COUNT, SUM(CASE WHEN SUCCESS = 0 THEN 1 ELSE 0 END) AS FAILED,
+              AVG(CAST(DURATIONMS AS float)) AS AVG_DURATIONMS
+       FROM ${UA} WHERE ${UA_WHERE}
+       GROUP BY ISNULL(NULLIF(COMMENT, ''), ROUTE)
+       ORDER BY COUNT(*) DESC`),
+
+    q(`SELECT TOP (${STATS_TOP}) EMAIL, COUNT(*) AS COUNT, MAX(LOGIN_DATE) AS LAST_EVENT
+       FROM ${LH} WHERE ${LH_WHERE} AND SUCCESS = 0
+       GROUP BY EMAIL ORDER BY COUNT(*) DESC`),
+
+    q(`SELECT DEVEMAIL, SUM(ACTIONS) AS ACTIONS, SUM(LOGINS) AS LOGINS,
+              COUNT(DISTINCT EMAIL) AS USERS
+       FROM (
+         SELECT DEVEMAIL, USEREMAIL AS EMAIL, 1 AS ACTIONS, 0 AS LOGINS
+         FROM ${UA} WHERE ${UA_WHERE} AND DEVEMAIL IS NOT NULL
+         UNION ALL
+         SELECT DEVEMAIL, EMAIL, 0, 1
+         FROM ${LH} WHERE ${LH_WHERE} AND DEVEMAIL IS NOT NULL
+       ) t
+       GROUP BY DEVEMAIL ORDER BY SUM(ACTIONS) + SUM(LOGINS) DESC`),
+
+    // Dernière connexion réussie de chaque compte, TOUT historique confondu
+    // (indépendant de la période) : permet de repérer les comptes actifs
+    // jamais / plus connectés.
+    q(`SELECT EMAIL, MAX(LOGIN_DATE) AS LAST_LOGIN
+       FROM ${LH} WHERE SUCCESS = 1 AND EMAIL IS NOT NULL
+       GROUP BY EMAIL`),
+  ]);
+
+  return {
+    totals: totals[0] ?? {},
+    daily,
+    byHour,
+    byApp,
+    topUsers,
+    topActions,
+    failedLogins,
+    byDev,
+    lastLogins,
+  };
+}
+
+/** PARAMS d'une ligne de USERSACTIVITY (chargé à la demande par le journal). */
+export async function getActivityParams(LOG_ID) {
   const result = await runQuery({
     moduleUrl: import.meta.url,
     dbConnectionName: "generalactivity",
-    query: SOURCE
-      ? `SELECT
-            LOG_ID,
-            EVENT_DATE,
-            EMAIL,
-            SUCCESS,
-            METHOD,
-            ROUTE,
-            COMMENT,
-            IPADRESS,
-            DURATIONMS,
-            PARAMS,
-            APPCOD,
-            SOURCE
-        FROM
-            (
-                SELECT
-                    *,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY EMAIL
-                        ORDER BY
-                            EVENT_DATE DESC
-                    ) AS rn
-                FROM
-                    [GENERALACTIVITY].[dbo].[GLOBALACTIVITY]
-                WHERE
-                    EMAIL = @EMAIL AND SOURCE = @SOURCE
-            ) t
-        WHERE
-            rn = 1`
-      : `SELECT * FROM LATEST_ACTIVITY_DETAILS WHERE EMAIL = @EMAIL`,
+    query: `SELECT ID AS LOG_ID, PARAMS FROM [GENERALACTIVITY].[dbo].[USERSACTIVITY] WHERE ID = @LOG_ID`,
+    inputs: { LOG_ID: { type: sql.BigInt, value: LOG_ID } },
+  });
+
+  return result.recordset[0] ?? null;
+}
+
+/**
+ * Dernier événement d'un utilisateur (fiche utilisateur). TOP 1 par branche
+ * (seek sur les index EMAIL + date) au lieu d'un ROW_NUMBER() sur toute la
+ * vue GLOBALACTIVITY.
+ */
+export async function getUserActivity(EMAIL, SOURCE) {
+  const activityBranch = `SELECT * FROM (
+      SELECT TOP 1 ${ACTIVITY_BRANCH_COLUMNS}, PARAMS
+      FROM [GENERALACTIVITY].[dbo].[USERSACTIVITY]
+      WHERE USEREMAIL = @EMAIL
+      ORDER BY CREDAT DESC
+    ) AS ua`;
+  const loginBranch = `SELECT * FROM (
+      SELECT TOP 1 ${LOGIN_BRANCH_COLUMNS}, CAST(NULL AS nvarchar(max)) AS PARAMS
+      FROM [USERSMANAGER].[dbo].[LOGINHISTORY]
+      WHERE EMAIL = @EMAIL
+      ORDER BY LOGIN_DATE DESC
+    ) AS lh`;
+
+  const branches =
+    SOURCE === "ACTIVITY"
+      ? [activityBranch]
+      : SOURCE === "LOGIN"
+        ? [loginBranch]
+        : [activityBranch, loginBranch];
+
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "generalactivity",
+    query: `SELECT TOP 1 * FROM (
+      ${branches.join("\n      UNION ALL\n      ")}
+    ) AS t
+    ORDER BY EVENT_DATE DESC`,
     inputs: {
-      EMAIL: { type: sql.NVarChar, value: EMAIL },
-      SOURCE: { type: sql.NVarChar, value: SOURCE },
+      EMAIL: { type: sql.NVarChar(320), value: EMAIL },
     },
   });
 
@@ -330,15 +632,30 @@ export async function getLastVersionDetails(USRID, APPCOD) {
  * postActivityStats trace les requêtes métier listées dans
  * core/config/activityLog.config.js.
  */
-export async function postLoginStats(success, EMAIL, APPCOD) {
+export async function postLoginStats(success, EMAIL, APPCOD, DEVEMAIL = null) {
+  const inputs = {
+    SUCCESS: { type: sql.Bit, value: success },
+    EMAIL: { type: sql.NVarChar, value: EMAIL },
+    APPCOD: { type: sql.NVarChar, value: APPCOD },
+  };
+
+  // DEVEMAIL (connexion "en tant que", cf. loginAppMiddleware) n'est inséré
+  // que s'il est renseigné : les connexions normales restent tracées même si
+  // la colonne LOGINHISTORY.DEVEMAIL n'existe pas encore
+  // (sql/GLOBALACTIVITY_DEVEMAIL_PERF.sql).
+  if (DEVEMAIL) {
+    inputs.DEVEMAIL = {
+      type: sql.NVarChar(320),
+      value: truncate(DEVEMAIL, 320),
+    };
+  }
+
   await runQuery({
     moduleUrl: import.meta.url,
-    query: `INSERT INTO LOGINHISTORY (SUCCESS, EMAIL, APPCOD) VALUES (@SUCCESS, @EMAIL, @APPCOD)`,
-    inputs: {
-      SUCCESS: { type: sql.Bit, value: success },
-      EMAIL: { type: sql.NVarChar, value: EMAIL },
-      APPCOD: { type: sql.NVarChar, value: APPCOD },
-    },
+    query: DEVEMAIL
+      ? `INSERT INTO LOGINHISTORY (SUCCESS, EMAIL, APPCOD, DEVEMAIL) VALUES (@SUCCESS, @EMAIL, @APPCOD, @DEVEMAIL)`
+      : `INSERT INTO LOGINHISTORY (SUCCESS, EMAIL, APPCOD) VALUES (@SUCCESS, @EMAIL, @APPCOD)`,
+    inputs,
   });
 
   return true;

@@ -101,8 +101,31 @@ router.get(
   authMiddlewares.authVerifyMiddleware,
   async (req, res, next) => {
     try {
-      const user = await controllers.getGeneralActivity(req);
-      res.json(user);
+      res.json(await controllers.getGeneralActivity(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get(
+  "/global/activity/stats",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.getActivityStats(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get(
+  "/global/activity/params",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.getActivityParams(req));
     } catch (err) {
       next(err);
     }

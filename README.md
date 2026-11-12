@@ -87,6 +87,17 @@ journalisée dans la table `USERSACTIVITY` de la base `generalactivity`
 - `getGeneralActivity`/`getUserActivity` (exposées via
   `GET /api/usersmanager/global/activity` et `.../user/activity`)
   permettent de relire cette activité.
+- `GET /global/activity` (réservé PRMLVL 1) accepte `FROM`, `TO`, `EMAIL`,
+  `DEVEMAIL`, `DEVONLY`, `SOURCE` (`ACTIVITY`|`LOGIN`) et `LIMIT` (5000 par
+  défaut, 20000 max). Il ne renvoie plus `PARAMS` mais `HAS_PARAMS` ; le
+  contenu se charge à la demande via `GET /global/activity/params?LOG_ID=`.
+- **DEVEMAIL** : quand un dev agit "en tant que" un autre compte
+  (`GET /auth/dev`), `USEREMAIL`/`EMAIL` contient le compte simulé et
+  `DEVEMAIL` le dev réellement aux commandes, dans `USERSACTIVITY` comme dans
+  `LOGINHISTORY`. Scripts à jouer avant déploiement, dans l'ordre :
+  `modules/usersmanager/sql/USERSACTIVITY_DEVEMAIL.alter.sql` puis
+  `GLOBALACTIVITY_DEVEMAIL_PERF.sql` (colonne `LOGINHISTORY.DEVEMAIL`, vues,
+  index de lecture).
 
 ## Correctifs de l'audit appliqués dans cette reconstruction
 

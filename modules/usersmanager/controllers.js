@@ -84,17 +84,108 @@ export async function getHomeApplications(req) {
   return services.getHomeApplications(formattedUsers[0]);
 }
 
+/**
+ * Le journal d'activité global expose les actions de tous les utilisateurs
+ * (routes, IP, paramètres envoyés) : réservé aux développeurs (PRMLVL 1),
+ * comme l'écran qui le consomme. ACCESS_DENIED_WO_LOGOUT (460) : refus sans
+ * déconnexion du front.
+ */
+function assertDev(req) {
+  if (req?.payload?.permissionLevel !== 1) {
+    throw new Error("ACCESS_DENIED_WO_LOGOUT");
+  }
+}
+
+/**
+ * GET /global/activity?FROM&TO&EMAIL&DEVEMAIL&DEVONLY&SOURCE&LIMIT
+ * Événements les plus récents (actions + connexions), sans PARAMS (voir
+ * getActivityParams). DEVEMAIL = dev aux commandes en impersonation.
+ */
 export async function getGeneralActivity(req) {
-  const { EMAIL } = (await requestUtils.getRequestParams(req)).params;
+  assertDev(req);
 
-  const activities = await services.getGeneralActivity(EMAIL);
+  const { FROM, TO, EMAIL, DEVEMAIL, DEVONLY, SOURCE, LIMIT } =
+    v.generalActivityQuerySchema.parse(
+      (await requestUtils.getRequestParams(req)).params,
+    );
 
-  return activities.map((a) => {
-    return {
-      ...a,
-      EVENT_DATE: utcToParisIso(a.EVENT_DATE),
-    };
+  const activities = await services.getGeneralActivity({
+    from: FROM,
+    to: TO,
+    email: EMAIL,
+    devEmail: DEVEMAIL,
+    devOnly: DEVONLY,
+    source: SOURCE,
+    limit: LIMIT,
   });
+
+  return activities.map((a) => ({
+    ...a,
+    EVENT_DATE: utcToParisIso(a.EVENT_DATE),
+  }));
+}
+
+/**
+ * Statistiques agrégées (pas de détail de requête ni de PARAMS) : ouvertes
+ * aux gestionnaires (PRMNAM ∈ MODIFY_PERMS), comme la page Statistiques.
+ */
+function assertManager(req) {
+  const managers = (process.env.MODIFY_PERMS || "")
+    .split(",")
+    .map((p) => p.trim().toUpperCase())
+    .filter(Boolean);
+  const permission = String(req?.payload?.permission || "").toUpperCase();
+
+  if (req?.payload?.permissionLevel !== 1 && !managers.includes(permission)) {
+    throw new Error("ACCESS_DENIED_WO_LOGOUT");
+  }
+}
+
+/** GET /global/activity/stats?FROM&TO — indicateurs d'activité agrégés. */
+export async function getActivityStats(req) {
+  assertManager(req);
+
+  const { FROM, TO } = v.activityStatsQuerySchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  const stats = await services.getActivityStats({ from: FROM, to: TO });
+  // Colonnes stockées en heure locale de Paris (cf. services.getActivityStats)
+  // et lues par mssql comme de l'UTC : on renvoie l'heure murale telle
+  // quelle, sans fuseau ("2026-11-12T17:11:07"), interprétée en local côté
+  // navigateur.
+  const iso = (d) =>
+    d instanceof Date && !Number.isNaN(d.getTime())
+      ? d.toISOString().slice(0, 19)
+      : null;
+  const day = (d) => (d instanceof Date ? d.toISOString().slice(0, 10) : d);
+
+  return {
+    from: FROM.toISOString(),
+    to: TO.toISOString(),
+    ...stats,
+    daily: stats.daily.map((r) => ({ ...r, DAY: day(r.DAY) })),
+    topUsers: stats.topUsers.map((r) => ({ ...r, LAST_EVENT: iso(r.LAST_EVENT) })),
+    failedLogins: stats.failedLogins.map((r) => ({
+      ...r,
+      LAST_EVENT: iso(r.LAST_EVENT),
+    })),
+    lastLogins: stats.lastLogins.map((r) => ({
+      ...r,
+      LAST_LOGIN: iso(r.LAST_LOGIN),
+    })),
+  };
+}
+
+/** GET /global/activity/params?LOG_ID= — PARAMS d'une action (à la demande). */
+export async function getActivityParams(req) {
+  assertDev(req);
+
+  const { LOG_ID } = v.activityParamsQuerySchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  return (await services.getActivityParams(LOG_ID)) ?? { LOG_ID, PARAMS: null };
 }
 
 export async function getUserActivity(req) {

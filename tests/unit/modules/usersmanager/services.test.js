@@ -178,3 +178,62 @@ describe("modules/usersmanager/services :: écritures", () => {
     expect(runQuery).toHaveBeenCalledOnce();
   });
 });
+
+describe("modules/usersmanager/services :: journal d'activité (DEVEMAIL)", () => {
+  beforeEach(() => runQuery.mockReset().mockResolvedValue({ recordset: [] }));
+
+  it("getGeneralActivity sans filtre : deux branches TOP (@LIMIT), sans PARAMS, avec DEVEMAIL/HAS_PARAMS", async () => {
+    await services.getGeneralActivity();
+    const { query, inputs } = runQuery.mock.calls[0][0];
+    expect(query).toContain("[USERSACTIVITY]");
+    expect(query).toContain("[LOGINHISTORY]");
+    expect(query).toContain("UNION ALL");
+    expect(query).toContain("DEVEMAIL");
+    expect(query).toContain("HAS_PARAMS");
+    expect(query).not.toMatch(/\bPARAMS,/);
+    expect(query).not.toContain("WHERE");
+    expect(inputs.LIMIT.value).toBe(5000);
+  });
+
+  it("getGeneralActivity applique période, email et devOnly sur les deux branches", async () => {
+    const from = new Date("2026-01-01T00:00:00Z");
+    await services.getGeneralActivity({ from, email: "a@b.com", devOnly: true, limit: 10 });
+    const { query, inputs } = runQuery.mock.calls[0][0];
+    expect(query).toContain("CREDAT >= @FROM");
+    expect(query).toContain("LOGIN_DATE >= @FROM");
+    expect(query).toContain("USEREMAIL = @EMAIL");
+    expect(query.match(/DEVEMAIL IS NOT NULL/g)).toHaveLength(2);
+    expect(inputs.FROM.value).toBe(from);
+    expect(inputs.LIMIT.value).toBe(10);
+  });
+
+  it("getGeneralActivity source=ACTIVITY ne lit pas LOGINHISTORY, devEmail prime sur devOnly", async () => {
+    await services.getGeneralActivity({ source: "ACTIVITY", devEmail: "dev@b.com", devOnly: true });
+    const { query, inputs } = runQuery.mock.calls[0][0];
+    expect(query).not.toContain("LOGINHISTORY");
+    expect(query).toContain("DEVEMAIL = @DEVEMAIL");
+    expect(query).not.toContain("DEVEMAIL IS NOT NULL");
+    expect(inputs.DEVEMAIL.value).toBe("dev@b.com");
+  });
+
+  it("getActivityParams lit PARAMS par ID et renvoie null si absent", async () => {
+    await expect(services.getActivityParams(42)).resolves.toBeNull();
+    expect(runQuery.mock.calls[0][0].inputs.LOG_ID.value).toBe(42);
+  });
+
+  it("postLoginStats n'insère DEVEMAIL que s'il est fourni", async () => {
+    await services.postLoginStats(true, "a@b.com", "FSA");
+    expect(runQuery.mock.calls[0][0].query).not.toContain("DEVEMAIL");
+
+    await services.postLoginStats(true, "a@b.com", "FSA", "dev@b.com");
+    expect(runQuery.mock.calls[1][0].query).toContain("DEVEMAIL");
+    expect(runQuery.mock.calls[1][0].inputs.DEVEMAIL.value).toBe("dev@b.com");
+  });
+});
+
+describe("modules/usersmanager/services :: toParisWallClock", () => {
+  it("convertit un instant UTC en heure murale de Paris (hiver +1h, été +2h)", () => {
+    expect(services.toParisWallClock(new Date("2026-11-12T15:00:00Z")).toISOString()).toBe("2026-11-12T16:00:00.000Z");
+    expect(services.toParisWallClock(new Date("2026-07-01T15:00:00Z")).toISOString()).toBe("2026-07-01T17:00:00.000Z");
+  });
+});

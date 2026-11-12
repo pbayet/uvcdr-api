@@ -223,3 +223,64 @@ describe("modules/usersmanager/controllers :: setLastVersion / deleteAppVersion"
     await expect(controllers.deleteAppVersion(buildReq({ body: {} }))).rejects.toThrow();
   });
 });
+
+describe("modules/usersmanager/controllers :: journal d'activité global", () => {
+  const devPayload = { data: { id: 1 }, permissionLevel: 1 };
+
+  it("refuse un non-développeur (ACCESS_DENIED_WO_LOGOUT)", async () => {
+    const req = { ...buildReq({ payload: { data: { id: 1 }, permissionLevel: 3 } }), method: "GET" };
+    await expect(controllers.getGeneralActivity(req)).rejects.toThrow("ACCESS_DENIED_WO_LOGOUT");
+    await expect(controllers.getActivityParams({ ...req, query: { LOG_ID: "1" } })).rejects.toThrow(
+      "ACCESS_DENIED_WO_LOGOUT",
+    );
+  });
+
+  it("transmet les filtres validés au service et convertit EVENT_DATE", async () => {
+    services.getGeneralActivity.mockResolvedValue([
+      { LOG_ID: "1", EVENT_DATE: new Date("2026-06-01T10:00:00Z"), DEVEMAIL: "dev@b.com" },
+    ]);
+    const req = {
+      ...buildReq({ payload: devPayload, query: { FROM: "2026-01-01", DEVONLY: "1", SOURCE: "ACTIVITY", LIMIT: "100" } }),
+      method: "GET",
+    };
+    const res = await controllers.getGeneralActivity(req);
+    const args = services.getGeneralActivity.mock.calls[0][0];
+    expect(args.from).toBeInstanceOf(Date);
+    expect(args).toMatchObject({ devOnly: true, source: "ACTIVITY", limit: 100 });
+    expect(res[0].EVENT_DATE).toBe("2026-06-01T12:00:00+02:00");
+    expect(res[0].DEVEMAIL).toBe("dev@b.com");
+  });
+
+  it("rejette une LIMIT hors bornes", async () => {
+    const req = { ...buildReq({ payload: devPayload, query: { LIMIT: "999999" } }), method: "GET" };
+    await expect(controllers.getGeneralActivity(req)).rejects.toThrow();
+  });
+});
+
+describe("modules/usersmanager/controllers :: statistiques d'activité", () => {
+  it("refuse un profil non gestionnaire", async () => {
+    const req = { ...buildReq({ payload: { data: { id: 1 }, permission: "USER", permissionLevel: 4 } }), method: "GET" };
+    await expect(controllers.getActivityStats(req)).rejects.toThrow("ACCESS_DENIED_WO_LOGOUT");
+  });
+
+  it("accepte un gestionnaire, applique 30 jours par défaut et renvoie des dates locales sans fuseau", async () => {
+    services.getActivityStats.mockResolvedValue({
+      totals: { ACTIONS: 1 },
+      daily: [{ DAY: new Date("2026-11-12T00:00:00Z"), ACTIONS: 1 }],
+      byHour: [],
+      byApp: [],
+      topUsers: [{ EMAIL: "a@b.com", LAST_EVENT: new Date("2026-11-12T17:11:07Z") }],
+      topActions: [],
+      failedLogins: [],
+      byDev: [],
+      lastLogins: [{ EMAIL: "a@b.com", LAST_LOGIN: null }],
+    });
+    const req = { ...buildReq({ payload: { data: { id: 1 }, permission: "ADMIN", permissionLevel: 3 } }), method: "GET" };
+    const res = await controllers.getActivityStats(req);
+    const { from, to } = services.getActivityStats.mock.calls[0][0];
+    expect(Math.round((to - from) / 86_400_000)).toBe(30);
+    expect(res.daily[0].DAY).toBe("2026-11-12");
+    expect(res.topUsers[0].LAST_EVENT).toBe("2026-11-12T17:11:07");
+    expect(res.lastLogins[0].LAST_LOGIN).toBeNull();
+  });
+});
