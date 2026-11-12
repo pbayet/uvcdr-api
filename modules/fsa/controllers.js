@@ -18,6 +18,7 @@ import {
   resolveMailCopies,
 } from "../../core/services/mail.service.js";
 import { logger } from "../../config/logger.config.js";
+import { broadcastToAll } from "../../config/websocket/wsManager.js";
 
 /* ─────────────────────────────────────────────
    FSA — Controllers (Fiches Suivi Affaires)
@@ -94,6 +95,30 @@ function getUserIdentity(req) {
     USRID: req?.payload?.data?.id,
     NUMGES: req?.payload?.data?.position?.code,
   };
+}
+
+/**
+ * Temps réel (config/websocket/wsManager.js, client @uvcdr/realtime côté
+ * front) : même règle que ticketing/vinidoc, payload réduit aux identifiants
+ * envoyé à tous les clients connectés. Chaque front recharge le dossier avec
+ * ses propres droits, ce qui évite de diffuser son contenu à des
+ * utilisateurs qui n'y ont pas accès.
+ *   - fsa.folder.created { NUMDOS }          création, duplication
+ *   - fsa.folder.updated { NUMDOS }          modification, notes, tarif
+ *                                            révisé, validation (changement
+ *                                            de statut), retrait de validation
+ *   - fsa.folder.deleted { NUMDOS, DELETED } suppression (DELETED = true) ou
+ *                                            restauration (false)
+ * L'archivage n'est pas une écriture (statut calculé à la lecture d'après
+ * les délais) : il n'émet rien, le front le voit au prochain chargement.
+ */
+function broadcastFsaFolder(type, payload) {
+  if (!payload?.NUMDOS) return;
+  try {
+    broadcastToAll({ type, payload });
+  } catch (err) {
+    logger.warn(`[WS] ${type} non diffusé : ${err.message}`);
+  }
 }
 
 /**
@@ -947,6 +972,8 @@ export async function postFsa(req) {
 
   if (!newFormattedFsa.length) throw new Error("DATA_NOT_FOUND");
 
+  broadcastFsaFolder("fsa.folder.created", { NUMDOS: newNumDos });
+
   return newFormattedFsa[0];
 }
 
@@ -1022,6 +1049,8 @@ export async function duplicateFsa(req) {
     await services.upsertVente(newNumDos, FSAVENTES);
   }
 
+  broadcastFsaFolder("fsa.folder.created", { NUMDOS: newNumDos });
+
   return newNumDos;
 }
 
@@ -1065,6 +1094,8 @@ export async function postValidation(req) {
   );
 
   if (!valid) throw new Error("DATA_NOT_FOUND");
+
+  broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
 
   // REFONTE BDD : services.getFsa() renvoie désormais { header, nomenclatures,
   // pjs, validations } (4 recordsets distincts) au lieu d'un tableau de
@@ -1301,6 +1332,8 @@ export async function patchFsa(req) {
   const rawFsa = await services.getFsa(NUMDOS);
   const formattedFsas = utils.formatFsasJson(rawFsa, formattedGests);
 
+  broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
+
   return formattedFsas[0];
 }
 
@@ -1310,6 +1343,7 @@ export async function patchFsaNotes(req) {
   );
 
   await services.upsertFsaNotes(NUMDOS, NOTDOS);
+  broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
   return true;
 }
 
@@ -1344,6 +1378,8 @@ export async function patchFsaPrixRevise(req) {
   const gestsMustValidate = await services.getGestsMustValidate();
   const formattedGests = utils.formatGestsMustValidate(gestsMustValidate);
   const rawFsa = await services.getFsa(NUMDOS);
+
+  broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
 
   return utils.formatFsasJson(rawFsa, formattedGests)[0];
 }
@@ -1394,6 +1430,7 @@ export async function deleteFsa(req) {
   );
 
   await services.deleteFsa(NUMDOS, DELETED);
+  broadcastFsaFolder("fsa.folder.deleted", { NUMDOS, DELETED: !!DELETED });
   return true;
 }
 
@@ -1407,6 +1444,7 @@ export async function deleteValidation(req) {
   await services.postValidation(NUMDOS, "DEL", "", NUMGES, CREUSR);
   // Une validation supprimée repart de zéro : ses liens aussi.
   await services.delsertLiens(NUMDOS, [], CREUSR, NUMGES);
+  broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
   return true;
 }
 
