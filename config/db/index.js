@@ -19,15 +19,15 @@ sql.on("error", (err) => {
 // physique), maintenant que les pools sont mutualisés par (host + base)
 // plutôt que dupliqués par module (cf. audit perf 3.1).
 //
-// Remonté de 10 → 20 (mitigation, cf. incident "operation timed out for an
-// unknown reason" / tarn PendingOperation sur /api/fsa) : chaque
-// PreparedStatement mis en cache par core/utils/db.utils.js retient une
-// connexion DÉDIÉE du pool tant qu'il n'est pas unprepare() — et les clés
-// "populaires" ne libèrent plus jamais la leur (TTL désactivé). Avec
-// POOL_SIZE (db.utils.js) réduit à 2, il faut désormais >10 clés simultanément
-// populaires pour saturer le pool, contre 2-3 auparavant. Le vrai correctif
-// (arrêter d'utiliser des PreparedStatement dédiés pour du caching) est
-// proposé séparément — cette valeur n'est qu'un filet de sécurité.
+// Remonté de 10 → 20 lors de l'incident "operation timed out" / tarn
+// PendingOperation sur /api/fsa, puis à nouveau saturé le 12/11/2026
+// ("TimeoutError: ResourceRequest timed out") : les PreparedStatement mis en
+// cache par core/utils/db.utils.js retenaient chacun une connexion DÉDIÉE,
+// jamais rendue pour les clés "populaires". Ce cache est supprimé :
+// db.utils.js emprunte désormais une connexion par requête et la rend dès la
+// fin de celle-ci (pool.request() ou PreparedStatement éphémère libéré dans
+// un finally). `max` n'a donc plus à compenser une fuite ; il ne borne plus
+// que le nombre de requêtes réellement simultanées par pool physique.
 sql.config = {
   options: { encrypt: false, requestTimeout: 15000 },
   pool: {

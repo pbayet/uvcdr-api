@@ -47,6 +47,7 @@ const {
   generateAutoKey,
   getDbConnexion,
   runQuery,
+  getPreparedStatement,
   closePreparedStatement,
   closeAllPreparedStatements,
 } = await import("../../../core/utils/db.utils.js");
@@ -94,9 +95,9 @@ describe("core/utils/db.utils :: getDbConnexion", () => {
 });
 
 describe("core/utils/db.utils :: runQuery", () => {
-  // Double du `Request` mssql retourné par `pool.request()` (chemin "requête
-  // simple", pris par défaut par runQuery() depuis le correctif de l'incident
-  // tarn "operation timed out" — cf. commentaire dans db.utils.js).
+  // Double du `Request` mssql retourné par `pool.request()`, chemin pris par
+  // runQuery() pour toutes les requêtes (cf. incident du 12/11/2026 dans
+  // db.utils.js : plus aucun PreparedStatement n'est mis en cache).
   const requestInputMock = vi.fn();
   const requestQueryMock = vi.fn();
   const fakeRequest = {
@@ -121,63 +122,57 @@ describe("core/utils/db.utils :: runQuery", () => {
     requestQueryMock.mockReset();
   });
 
-  it("exécute la requête avec les paramètres mappés et retourne le résultat", async () => {
-    executeMock.mockResolvedValue({ recordset: [{ TCKID: 1 }] });
+  it("exécute la requête via pool.request() avec les paramètres mappés", async () => {
+    requestQueryMock.mockResolvedValue({ recordset: [{ TCKID: 1 }] });
 
     const result = await runQuery({
       moduleUrl: import.meta.url,
       dbConnectionName: "ticketing",
-      key: "test.query",
       query: "SELECT 1",
-      ttl: false,
       inputs: { USRID: { type: "Int", value: 42 } },
     });
 
     expect(result.recordset).toEqual([{ TCKID: 1 }]);
-    expect(executeMock).toHaveBeenCalledWith({ USRID: 42 });
-    expect(inputMock).toHaveBeenCalledWith("USRID", "Int");
+    expect(fakeDb.request).toHaveBeenCalledTimes(1);
+    expect(requestInputMock).toHaveBeenCalledWith("USRID", "Int", 42);
+    expect(requestQueryMock).toHaveBeenCalledWith("SELECT 1");
+    expect(prepareMock).not.toHaveBeenCalled();
   });
 
   it("mappe une valeur undefined vers null", async () => {
-    executeMock.mockResolvedValue({ recordset: [] });
+    requestQueryMock.mockResolvedValue({ recordset: [] });
 
     await runQuery({
       moduleUrl: import.meta.url,
       dbConnectionName: "ticketing",
-      key: "test.query.null",
       query: "SELECT 1",
-      ttl: false,
       inputs: { DESCR: { type: "NVarChar(2000)", value: undefined } },
     });
 
-    expect(executeMock).toHaveBeenCalledWith({ DESCR: null });
+    expect(requestInputMock).toHaveBeenCalledWith("DESCR", "NVarChar(2000)", null);
   });
 
   it("lève errorIfEmpty si le recordset est vide", async () => {
-    executeMock.mockResolvedValue({ recordset: [] });
+    requestQueryMock.mockResolvedValue({ recordset: [] });
 
     await expect(
       runQuery({
         moduleUrl: import.meta.url,
         dbConnectionName: "ticketing",
-        key: "test.query.empty",
         query: "SELECT 1",
-        ttl: false,
         errorIfEmpty: "DATA_NOT_FOUND",
       }),
     ).rejects.toThrow("DATA_NOT_FOUND");
   });
 
   it("ne lève pas si errorIfEmpty n'est pas fourni et le recordset est vide", async () => {
-    executeMock.mockResolvedValue({ recordset: [] });
+    requestQueryMock.mockResolvedValue({ recordset: [] });
 
     await expect(
       runQuery({
         moduleUrl: import.meta.url,
         dbConnectionName: "ticketing",
-        key: "test.query.empty.ok",
         query: "SELECT 1",
-        ttl: false,
       }),
     ).resolves.toEqual({ recordset: [] });
   });
@@ -189,101 +184,91 @@ describe("core/utils/db.utils :: runQuery", () => {
       runQuery({
         moduleUrl: import.meta.url,
         dbConnectionName: "inconnu",
-        key: "test.query.nodb",
         query: "SELECT 1",
-        ttl: false,
       }),
     ).rejects.toThrow("DB_NOT_FOUND");
   });
 
-  describe("mode par défaut (requête simple, sans PreparedStatement)", () => {
-    it("utilise pool.request() quand ni key, ni ttl≠true, ni destroyImmediately ne sont fournis", async () => {
-      requestQueryMock.mockResolvedValue({ recordset: [{ TCKID: 1 }] });
+  it("ignore key / ttl / destroyImmediately : reste en pool.request(), sans PreparedStatement", async () => {
+    requestQueryMock.mockResolvedValue({ recordset: [{ ok: 1 }] });
 
-      const result = await runQuery({
-        moduleUrl: import.meta.url,
-        dbConnectionName: "ticketing",
-        query: "SELECT 1",
-        inputs: { USRID: { type: "Int", value: 42 } },
-      });
-
-      expect(result.recordset).toEqual([{ TCKID: 1 }]);
-      expect(fakeDb.request).toHaveBeenCalledTimes(1);
-      expect(requestInputMock).toHaveBeenCalledWith("USRID", "Int", 42);
-      expect(requestQueryMock).toHaveBeenCalledWith("SELECT 1");
-
-      // Le chemin PreparedStatement (celui qui retient une connexion dédiée
-      // et a causé l'incident) ne doit pas être emprunté.
-      expect(prepareMock).not.toHaveBeenCalled();
-      expect(executeMock).not.toHaveBeenCalled();
+    await runQuery({
+      moduleUrl: import.meta.url,
+      dbConnectionName: "ticketing",
+      key: "fsa.getFsa.header",
+      ttl: false,
+      destroyImmediately: true,
+      query: "SELECT 1",
     });
 
-    it("mappe une valeur undefined vers null en mode requête simple", async () => {
-      requestQueryMock.mockResolvedValue({ recordset: [] });
+    expect(fakeDb.request).toHaveBeenCalledTimes(1);
+    expect(prepareMock).not.toHaveBeenCalled();
+    expect(executeMock).not.toHaveBeenCalled();
+  });
 
-      await runQuery({
-        moduleUrl: import.meta.url,
-        dbConnectionName: "ticketing",
-        query: "SELECT 1",
-        inputs: { DESCR: { type: "NVarChar(2000)", value: undefined } },
-      });
+  describe("usePreparedStatement: true (PreparedStatement éphémère)", () => {
+    it("prépare, exécute puis unprepare à chaque appel", async () => {
+      executeMock.mockResolvedValue({ recordset: [{ ok: 1 }] });
 
-      expect(requestInputMock).toHaveBeenCalledWith("DESCR", "NVarChar(2000)", null);
+      for (let i = 0; i < 3; i++) {
+        await runQuery({
+          moduleUrl: import.meta.url,
+          dbConnectionName: "ticketing",
+          query: "SELECT 1",
+          inputs: { USRID: { type: "Int", value: 42 } },
+          usePreparedStatement: true,
+        });
+      }
+
+      expect(inputMock).toHaveBeenCalledWith("USRID", "Int");
+      expect(prepareMock).toHaveBeenCalledTimes(3);
+      expect(executeMock).toHaveBeenCalledWith({ USRID: 42 });
+      expect(unprepareMock).toHaveBeenCalledTimes(3);
+      expect(fakeDb.request).not.toHaveBeenCalled();
     });
 
-    it("lève errorIfEmpty en mode requête simple si le recordset est vide", async () => {
-      requestQueryMock.mockResolvedValue({ recordset: [] });
+    it("unprepare même si l'exécution échoue (connexion toujours rendue)", async () => {
+      executeMock.mockRejectedValue(new Error("boom"));
 
       await expect(
         runQuery({
           moduleUrl: import.meta.url,
           dbConnectionName: "ticketing",
           query: "SELECT 1",
-          errorIfEmpty: "DATA_NOT_FOUND",
+          usePreparedStatement: true,
         }),
-      ).rejects.toThrow("DATA_NOT_FOUND");
-    });
+      ).rejects.toThrow("boom");
 
-    it("repasse en mode PreparedStatement si usePreparedStatement:true est forcé, même sans key", async () => {
-      executeMock.mockResolvedValue({ recordset: [{ ok: 1 }] });
-
-      await runQuery({
-        moduleUrl: import.meta.url,
-        dbConnectionName: "ticketing",
-        query: "SELECT 1",
-        usePreparedStatement: true,
-      });
-
-      expect(prepareMock).toHaveBeenCalledTimes(1);
-      expect(executeMock).toHaveBeenCalledTimes(1);
-      expect(fakeDb.request).not.toHaveBeenCalled();
-    });
-
-    it("reste en mode requête simple si usePreparedStatement:false est forcé, même avec key fourni", async () => {
-      requestQueryMock.mockResolvedValue({ recordset: [{ ok: 1 }] });
-
-      await runQuery({
-        moduleUrl: import.meta.url,
-        dbConnectionName: "ticketing",
-        key: "test.query.forced-simple",
-        ttl: false,
-        query: "SELECT 1",
-        usePreparedStatement: false,
-      });
-
-      expect(fakeDb.request).toHaveBeenCalledTimes(1);
-      expect(prepareMock).not.toHaveBeenCalled();
-      expect(executeMock).not.toHaveBeenCalled();
+      expect(unprepareMock).toHaveBeenCalledTimes(1);
     });
   });
 });
 
+describe("core/utils/db.utils :: getPreparedStatement (compatibilité)", () => {
+  beforeEach(() => {
+    executeMock.mockReset().mockResolvedValue({ recordset: [] });
+    prepareMock.mockReset().mockResolvedValue(undefined);
+    unprepareMock.mockReset().mockResolvedValue(undefined);
+  });
+
+  it("ne retient aucune connexion : chaque execute() est préparé puis libéré", async () => {
+    const ps = await getPreparedStatement({}, "k", "SELECT 1", { A: "Int" });
+    expect(prepareMock).not.toHaveBeenCalled();
+
+    await ps.execute({ A: 1 });
+    await ps.execute({ A: 2 });
+
+    expect(prepareMock).toHaveBeenCalledTimes(2);
+    expect(unprepareMock).toHaveBeenCalledTimes(2);
+  });
+});
+
 describe("core/utils/db.utils :: closePreparedStatement / closeAllPreparedStatements", () => {
-  it("retourne false pour une clé de cache inexistante", async () => {
+  it("retourne false (plus de cache)", async () => {
     await expect(closePreparedStatement("clé-jamais-utilisée")).resolves.toBe(false);
   });
 
-  it("closeAllPreparedStatements ne lève pas si le cache est vide", async () => {
+  it("closeAllPreparedStatements ne lève pas", async () => {
     await expect(closeAllPreparedStatements()).resolves.toBeUndefined();
   });
 });
