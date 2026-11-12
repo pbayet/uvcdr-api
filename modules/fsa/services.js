@@ -2140,8 +2140,9 @@ const PRIX_REVISE_COLUMNS = {
 
 /**
  * Enregistre (ou efface, PRIREV = null) le tarif révisé d'une année.
- * Ne met à jour que si le dossier est en attente de validation (EAV), non
- * supprimé, et que l'utilisateur en est le gestionnaire ou le demandeur.
+ * Ne met à jour que si le dossier n'est ni en brouillon (BRO) ni archivé
+ * (ARC), non supprimé, et que l'utilisateur en est le gestionnaire ou le
+ * demandeur (ou DEV / SUPERADMIN via BYPASS).
  * @param {string} NUMDOS - Numéro du dossier
  * @param {0|1|2} ANNEE - Année (0 = N, 1 = N+1, 2 = N+2)
  * @param {number|null} PRIREV - Tarif révisé (null = supprimer la révision)
@@ -2172,7 +2173,7 @@ export async function patchPrixRevise(
        INNER JOIN dbo.FSAENT e ON e.NUMDOS = ve.NUMDOS
        INNER JOIN dbo.vw_FsaCurrentStatus cs ON cs.NUMDOS = e.NUMDOS
        WHERE ve.NUMDOS = @NUMDOS
-         AND cs.CODETA = 'EAV'
+         AND cs.CODETA NOT IN ('BRO', 'ARC')
          AND ISNULL(e.DELETED, 0) = 0
          AND (@BYPASS = 1 OR e.NUMGES = @NUMGES OR e.NUMDEM = @NUMGES);
     `,
