@@ -26,6 +26,20 @@ export function sanitizeUrl(url) {
 }
 
 /**
+ * Libellé de l'utilisateur pour les logs winston. En impersonation (token
+ * issu de GET /auth/dev, cf. loginDevMiddleware), ajoute l'email du dev
+ * réellement aux commandes : "jean@x.com (DEV: dev@x.com)".
+ *
+ * @param {object} req - requête Express (req.payload = JWT décodé)
+ * @param {string} [fallback="Unknown"] - valeur si aucun utilisateur
+ */
+export function getUserLogLabel(req, fallback = "Unknown") {
+  const email = req?.payload?.data?.email || fallback;
+  const devEmail = req?.payload?.devEmail;
+  return devEmail ? `${email} (DEV: ${devEmail})` : email;
+}
+
+/**
  * Compile un chemin de route façon Express (ex: "/api/ticketing/note/:id")
  * en RegExp anchorée, utilisée pour matcher le pathname d'une requête
  * (query string ignorée par l'appelant) contre ROUTES_TO_SAVE_IN_BASE

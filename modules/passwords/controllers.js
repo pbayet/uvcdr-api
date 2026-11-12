@@ -28,6 +28,7 @@ import * as utils from "./utils.js";
 import * as v from "./validators.js";
 import * as requestUtils from "../../core/utils/request.utils.js";
 import { logger } from "../../config/logger.config.js";
+import { getUserLogLabel } from "../../core/utils/logs.utils.js";
 
 const isProd = () => process.env.NODE_ENV === "production";
 
@@ -162,7 +163,7 @@ export async function sendUserReminder(req) {
   await sendReminder(recipient);
 
   logger.info(
-    `[PASSWORDS] Relance manuelle envoyée à ${email} (${status}) par ${req.payload?.data?.email ?? "?"}`,
+    `[PASSWORDS] Relance manuelle envoyée à ${email} (${status}) par ${getUserLogLabel(req, "?")}`,
   );
 
   return { ...toSummary(recipient), result: "sent" };
@@ -205,7 +206,7 @@ export async function sendGeneralReminder(req) {
   const summary = aggregate(results);
 
   logger.info(
-    `[PASSWORDS] Relance générale (≤ ${days} j) par ${req.payload?.data?.email ?? "?"} : ${summary.sent} envoyée(s), ${summary.skipped} ignorée(s), ${summary.failed} échec(s).`,
+    `[PASSWORDS] Relance générale (≤ ${days} j) par ${getUserLogLabel(req, "?")} : ${summary.sent} envoyée(s), ${summary.skipped} ignorée(s), ${summary.failed} échec(s).`,
   );
 
   return { dryRun: false, days, ...summary };

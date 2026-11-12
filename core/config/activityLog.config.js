@@ -267,6 +267,89 @@ export const ROUTES_TO_SAVE_IN_BASE = [
     comment: "Modification d'une préférence de thème",
   },
 
+  // ── fsa ────────────────────────────────────────────────────────────
+  // Dossiers
+  {
+    method: "POST",
+    route: "/api/fsa",
+    appcode: "FSA",
+    comment: "Création d'un dossier FSA",
+  },
+  {
+    method: "POST",
+    route: "/api/fsa/duplicate",
+    appcode: "FSA",
+    comment: "Duplication d'un dossier FSA",
+  },
+  {
+    method: "PATCH",
+    route: "/api/fsa",
+    appcode: "FSA",
+    comment: "Modification d'un dossier FSA",
+  },
+  {
+    method: "PATCH",
+    route: "/api/fsa/folder-notes",
+    appcode: "FSA",
+    comment: "Modification des notes d'un dossier FSA",
+  },
+  {
+    method: "PATCH",
+    route: "/api/fsa/prix-revise",
+    appcode: "FSA",
+    comment: "Modification du tarif révisé d'un dossier FSA",
+  },
+  {
+    method: "DELETE",
+    route: "/api/fsa",
+    appcode: "FSA",
+    comment: "Suppression/restauration d'un dossier FSA",
+  },
+  // Validations
+  {
+    method: "POST",
+    route: "/api/fsa/validation",
+    appcode: "FSA",
+    comment: "Validation d'un dossier FSA",
+  },
+  {
+    method: "DELETE",
+    route: "/api/fsa/validation",
+    appcode: "FSA",
+    comment: "Suppression d'une validation FSA",
+  },
+  // Paramétrage (gestionnaires / paramètres globaux)
+  {
+    method: "POST",
+    route: "/api/fsa/gestionnaire",
+    appcode: "FSA",
+    comment: "Création d'un gestionnaire FSA",
+  },
+  {
+    method: "PATCH",
+    route: "/api/fsa/gestionnaire",
+    appcode: "FSA",
+    comment: "Modification d'un gestionnaire FSA",
+  },
+  {
+    method: "PATCH",
+    route: "/api/fsa/gestionnaires",
+    appcode: "FSA",
+    comment: "Modification groupée des gestionnaires FSA",
+  },
+  {
+    method: "DELETE",
+    route: "/api/fsa/gestionnaire",
+    appcode: "FSA",
+    comment: "Suppression d'un gestionnaire FSA",
+  },
+  {
+    method: "PATCH",
+    route: "/api/fsa/settings",
+    appcode: "FSA",
+    comment: "Modification des paramètres globaux FSA",
+  },
+
   // ── files ────────────────────────────────────────────────────────────
   {
     method: "POST",

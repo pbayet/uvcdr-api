@@ -1,6 +1,6 @@
 import { ERROR_REGISTRY } from "../utils/error.registry.js";
 import { logger } from "../../config/logger.config.js";
-import { sanitizeUrl } from "../utils/logs.utils.js";
+import { sanitizeUrl, getUserLogLabel } from "../utils/logs.utils.js";
 import { saveLogInBase } from "./log.middleware.js";
 
 /**
@@ -59,6 +59,9 @@ export const errorHandler = (err, req, res, next) => {
   const method = req.method;
   const sanitizedUrl = sanitizeUrl(req.originalUrl);
   const userEmail = req?.payload?.data?.email || "Unknown";
+  // Libellé de log (inclut l'email du dev en impersonation) — userEmail
+  // reste l'email seul, c'est lui qui est stocké dans USERSACTIVITY.USEREMAIL.
+  const userLabel = getUserLogLabel(req);
 
   // Erreurs de validation zod (remplace les `if (!x) throw new Error(...)`
   // dupliqués dans les contrôleurs — cf. audit dette technique 4.4).
@@ -69,7 +72,7 @@ export const errorHandler = (err, req, res, next) => {
     }));
 
     logger.warn(
-      `[VALIDATION] [${method}] ${sanitizedUrl} | USER: ${userEmail} | ${JSON.stringify(issues)}`,
+      `[VALIDATION] [${method}] ${sanitizedUrl} | USER: ${userLabel} | ${JSON.stringify(issues)}`,
     );
 
     saveLogInBase(
@@ -110,7 +113,7 @@ export const errorHandler = (err, req, res, next) => {
     );
 
     logger.error(
-      `[${method}] ${sanitizedUrl} | ${message} (${description}) | IP: ${ip} | USER: ${userEmail} | CODE: ${registered.CODE}`,
+      `[${method}] ${sanitizedUrl} | ${message} (${description}) | IP: ${ip} | USER: ${userLabel} | CODE: ${registered.CODE}`,
     );
 
     saveLogInBase(
@@ -142,7 +145,7 @@ export const errorHandler = (err, req, res, next) => {
   // désormais le status/message porté par l'erreur elle-même.
   if (err.status) {
     logger.warn(
-      `[${method}] ${sanitizedUrl} | ${err.message} | IP: ${ip} | USER: ${userEmail}`,
+      `[${method}] ${sanitizedUrl} | ${err.message} | IP: ${ip} | USER: ${userLabel}`,
     );
 
     saveLogInBase(
@@ -172,7 +175,7 @@ export const errorHandler = (err, req, res, next) => {
   const debugInfo = err.stack || err.message;
 
   logger.error(
-    `[${method}] ${sanitizedUrl} | ${fallback.MESSAGE[lang] || fallback.MESSAGE.en} (${fallback.DESCRIPTION[lang] || fallback.DESCRIPTION.en}) | IP: ${ip} | USER: ${userEmail} | CODE: ${fallback.CODE}\nDetails: ${debugInfo}`,
+    `[${method}] ${sanitizedUrl} | ${fallback.MESSAGE[lang] || fallback.MESSAGE.en} (${fallback.DESCRIPTION[lang] || fallback.DESCRIPTION.en}) | IP: ${ip} | USER: ${userLabel} | CODE: ${fallback.CODE}\nDetails: ${debugInfo}`,
   );
 
   saveLogInBase(

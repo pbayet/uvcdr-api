@@ -31,8 +31,18 @@ export const getRequestAuthorization = (req) => {
 
 /**
  * Génère le payload du token JWT à partir d'un utilisateur et de sa permission.
+ *
+ * devEmail : email du développeur qui s'est connecté "en tant que" `user`
+ * (impersonation, cf. loginDevMiddleware). Vide hors impersonation. Permet de
+ * tracer le vrai auteur des actions dans USERSACTIVITY.DEVEMAIL.
  */
-export const generatePayload = (user, permission, appcode, devToken = "") => {
+export const generatePayload = (
+  user,
+  permission,
+  appcode,
+  devToken = "",
+  devEmail = "",
+) => {
   const iat = Math.floor(Date.now() / 1000);
   const exp = iat + Math.floor(ms(jwtExpiration) / 1000);
 
@@ -43,6 +53,7 @@ export const generatePayload = (user, permission, appcode, devToken = "") => {
     permissionLevel: permission?.PRMLVL ?? -1,
     application: appcode || "",
     devToken,
+    devEmail: devEmail || "",
     isCave: !!user.ISCAVE,
     data: {
       id: user.USRID ?? 0,
@@ -71,6 +82,7 @@ export const generateJWT = (payload) => {
     permissionLevel,
     application,
     devToken,
+    devEmail,
     isCave,
     data,
   } = payload;
@@ -84,6 +96,7 @@ export const generateJWT = (payload) => {
     permissionLevel,
     application,
     devToken,
+    devEmail: devEmail || "",
     isCave,
     data,
   };

@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeUrl, generateRoutePattern } from "../../../core/utils/logs.utils.js";
+import {
+  sanitizeUrl,
+  generateRoutePattern,
+  getUserLogLabel,
+} from "../../../core/utils/logs.utils.js";
 
 describe("core/utils/logs.utils :: sanitizeUrl", () => {
   it("masque le mot de passe dans la query string", () => {
@@ -72,5 +76,24 @@ describe("core/utils/logs.utils :: generateRoutePattern", () => {
     expect(pattern.test("/api/usersmanager/last-version-details/opened")).toBe(true);
     // Le "-" ne doit pas être interprété comme un opérateur regex
     expect(pattern.test("/api/usersmanagerXlast-version-detailsXopened")).toBe(false);
+  });
+});
+
+describe("core/utils/logs.utils :: getUserLogLabel", () => {
+  it("retourne l'email seul hors impersonation", () => {
+    expect(getUserLogLabel({ payload: { data: { email: "jean@test.com" }, devEmail: "" } })).toBe(
+      "jean@test.com",
+    );
+  });
+
+  it("ajoute l'email du dev en impersonation", () => {
+    expect(
+      getUserLogLabel({ payload: { data: { email: "jean@test.com" }, devEmail: "dev@test.com" } }),
+    ).toBe("jean@test.com (DEV: dev@test.com)");
+  });
+
+  it("retombe sur le fallback sans payload", () => {
+    expect(getUserLogLabel({ payload: null })).toBe("Unknown");
+    expect(getUserLogLabel(undefined, "?")).toBe("?");
   });
 });

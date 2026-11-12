@@ -78,6 +78,20 @@ describe("core/utils/jwt.utils :: generateJWT / verifyJWT", () => {
     expect(decoded.permissionLevel).toBe(4);
   });
 
+  it("conserve devEmail (impersonation) dans le token signé", () => {
+    const payload = generatePayload(baseUser, basePermission, "TICKETING", "true", "dev@test.com");
+    const decoded = verifyJWT(generateJWT(payload));
+
+    expect(decoded.devToken).toBe("true");
+    expect(decoded.devEmail).toBe("dev@test.com");
+    expect(decoded.data.email).toBe(baseUser.EMAIL);
+  });
+
+  it("devEmail vaut '' hors impersonation", () => {
+    const decoded = verifyJWT(generateJWT(generatePayload(baseUser, basePermission, "TICKETING")));
+    expect(decoded.devEmail).toBe("");
+  });
+
   it("lève ACCESS_DENIED si permissionLevel === -1", () => {
     const payload = generatePayload(baseUser, null, "");
     const token = generateJWT(payload);

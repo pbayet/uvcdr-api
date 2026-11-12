@@ -143,6 +143,8 @@ describe("modules/usersmanager/services :: écritures", () => {
     expect(inputs.DURATIONMS.value).toBe(42);
     expect(inputs.PARAMS.value).toBe('{"TITLE":"Test"}');
     expect(inputs.SUCCESS.value).toBe(true);
+    expect(inputs.DEVEMAIL.value).toBeNull();
+    expect(query).toContain("@DEVEMAIL");
   });
 
   it("postActivityStats tronque les champs plus longs que leur colonne SQL", async () => {

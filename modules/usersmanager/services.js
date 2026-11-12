@@ -354,6 +354,7 @@ export async function postActivityStats(
   DURATIONMS,
   PARAMS,
   SUCCESS,
+  DEVEMAIL = null,
 ) {
   await runQuery({
     moduleUrl: import.meta.url,
@@ -369,7 +370,8 @@ export async function postActivityStats(
       IPADRESS,
       DURATIONMS,
       PARAMS,
-      SUCCESS
+      SUCCESS,
+      DEVEMAIL
     )
     VALUES
     (
@@ -381,7 +383,8 @@ export async function postActivityStats(
       @IPADRESS,
       @DURATIONMS,
       @PARAMS,
-      @SUCCESS
+      @SUCCESS,
+      @DEVEMAIL
     )
     `,
     // truncate() protège contre un "String or binary data would be
@@ -400,6 +403,9 @@ export async function postActivityStats(
       DURATIONMS: { type: sql.Int, value: DURATIONMS },
       PARAMS: { type: sql.NVarChar(sql.MAX), value: PARAMS },
       SUCCESS: { type: sql.Bit, value: SUCCESS },
+      // Email du dev connecté "en tant que" USEREMAIL (impersonation) ;
+      // NULL pour une connexion normale.
+      DEVEMAIL: { type: sql.NVarChar(320), value: truncate(DEVEMAIL, 320) },
     },
   });
 

@@ -239,9 +239,12 @@ export async function loginMiddleware(req, res, next) {
  * Paramètres attendus (query/body) : email, permlvl, appcode, isbase (0|1).
  */
 export async function loginDevMiddleware(req, res, next) {
+  let devEmail = null;
+
   try {
     const myToken = getRequestAuthorization(req);
     const myPayload = jwtUtils.decodeJWT(myToken);
+    devEmail = myPayload?.data?.email || null;
 
     if (!myPayload) throw new Error("INVALID_TOKEN");
     if (myPayload.permissionLevel !== 1) throw new Error("ACCESS_DENIED");
@@ -286,6 +289,8 @@ export async function loginDevMiddleware(req, res, next) {
         permission[0],
         appcode,
         "true",
+        // Trace du vrai auteur : journalisé dans USERSACTIVITY.DEVEMAIL.
+        myPayload?.data?.email || "",
       );
       token = jwtUtils.generateJWT(payload);
     }
@@ -308,8 +313,16 @@ export async function loginDevMiddleware(req, res, next) {
 
     const myNewToken = jwtUtils.generateJWT(myNewPayload);
 
+    // Trace d'audit : quel dev s'est connecté en tant que qui.
+    logger.info(
+      `[LOGIN_DEV] dev=${devEmail || "unknown"} as=${Number(isbase) ? "(base)" : email} permlvl=${permlvl} appcode=${appcode} ip=${req?.ip && req?.ip !== "::1" ? req?.ip : "unknown"}`,
+    );
+
     res.status(200).json(myNewToken);
   } catch (err) {
+    logger.warn(
+      `[LOGIN_DEV] échec dev=${devEmail || "unknown"} : ${err?.message}`,
+    );
     if (req?.query?.email) registerFailedAttempt(req.query.email);
     if (req?.ip) registerFailedAttempt(req.ip);
 
@@ -331,10 +344,12 @@ export async function loginAppMiddleware(req, res, next) {
   const { appcode } = (await requestUtils.getRequestParams(req)).params;
 
   let email = null;
+  let devEmail = null;
 
   try {
     const myToken = getRequestAuthorization(req);
     const myPayload = jwtUtils.decodeJWT(myToken);
+    devEmail = myPayload?.devEmail || null;
 
     if (!myPayload) throw new Error("INVALID_TOKEN");
     if (myPayload.permissionLevel === -1) throw new Error("ACCESS_DENIED");
@@ -361,10 +376,15 @@ export async function loginAppMiddleware(req, res, next) {
       throw new Error("ACCESS_DENIED");
     }
 
+    // Si le token courant est une impersonation, on conserve l'email du dev
+    // pour que l'audit (USERSACTIVITY.DEVEMAIL) suive aussi le changement
+    // d'application.
     const myNewPayload = jwtUtils.generatePayload(
       user,
       userPermission,
       appcode,
+      "",
+      myPayload.devEmail || "",
     );
 
     const myNewToken = jwtUtils.generateJWT(myNewPayload);
@@ -383,7 +403,7 @@ export async function loginAppMiddleware(req, res, next) {
   } finally {
     await postLoginStats(connexionSuccessful, email, appcode).catch(() => {});
     logger.info(
-      `[LOGIN_ATTEMPT] email=${email || "unknown"} ip=${req?.ip && req?.ip !== "::1" ? req?.ip : "unknown"} success=${connexionSuccessful} appcode=${appcode || "unknown"}`,
+      `[LOGIN_ATTEMPT] email=${email || "unknown"}${devEmail ? ` dev=${devEmail}` : ""} ip=${req?.ip && req?.ip !== "::1" ? req?.ip : "unknown"} success=${connexionSuccessful} appcode=${appcode || "unknown"}`,
     );
   }
 }

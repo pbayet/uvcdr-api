@@ -1,5 +1,9 @@
 import { logger } from "../../config/logger.config.js";
-import { sanitizeUrl, generateRoutePattern } from "../utils/logs.utils.js";
+import {
+  sanitizeUrl,
+  generateRoutePattern,
+  getUserLogLabel,
+} from "../utils/logs.utils.js";
 import { getRequestAuthorization, decodeJWT } from "../utils/jwt.utils.js";
 import { postActivityStats } from "../../modules/usersmanager/services.js";
 import * as requestUtils from "../utils/request.utils.js";
@@ -70,6 +74,9 @@ export const saveLogInBase = async (
       durationPost,
       params,
       successPost,
+      // Email du dev connecté "en tant que" USEREMAIL (impersonation,
+      // cf. loginDevMiddleware) — null hors impersonation.
+      req?.payload?.devEmail || null,
     );
   } catch (err) {
     logger.error(
@@ -114,9 +121,10 @@ export const logHandler = (req, res, next) => {
   const method = req.method;
   const sanitizedUrl = sanitizeUrl(req.originalUrl || "Unknown");
   const userEmail = req?.payload?.data?.email || "Unknown";
+  const userLabel = getUserLogLabel(req);
 
   logger.info(
-    `[START] [${method}] ${sanitizedUrl} | IP: ${ip} | USER: ${userEmail}`,
+    `[START] [${method}] ${sanitizedUrl} | IP: ${ip} | USER: ${userLabel}`,
   );
 
   res.on("finish", () => {
@@ -134,7 +142,7 @@ export const logHandler = (req, res, next) => {
       );
 
       logger.info(
-        `[COMPLETE] [${method}] ${sanitizedUrl} | IP: ${ip} | USER: ${userEmail} | TIME: ${duration}ms`,
+        `[COMPLETE] [${method}] ${sanitizedUrl} | IP: ${ip} | USER: ${userLabel} | TIME: ${duration}ms`,
       );
     }
   });

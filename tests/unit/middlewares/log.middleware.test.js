@@ -125,6 +125,44 @@ describe("core/middlewares/log.middleware :: saveLogInBase", () => {
     expect(comment).toBeTruthy();
   });
 
+  it("transmet DEVEMAIL (email du dev) quand le token est une impersonation", async () => {
+    const req = buildReq({
+      payload: { devEmail: "dev@test.com", data: { email: "jean@test.com" } },
+    });
+
+    await saveLogInBase(req, "/api/ticketing", "POST", "jean@test.com", null, 1, true);
+
+    const args = postActivityStats.mock.calls[0];
+    expect(args[4]).toBe("jean@test.com");
+    expect(args[9]).toBe("dev@test.com");
+  });
+
+  it.each([
+    ["POST", "/api/fsa"],
+    ["PATCH", "/api/fsa"],
+    ["DELETE", "/api/fsa"],
+    ["POST", "/api/fsa/duplicate"],
+    ["PATCH", "/api/fsa/prix-revise"],
+    ["DELETE", "/api/fsa/validation"],
+    ["PATCH", "/api/fsa/settings"],
+  ])("journalise la route FSA %s %s avec l'appcode FSA", async (method, url) => {
+    await saveLogInBase(buildReq({ method }), url, method, "jean@test.com", null, 1, true);
+
+    expect(postActivityStats).toHaveBeenCalledOnce();
+    expect(postActivityStats.mock.calls[0][3]).toBe("FSA");
+  });
+
+  it("ne journalise pas les lectures FSA (GET /api/fsa)", async () => {
+    await saveLogInBase(buildReq({ method: "GET" }), "/api/fsa", "GET", null, null, 1, true);
+    expect(postActivityStats).not.toHaveBeenCalled();
+  });
+
+  it("DEVEMAIL vaut null hors impersonation", async () => {
+    await saveLogInBase(buildReq(), "/api/ticketing", "POST", "jean@test.com", null, 1, true);
+
+    expect(postActivityStats.mock.calls[0][9]).toBeNull();
+  });
+
   it("ignore le matching sur la query string (ne compare que le pathname)", async () => {
     const req = buildReq();
 
