@@ -2147,9 +2147,18 @@ const PRIX_REVISE_COLUMNS = {
  * @param {number|null} PRIREV - Tarif révisé (null = supprimer la révision)
  * @param {string|null} REVNOT - Motif de la révision
  * @param {string} NUMGES - Poste de l'utilisateur connecté
+ * @param {boolean} [BYPASS=false] - Ignore la règle gestionnaire/demandeur
+ *   (profil DEV, même règle que `FsaFolder.canRevisePrices` côté front)
  * @returns {Promise<boolean>} True si une ligne a été mise à jour
  */
-export async function patchPrixRevise(NUMDOS, ANNEE, PRIREV, REVNOT, NUMGES) {
+export async function patchPrixRevise(
+  NUMDOS,
+  ANNEE,
+  PRIREV,
+  REVNOT,
+  NUMGES,
+  BYPASS = false,
+) {
   const cols = PRIX_REVISE_COLUMNS[ANNEE];
   if (!NUMDOS || !cols || !NUMGES) throw new Error("MISSING_PARAMETERS");
 
@@ -2165,7 +2174,7 @@ export async function patchPrixRevise(NUMDOS, ANNEE, PRIREV, REVNOT, NUMGES) {
        WHERE ve.NUMDOS = @NUMDOS
          AND cs.CODETA = 'EAV'
          AND ISNULL(e.DELETED, 0) = 0
-         AND (e.NUMGES = @NUMGES OR e.NUMDEM = @NUMGES);
+         AND (@BYPASS = 1 OR e.NUMGES = @NUMGES OR e.NUMDEM = @NUMGES);
     `,
     inputs: {
       NUMDOS: { type: sql.VarChar(50), value: NUMDOS },
@@ -2175,6 +2184,7 @@ export async function patchPrixRevise(NUMDOS, ANNEE, PRIREV, REVNOT, NUMGES) {
         value: PRIREV == null ? null : REVNOT || null,
       },
       NUMGES: { type: sql.VarChar(50), value: NUMGES },
+      BYPASS: { type: sql.Bit, value: BYPASS ? 1 : 0 },
     },
   });
 

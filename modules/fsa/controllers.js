@@ -1319,6 +1319,8 @@ export async function patchFsaPrixRevise(req) {
   );
 
   const { NUMGES } = getUserIdentity(req);
+  // Même règle que FsaFolder.canRevisePrices(["DEV"]) côté front.
+  const BYPASS = ["DEV"].includes(req?.payload?.permission);
 
   const updated = await services.patchPrixRevise(
     NUMDOS,
@@ -1326,6 +1328,7 @@ export async function patchFsaPrixRevise(req) {
     PRIREV,
     REVNOT,
     NUMGES,
+    BYPASS,
   );
 
   if (!updated) {
