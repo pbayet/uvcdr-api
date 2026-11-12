@@ -1319,8 +1319,10 @@ export async function patchFsaPrixRevise(req) {
   );
 
   const { NUMGES } = getUserIdentity(req);
-  // Même règle que FsaFolder.canRevisePrices(["DEV"]) côté front.
-  const BYPASS = ["DEV"].includes(req?.payload?.permission);
+  // Même règle que FsaFolder.canRevisePrices(["DEV", "SUPERADMIN"]) côté front.
+  const BYPASS = ["DEV", "SUPERADMIN"].includes(
+    String(req?.payload?.permission ?? "").toUpperCase(),
+  );
 
   const updated = await services.patchPrixRevise(
     NUMDOS,

@@ -2148,7 +2148,7 @@ const PRIX_REVISE_COLUMNS = {
  * @param {string|null} REVNOT - Motif de la révision
  * @param {string} NUMGES - Poste de l'utilisateur connecté
  * @param {boolean} [BYPASS=false] - Ignore la règle gestionnaire/demandeur
- *   (profil DEV, même règle que `FsaFolder.canRevisePrices` côté front)
+ *   (profils DEV / SUPERADMIN, même règle que `FsaFolder.canRevisePrices` côté front)
  * @returns {Promise<boolean>} True si une ligne a été mise à jour
  */
 export async function patchPrixRevise(
