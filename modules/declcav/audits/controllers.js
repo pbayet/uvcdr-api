@@ -3,7 +3,7 @@ import * as utils from "./utils.js";
 import * as v from "./validators.js";
 import * as declcavServices from "../services.js";
 import { formatCaves } from "../utils.js";
-import { notifyDeclcavEvent } from "../controllers.js";
+import { broadcastDeclcav, notifyDeclcavEvent } from "../controllers.js";
 import * as fileServices from "../../files/services.js";
 import { StorageService } from "../../../core/services/storage.service.js";
 import * as requestUtils from "../../../core/utils/request.utils.js";
@@ -133,6 +133,17 @@ async function notifyAudit(
   });
 }
 
+/* ───────────────────────── Temps réel ───────────────────────── */
+
+/**
+ * declcav.audit.created|updated|deleted { AUDID } : services internes et
+ * cave propriétaire de l'audit (cf. broadcastDeclcav dans ../controllers.js).
+ * Le CAVEID est celui déjà chargé par l'écriture, sans requête de plus.
+ */
+function broadcastAudit(action, AUDID, CAVEID) {
+  broadcastDeclcav(`declcav.audit.${action}`, { AUDID }, { caveId: CAVEID });
+}
+
 /* ───────────────────────── Chargement ───────────────────────── */
 
 async function loadAuditDetail(AUDID) {
@@ -187,6 +198,8 @@ export async function createAudit(req) {
     services.createAudit({ ...body, FILECODES, USR: utils.getActorName(req) }),
   );
 
+  broadcastAudit("created", AUDID, body.CAVEID);
+
   const audit = await loadAuditDetail(AUDID);
   await notifyAudit(audit, {
     template: "declcav/creation",
@@ -215,6 +228,8 @@ export async function createVersion(req) {
       USR: utils.getActorName(req),
     }),
   );
+
+  broadcastAudit("updated", AUDID, row.CAVEID);
 
   const audit = await loadAuditDetail(AUDID);
   await notifyAudit(audit, {
@@ -246,6 +261,8 @@ export async function createReturn(req) {
     }),
   );
 
+  broadcastAudit("updated", AUDID, row.CAVEID);
+
   const audit = await loadAuditDetail(AUDID);
   await notifyAudit(audit, {
     template: "declcav/notification",
@@ -260,7 +277,7 @@ export async function reviewReturn(req) {
   utils.assertAuditManager(req);
   const { AUDID, RETID } = v.auditReturnParamSchema.parse(req.params);
   const body = v.auditReviewSchema.parse(await params(req));
-  await loadAccessibleAudit(req, AUDID);
+  const row = await loadAccessibleAudit(req, AUDID);
 
   await services.reviewReturn({
     AUDID,
@@ -268,6 +285,8 @@ export async function reviewReturn(req) {
     ...body,
     USR: utils.getActorName(req),
   });
+
+  broadcastAudit("updated", AUDID, row.CAVEID);
 
   const audit = await loadAuditDetail(AUDID);
   const valid = body.DECISION === "VALID";
@@ -298,8 +317,9 @@ export async function deleteAudit(req) {
   utils.assertAuditManager(req);
   const { AUDID } = v.auditIdParamSchema.parse(req.params);
   const { COMMENT } = v.auditDeleteSchema.parse(await params(req));
-  await loadAccessibleAudit(req, AUDID);
+  const row = await loadAccessibleAudit(req, AUDID);
 
   await services.deleteAudit({ AUDID, COMMENT, USR: utils.getActorName(req) });
+  broadcastAudit("deleted", AUDID, row.CAVEID);
   return true;
 }

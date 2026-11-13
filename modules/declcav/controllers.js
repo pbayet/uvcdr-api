@@ -10,6 +10,10 @@ import {
   renderFolderList,
 } from "../../core/services/mail.service.js";
 import { logger } from "../../config/logger.config.js";
+import {
+  broadcastToAll,
+  broadcastToCaves,
+} from "../../config/websocket/wsManager.js";
 
 /* ─────────────────────────────────────────────
    DECLCAV — Controllers
@@ -84,6 +88,73 @@ function getUserIdentity(req) {
       `${req?.payload?.data?.LastName ?? ""} ${req?.payload?.data?.FirstName ?? ""}`.trim(),
     MLOPER: req?.payload?.data?.email ?? "",
   };
+}
+
+/**
+ * Temps réel (config/websocket/wsManager.js, client @uvcdr/realtime côté
+ * front) : même règle que FSA/ticketing, payload réduit aux identifiants.
+ * Chaque front recharge ensuite la donnée avec ses propres droits (une cave
+ * ne relit que ses dossiers/audits), ce qui évite de diffuser leur contenu.
+ *
+ * Destinataires :
+ *   - utilisateurs internes de declaration-ingredients (DCLING) : toujours,
+ *     via broadcastToAll (routé par le préfixe `declcav`, jamais aux caves) ;
+ *   - la cave concernée : en plus, via broadcastToCaves([caveId]), quand
+ *     l'entité lui appartient. Une cave ne reçoit JAMAIS les évènements
+ *     d'une autre cave.
+ *
+ * Évènements (endpoint émetteur → destinataires) :
+ *   - declcav.folder.created { NUMDOS }
+ *       POST /                     création de déclaration     internes + cave
+ *   - declcav.folder.created { NUMDOS, OLDNUMDOS }
+ *       POST /rectification        nouvelle version (NUMDOS) remplaçant
+ *                                  OLDNUMDOS                   internes + cave
+ *   - declcav.folder.updated { NUMDOS }
+ *       POST /mrv/ingredients      saisie / signature cave     internes + cave
+ *   - declcav.folder.relaunched { NUMDOSS }
+ *       POST /relaunch, /relaunch/quest  relance (DERREL / DERRELQST, un
+ *                                  seul évènement pour toute la relance
+ *                                  groupée)                   internes
+ *   - declcav.folder.deleted { NUMDOS, DELETED }
+ *       DELETE /                   suppression (DELETED = true) ou
+ *                                  restauration (false)        internes + cave
+ *   - declcav.questionnaire.updated { NUMDOS, SUBID }
+ *       POST /responses            brouillon, soumission, validation,
+ *                                  refus (statut du dossier)  internes + cave
+ *   - declcav.cave.created { CAVEID } / declcav.cave.updated { CAVEID }
+ *       POST /cave                 création / modification    internes
+ *                                  (+ la cave elle-même pour updated)
+ *   - declcav.cave.deleted { CAVEID }
+ *       DELETE /cave                                           internes
+ *   - declcav.ingredient.updated { CODE, IS_CEP }
+ *       PATCH /ingredient          référentiel commun         internes
+ *   - declcav.attachment.updated { NUMDOS, ENTITYTYPE }
+ *       POST /api/files/upload, DELETE /api/files/delete (ENTITYTYPE NUMDOS /
+ *       NUMDOSDECL) — émis par modules/files/controllers.js   internes + cave
+ *   - declcav.audit.created { AUDID }    POST /audits          internes + cave
+ *   - declcav.audit.updated { AUDID }    POST /audits/:AUDID/versions,
+ *                                        /returns, /returns/:RETID/review
+ *                                                              internes + cave
+ *   - declcav.audit.deleted { AUDID }    DELETE /audits/:AUDID internes + cave
+ *     (émis par audits/controllers.js)
+ *
+ * Non diffusés : POST /reset-password (rien d'affiché ne change) et les
+ * envois de mails seuls. Best-effort : un échec de diffusion est logué mais
+ * ne fait jamais échouer l'écriture, déjà faite.
+ */
+export function broadcastDeclcav(type, payload, { caveId } = {}) {
+  const message = { type, payload };
+  try {
+    broadcastToAll(message);
+    if (caveId != null && caveId !== "") broadcastToCaves([caveId], message);
+  } catch (err) {
+    logger.warn(`[WS] ${type} non diffusé : ${err.message}`);
+  }
+}
+
+/** CAVEID de la cave connectée (token cave DCLING), sinon null. */
+function requestCaveId(req) {
+  return req?.payload?.isCave ? Number(req.payload.data?.id) || null : null;
 }
 
 /** Emails actifs d'une cave (folder.cave.MAILS), joints en une chaîne. */
@@ -651,6 +722,12 @@ export async function setDeclaration(req) {
   const formattedFolders = utils.formatFolders(rawFolders);
   const folder = formattedFolders[0];
 
+  broadcastDeclcav(
+    "declcav.folder.created",
+    { NUMDOS: folderNumDos },
+    { caveId: body.CAVEID },
+  );
+
   notifyDeclcavEvent({
     template: "declcav/creation",
     subject: `Nouvelle déclaration`,
@@ -692,6 +769,7 @@ export async function relaunchDecl(req) {
 
   const data = await services.getRelaunchData(NUMDOS ?? null);
   const formattedData = utils.formatRelaunchData(data);
+  const relaunched = [];
 
   for (const d of formattedData) {
     const numdosList = [...new Set((d.NUMDOSS ?? []).filter(Boolean))];
@@ -721,10 +799,23 @@ export async function relaunchDecl(req) {
 
     for (const n of numdosList) {
       await services.setRelaunch(n);
+      relaunched.push(n);
     }
   }
 
+  broadcastRelaunch(relaunched);
   return true;
+}
+
+/**
+ * Relance (relaunchDecl/relaunchQuest) : un seul évènement pour toute la
+ * relance groupée (« Tout relancer » peut toucher des dizaines de dossiers),
+ * le front recharge alors sa liste une fois. Internes uniquement : la
+ * relance ne change rien de ce qu'affiche la cave (elle reçoit le mail).
+ */
+function broadcastRelaunch(NUMDOSS) {
+  if (!NUMDOSS.length) return;
+  broadcastDeclcav("declcav.folder.relaunched", { NUMDOSS });
 }
 
 /**
@@ -741,6 +832,7 @@ export async function relaunchQuest(req) {
 
   const data = await services.getQuestRelaunchData(NUMDOS ?? null);
   const formattedData = utils.formatQuestRelaunchData(data);
+  const relaunched = [];
 
   for (const d of formattedData) {
     const numdosList = [...new Set((d.NUMDOSS ?? []).filter(Boolean))];
@@ -761,9 +853,11 @@ export async function relaunchQuest(req) {
 
     for (const n of numdosList) {
       await services.setRelaunchQuest(n);
+      relaunched.push(n);
     }
   }
 
+  broadcastRelaunch(relaunched);
   return true;
 }
 
@@ -785,6 +879,16 @@ export async function setRectification(req) {
 
     const formattedFolders = utils.formatFolders(rawFolders);
     const folder = formattedFolders[0];
+
+    // Nouvelle version du dossier (nouveau NUMDOS) : le front remplace
+    // l'ancienne (OLDNUMDOS) dans sa liste.
+    if (folder?.ent?.NUMDOS) {
+      broadcastDeclcav(
+        "declcav.folder.created",
+        { NUMDOS: folder.ent.NUMDOS, OLDNUMDOS: NUMDOS },
+        { caveId: folder.cave?.CAVEID },
+      );
+    }
 
     notifyDeclcavEvent({
       template: "declcav/modification",
@@ -837,6 +941,15 @@ export async function setMrvIngredients(req) {
   const rawFolders = await services.getFolders(null, NUMDOS);
   const formattedFolders = utils.formatFolders(rawFolders);
   const folder = formattedFolders[0];
+
+  // Rectification non terminée (ISRECT sans DONE) : rien n'a été écrit.
+  if (!ISRECT || DONE) {
+    broadcastDeclcav(
+      "declcav.folder.updated",
+      { NUMDOS },
+      { caveId: folder?.cave?.CAVEID ?? requestCaveId(req) },
+    );
+  }
 
   // Correctif : `badIngres.length >= 0` était toujours vrai (y compris à 0),
   // ce qui déclenchait l'alerte "ingrédient à surveiller" à chaque appel.
@@ -907,6 +1020,15 @@ export async function upsertCave(req) {
   const cavesData = await services.getCave(caveId);
   const formattedCaves = utils.formatCaves(cavesData);
 
+  // Création : la cave n'a encore aucune connexion, seuls les internes sont
+  // prévenus ; modification : la cave voit aussi ses informations à jour.
+  const isNew = !CAVEID;
+  broadcastDeclcav(
+    isNew ? "declcav.cave.created" : "declcav.cave.updated",
+    { CAVEID: caveId },
+    { caveId: isNew ? null : caveId },
+  );
+
   return formattedCaves?.[0];
 }
 
@@ -923,6 +1045,18 @@ export async function upsertResponses(req) {
   });
 
   await services.delsertResponses(newSubId, RESPONSES);
+
+  // Cave destinataire : celle qui répond (token cave) sans requête ; sinon
+  // (saisie / validation par la Qualité) une lecture légère du CAVEID du
+  // dossier, indispensable pour la prévenir.
+  const questCaveId =
+    requestCaveId(req) ??
+    (await services.getFolderCaveId(REFEXT).catch(() => null));
+  broadcastDeclcav(
+    "declcav.questionnaire.updated",
+    { NUMDOS: REFEXT, SUBID: newSubId ?? SUBID ?? null },
+    { caveId: questCaveId },
+  );
 
   if (STATUS === "SUBMITTED" && DONE) {
     await notifyDeclcavEvent({
@@ -1040,6 +1174,13 @@ export async function patchIngredient(req) {
   const newIngredient = await services.patchIngredient(body);
   const formattedIngredients = utils.formatIngredients(newIngredient);
 
+  // Référentiel commun à toutes les caves : internes uniquement (une cave le
+  // relit à l'ouverture de sa déclaration).
+  broadcastDeclcav("declcav.ingredient.updated", {
+    CODE: body.CODE,
+    IS_CEP: !!body.IS_CEP,
+  });
+
   return formattedIngredients[0] ?? null;
 }
 
@@ -1052,7 +1193,14 @@ export async function deleteDecl(req) {
     (await requestUtils.getRequestParams(req)).params,
   );
 
-  await services.deleteDecl(NUMDOS);
+  // deleteDecl bascule DEL et renvoie, dans la même requête, l'état obtenu
+  // et la cave du dossier (cf. services.deleteDecl).
+  const state = await services.deleteDecl(NUMDOS);
+  broadcastDeclcav(
+    "declcav.folder.deleted",
+    { NUMDOS, DELETED: state ? !!state.DEL : true },
+    { caveId: state?.CAVEID },
+  );
   return true;
 }
 
@@ -1062,5 +1210,6 @@ export async function deleteCave(req) {
   );
 
   await services.deleteCave(CAVEID);
+  broadcastDeclcav("declcav.cave.deleted", { CAVEID });
   return true;
 }

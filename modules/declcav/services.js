@@ -1004,18 +1004,53 @@ export async function validDeclaration(NUMDOS) {
   });
 }
 
+/**
+ * Bascule DEL (suppression / restauration) et renvoie, dans la même
+ * requête, l'état obtenu et la cave du dossier : { CAVEID, DEL } (ou
+ * undefined si le dossier n'existe pas). Sert au temps réel (cf.
+ * controllers.deleteDecl) sans requête supplémentaire. SELECT plutôt
+ * qu'OUTPUT : un OUTPUT sans INTO échoue si DECENT porte un trigger.
+ */
 export async function deleteDecl(NUMDOS) {
-  await runQuery({
+  const result = await runQuery({
     moduleUrl: import.meta.url,
     query: `
       UPDATE DECENT
       SET DEL = ~DEL
+      WHERE NUMDOS = @NUMDOS;
+
+      SELECT TOP (1) CAVEID, DEL
+      FROM DECENT
+      WHERE NUMDOS = @NUMDOS;
+    `,
+    inputs: {
+      NUMDOS: { type: sql.NVarChar, value: NUMDOS },
+    },
+  });
+
+  return result?.recordset?.[0];
+}
+
+/**
+ * CAVEID d'un dossier (ou null), pour prévenir en temps réel la cave
+ * concernée quand l'écriture ne le connaît pas déjà (questionnaire saisi
+ * par la Qualité, cf. controllers.upsertResponses). Lecture directe de
+ * DECENT, sans la vue complète des dossiers.
+ */
+export async function getFolderCaveId(NUMDOS) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+      SELECT TOP (1) CAVEID
+      FROM DECENT
       WHERE NUMDOS = @NUMDOS
     `,
     inputs: {
       NUMDOS: { type: sql.NVarChar, value: NUMDOS },
     },
   });
+
+  return result?.recordset?.[0]?.CAVEID ?? null;
 }
 
 /* ─────────────────────────────────────────────

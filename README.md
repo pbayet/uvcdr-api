@@ -99,6 +99,35 @@ journalisée dans la table `USERSACTIVITY` de la base `generalactivity`
   `GLOBALACTIVITY_DEVEMAIL_PERF.sql` (colonne `LOGINHISTORY.DEVEMAIL`, vues,
   index de lecture).
 
+## Temps réel (WebSocket)
+
+Serveur : `config/websocket/wsManager.js`, sur `/ws`. Client : le paquet
+front `@uvcdr/realtime`, utilisé par toutes les applications UNIS
+(declaration-ingredients, faq, fsa, ticketing, users-manager, vinidoc).
+
+- **Connexion** : jeton JWT en paramètre `?token=`, messages `{ type, payload }`,
+  heartbeat `ping` → `pong`. Jeton invalide ou sans permission : fermeture `1008`.
+- **Routage par application** : chaque jeton porte son application
+  (`application` du JWT). Un évènement n'est envoyé qu'aux connexions de
+  l'application qui l'écoute, d'après le préfixe de son type
+  (`APPS_BY_EVENT_PREFIX`) : `faq.*` → FAQ, `ticket.*` / `project.*` → TCK,
+  `vinidoc.*` → VINDOC, `fsa.*` → FSA, `declcav.*` → DCLING,
+  `usersmanager.*` → USRMAN. Un préfixe non listé part vers toutes
+  les applications internes. **Un nouveau domaine d'évènements doit être
+  ajouté à `APPS_BY_EVENT_PREFIX`.**
+- **Caves** (declaration-ingredients) : leur `data.id` est l'ID de la cave,
+  rangé sous une clé à part (`cave:<id>`) pour ne jamais être confondu avec un
+  USRID. `broadcastToAll` ne leur envoie jamais rien, même un `declcav.*` :
+  une cave ne reçoit que ce qui la concerne, via `broadcastToCaves([CAVEID], …)`
+  (cf. `broadcastDeclcav` dans `modules/declcav/controllers.js`).
+- **Fonctions** : `broadcastToAll(message)` (utilisateurs internes, routé par
+  préfixe), `broadcastToUsers(USRIDs, message)` (utilisateurs internes, routé
+  par préfixe), `broadcastToCaves(CAVEIDs, message)` (caves données),
+  `broadcastToApps(appCodes, message)` (ciblage explicite, caves comprises).
+- **Évènements par module** : la liste est en tête de chaque helper —
+  `broadcastFsaFolder` (fsa), `broadcastDeclcav` (declcav),
+  `broadcastUsersManager` (usersmanager), `emit` (faq), `emitSheet` (vinidoc).
+
 ## Correctifs de l'audit appliqués dans cette reconstruction
 
 **Sécurité**

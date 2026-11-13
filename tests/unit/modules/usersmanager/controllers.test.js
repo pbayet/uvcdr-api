@@ -2,6 +2,10 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { buildRawUserRow } from "../../../helpers/fixtures.js";
 
 vi.mock("../../../../modules/usersmanager/services.js");
+vi.mock("../../../../config/websocket/wsManager.js", () => ({
+  broadcastToAll: vi.fn(),
+  broadcastToUsers: vi.fn(),
+}));
 vi.mock("../../../../modules/files/services.js", () => ({
   deleteFileByEntity: vi.fn().mockResolvedValue(true),
   deleteFileByCode: vi.fn().mockResolvedValue(true),
@@ -9,6 +13,7 @@ vi.mock("../../../../modules/files/services.js", () => ({
 
 const services = await import("../../../../modules/usersmanager/services.js");
 const filesServices = await import("../../../../modules/files/services.js");
+const { broadcastToAll } = await import("../../../../config/websocket/wsManager.js");
 const controllers = await import("../../../../modules/usersmanager/controllers.js");
 const { clearCache } = await import("../../../../core/utils/request.utils.js");
 
@@ -282,5 +287,129 @@ describe("modules/usersmanager/controllers :: statistiques d'activité", () => {
     expect(res.daily[0].DAY).toBe("2026-11-12");
     expect(res.topUsers[0].LAST_EVENT).toBe("2026-11-12T17:11:07");
     expect(res.lastLogins[0].LAST_LOGIN).toBeNull();
+  });
+});
+
+describe("modules/usersmanager/controllers :: temps réel (broadcastUsersManager)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    broadcastToAll.mockImplementation(() => {});
+  });
+
+  const userBody = { LSTNAM: "D", FSTNAM: "J", EMAIL: "j@test.com" };
+
+  it("upsertUser : created sans USRID, updated sinon, payload réduit à l'identifiant", async () => {
+    services.upsertUser.mockResolvedValue(7);
+    services.getUserById.mockResolvedValue([buildRawUserRow({ USRID: 7 })]);
+
+    await controllers.upsertUser(buildReq({ body: userBody }));
+    expect(broadcastToAll).toHaveBeenLastCalledWith({
+      type: "usersmanager.user.created",
+      payload: { USRID: 7 },
+    });
+
+    await controllers.upsertUser(buildReq({ body: { ...userBody, USRID: 7 } }));
+    expect(broadcastToAll).toHaveBeenLastCalledWith({
+      type: "usersmanager.user.updated",
+      payload: { USRID: 7 },
+    });
+  });
+
+  it("n'émet rien si l'écriture échoue", async () => {
+    services.upsertUser.mockRejectedValue(new Error("SQL"));
+    await expect(controllers.upsertUser(buildReq({ body: userBody }))).rejects.toThrow("SQL");
+    expect(broadcastToAll).not.toHaveBeenCalled();
+  });
+
+  it("une erreur de diffusion ne fait pas échouer l'enregistrement", async () => {
+    broadcastToAll.mockImplementation(() => {
+      throw new Error("ws down");
+    });
+    services.upsertUser.mockResolvedValue(7);
+    services.getUserById.mockResolvedValue([buildRawUserRow({ USRID: 7 })]);
+
+    const result = await controllers.upsertUser(buildReq({ body: { ...userBody, USRID: 7 } }));
+    expect(result).toBeDefined();
+  });
+
+  it("upsertGroup : usersmanager.group.updated { GRPID } après les permissions", async () => {
+    services.upsertGroup.mockResolvedValue(3);
+    services.delsertGroupPermissions.mockResolvedValue(undefined);
+    services.getGroups.mockResolvedValue([{ GRPID: 3, GRPNAM: "G" }]);
+
+    await controllers.upsertGroup(buildReq({ body: { GRPID: 3, GRPNAM: "G" } }));
+
+    expect(broadcastToAll).toHaveBeenCalledWith({
+      type: "usersmanager.group.updated",
+      payload: { GRPID: 3 },
+    });
+  });
+
+  it("upsertService / upsertPosition : created avec l'identifiant renvoyé", async () => {
+    services.upsertService.mockResolvedValue(12);
+    services.getServicesAll.mockResolvedValue([{ SRVID: 12 }]);
+    await controllers.upsertService(buildReq({ body: { SRVCOD: "S", SRVNAM: "Service" } }));
+    expect(broadcastToAll).toHaveBeenLastCalledWith({
+      type: "usersmanager.service.created",
+      payload: { SRVID: 12 },
+    });
+
+    services.upsertPosition.mockResolvedValue(40);
+    services.getPositions.mockResolvedValue([{ POSID: 40 }]);
+    await controllers.upsertPosition(
+      buildReq({ body: { POSNAM: "Poste", POSCOD: "P", POSLVL: 1, SRVCOD: "S" } }),
+    );
+    expect(broadcastToAll).toHaveBeenLastCalledWith({
+      type: "usersmanager.position.created",
+      payload: { POSID: 40 },
+    });
+  });
+
+  it("patchServicePosition : usersmanager.position.updated { POSID }", async () => {
+    services.patchServicePosition.mockResolvedValue(undefined);
+    await controllers.patchServicePosition(buildReq({ body: { SRVCOD: "S", POSID: 40 } }));
+    expect(broadcastToAll).toHaveBeenCalledWith({
+      type: "usersmanager.position.updated",
+      payload: { POSID: 40 },
+    });
+  });
+
+  it("upsertApplication : usersmanager.application.updated { APPID }", async () => {
+    services.upsertApplication.mockResolvedValue(9);
+    services.getApplications.mockResolvedValue([{ APPID: 9 }]);
+    await controllers.upsertApplication(
+      buildReq({ body: { APPID: 9, APPCOD: "USRMAN", APPNAM: "Users" } }),
+    );
+    expect(broadcastToAll).toHaveBeenCalledWith({
+      type: "usersmanager.application.updated",
+      payload: { APPID: 9 },
+    });
+  });
+
+  it("versions : updated { VID, APPCOD } et deleted { VID }", async () => {
+    services.insertAppVersion.mockResolvedValue({ VID: 6, VNUM: "2.0.0", CHANGES: [] });
+    await controllers.setLastVersion(buildReq({ body: { APPCOD: "USRMAN", VNUM: "2.0.0" } }));
+    expect(broadcastToAll).toHaveBeenLastCalledWith({
+      type: "usersmanager.version.updated",
+      payload: { VID: 6, APPCOD: "USRMAN" },
+    });
+
+    services.deleteAppVersion.mockResolvedValue(true);
+    await controllers.deleteAppVersion(buildReq({ body: { VID: 6 } }));
+    expect(broadcastToAll).toHaveBeenLastCalledWith({
+      type: "usersmanager.version.deleted",
+      payload: { VID: 6 },
+    });
+  });
+
+  it("préférences personnelles (thème, notes de version lues) : rien n'est diffusé", async () => {
+    services.setUserTheme.mockResolvedValue(true);
+    services.getUserThemes.mockResolvedValue([]);
+    services.setLastVersionDetailsOpened.mockResolvedValue(undefined);
+
+    await controllers.setTheme(buildReq({ body: { THEME: "dark" } }));
+    await controllers.setLastVersionDetailsOpened(buildReq({ body: { VID: 6 } }));
+
+    expect(broadcastToAll).not.toHaveBeenCalled();
   });
 });

@@ -7,7 +7,11 @@ import {
   isManagerPermission,
 } from "./utils.js";
 import * as requestUtils from "../../core/utils/request.utils.js";
-import { broadcastToAll } from "../../config/websocket/wsManager.js";
+import {
+  broadcastToAll,
+  broadcastToCaves,
+} from "../../config/websocket/wsManager.js";
+import { logger } from "../../config/logger.config.js";
 
 const UPLOAD_PATH = process.env.UPLOAD_PATH;
 
@@ -40,6 +44,42 @@ function notifyTicketAttachmentChange(type, entityType, entityId) {
 
   if (entityType !== "TCKCOD") return;
   broadcastToAll({ type, payload: { TCKCOD: entityId } });
+}
+
+/**
+ * Pièces jointes d'un dossier declaration-ingredients : "NUMDOS" (déposées à
+ * la création du dossier) et "NUMDOSDECL" (déposées avec la déclaration),
+ * ENTITYID = NUMDOS. cf. front Attachment.class (ENTITYTYPE_FOLDER /
+ * ENTITYTYPE_DECLARATION).
+ */
+const DECLCAV_ENTITY_TYPES = new Set(["NUMDOS", "NUMDOSDECL"]);
+
+/**
+ * Temps réel declcav (liste des évènements : modules/declcav/controllers.js,
+ * broadcastDeclcav) : declcav.attachment.updated { NUMDOS, ENTITYTYPE } aux
+ * internes et à la cave du dossier. La cave est celle du jeton quand c'est
+ * elle qui dépose ; sinon une lecture légère du CAVEID du dossier
+ * (getFolderCaveId), indispensable pour la prévenir. Best-effort, sans
+ * retarder la réponse : une erreur est seulement loguée.
+ */
+function notifyDeclcavAttachmentChange(req, entityType, entityId) {
+  if (!entityId || !DECLCAV_ENTITY_TYPES.has(entityType)) return;
+
+  const type = "declcav.attachment.updated";
+  const message = {
+    type,
+    payload: { NUMDOS: String(entityId), ENTITYTYPE: entityType },
+  };
+  const ownCaveId = req?.payload?.isCave
+    ? Number(req.payload.data?.id) || null
+    : null;
+
+  Promise.resolve(ownCaveId ?? services.getFolderCaveId(String(entityId)))
+    .then((caveId) => {
+      broadcastToAll(message);
+      if (caveId) broadcastToCaves([caveId], message);
+    })
+    .catch((err) => logger.warn(`[WS] ${type} non diffusé : ${err.message}`));
 }
 
 /** Pièces jointes du module FAQ (cf. modules/faq/services.ATTACHMENT_TYPES). */
@@ -93,6 +133,7 @@ export async function uploadFiles(req) {
     payload.entitytyp,
     payload.entityid,
   );
+  notifyDeclcavAttachmentChange(req, payload.entitytyp, payload.entityid);
 
   return result;
 }
@@ -134,6 +175,11 @@ export async function deleteFiles(req) {
         meta.entity.entityName,
         meta.entity.entityId,
       );
+      notifyDeclcavAttachmentChange(
+        req,
+        meta.entity.entityName,
+        meta.entity.entityId,
+      );
     }
     if (meta.filecode) {
       // Contrairement à `meta.entity` ci-dessus (ENTITYTYPE/ENTITYID déjà
@@ -145,6 +191,11 @@ export async function deleteFiles(req) {
       if (deleted) {
         notifyTicketAttachmentChange(
           "ticket.attachment.deleted",
+          deleted.ENTITYTYPE,
+          deleted.ENTITYID,
+        );
+        notifyDeclcavAttachmentChange(
+          req,
           deleted.ENTITYTYPE,
           deleted.ENTITYID,
         );

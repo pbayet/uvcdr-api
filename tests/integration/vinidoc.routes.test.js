@@ -8,7 +8,10 @@ vi.mock("../../modules/vinidoc/services.js");
 vi.mock("../../modules/vinidoc/engine/pdf-converter.js", () => ({ convertPptxToPdf: vi.fn() }));
 vi.mock("../../modules/usersmanager/services.js", () => ({ getUserByEmail: vi.fn() }));
 vi.mock("../../modules/files/services.js", () => ({ deleteFileByCode: vi.fn() }));
-vi.mock("../../config/websocket/wsManager.js", () => ({ broadcastToAll: vi.fn() }));
+vi.mock("../../config/websocket/wsManager.js", () => ({
+  broadcastToAll: vi.fn(),
+  broadcastToCaves: vi.fn(),
+}));
 vi.mock("../../core/services/mail.service.js", () => ({
   sendTemplatedMail: vi.fn().mockResolvedValue(undefined),
   renderDetailsList: vi.fn(() => ""),

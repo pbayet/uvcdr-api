@@ -14,8 +14,15 @@ vi.mock("../../../../core/services/storage.service.js", () => ({
   },
 }));
 vi.mock("../../../../modules/files/services.js");
+vi.mock("../../../../config/websocket/wsManager.js", () => ({
+  broadcastToAll: vi.fn(),
+  broadcastToUsers: vi.fn(),
+  broadcastToApps: vi.fn(),
+  broadcastToCaves: vi.fn(),
+}));
 
 const services = await import("../../../../modules/files/services.js");
+const { broadcastToAll, broadcastToCaves } = await import("../../../../config/websocket/wsManager.js");
 const controllers = await import("../../../../modules/files/controllers.js");
 
 function buildReq({ body = {}, files = [], payload = { data: { LastName: "Dupont", FirstName: "Jean" } } } = {}) {
@@ -69,6 +76,59 @@ describe("modules/files/controllers :: uploadFiles", () => {
     await controllers.uploadFiles(req);
 
     expect(saveUploadedFilesMock).toHaveBeenCalledWith(expect.objectContaining({ uploadedBy: null }));
+  });
+
+  // Temps réel declcav : PJ d'un dossier (ENTITYTYPE NUMDOS / NUMDOSDECL).
+  const declcavMessage = (entityType) => ({
+    type: "declcav.attachment.updated",
+    payload: { NUMDOS: "DEC/1/0", ENTITYTYPE: entityType },
+  });
+
+  it("PJ de dossier déposée par la Qualité : internes + cave du dossier", async () => {
+    saveUploadedFilesMock.mockResolvedValue([]);
+    services.getFolderCaveId.mockResolvedValue(42);
+
+    await controllers.uploadFiles(
+      buildReq({
+        body: { appcode: "DCLING", entityid: "DEC/1/0", entitytyp: "NUMDOS" },
+        files: [{ originalname: "a.pdf", path: "/tmp/a.pdf", mimetype: "application/pdf" }],
+      }),
+    );
+
+    await vi.waitFor(() => expect(broadcastToCaves).toHaveBeenCalled());
+    expect(services.getFolderCaveId).toHaveBeenCalledWith("DEC/1/0");
+    expect(broadcastToAll).toHaveBeenCalledWith(declcavMessage("NUMDOS"));
+    expect(broadcastToCaves).toHaveBeenCalledWith([42], declcavMessage("NUMDOS"));
+  });
+
+  it("PJ de déclaration déposée par la cave : sa propre cave, sans lecture du dossier", async () => {
+    saveUploadedFilesMock.mockResolvedValue([]);
+
+    await controllers.uploadFiles(
+      buildReq({
+        body: { appcode: "DCLING", entityid: "DEC/1/0", entitytyp: "NUMDOSDECL" },
+        files: [{ originalname: "a.pdf", path: "/tmp/a.pdf", mimetype: "application/pdf" }],
+        payload: { data: { id: 7, CAVENOM: "Cave" }, isCave: true, application: "DCLING" },
+      }),
+    );
+
+    await vi.waitFor(() => expect(broadcastToCaves).toHaveBeenCalled());
+    expect(services.getFolderCaveId).not.toHaveBeenCalled();
+    expect(broadcastToCaves).toHaveBeenCalledWith([7], declcavMessage("NUMDOSDECL"));
+  });
+
+  it("PJ d'un autre domaine : aucun évènement declcav", async () => {
+    saveUploadedFilesMock.mockResolvedValue([]);
+
+    await controllers.uploadFiles(
+      buildReq({
+        body: { appcode: "ticketing", entityid: "100", entitytyp: "ticket" },
+        files: [{ originalname: "a.png", path: "/tmp/a.png", mimetype: "image/png" }],
+      }),
+    );
+
+    expect(services.getFolderCaveId).not.toHaveBeenCalled();
+    expect(broadcastToCaves).not.toHaveBeenCalled();
   });
 });
 

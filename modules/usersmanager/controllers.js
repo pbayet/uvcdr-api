@@ -5,6 +5,57 @@ import * as functionsUtils from "../../core/utils/functions.utils.js";
 import * as filesServices from "../files/services.js";
 import * as v from "./validators.js";
 import { utcToParisIso } from "../../core/utils/dates.utils.js";
+import { logger } from "../../config/logger.config.js";
+import { broadcastToAll } from "../../config/websocket/wsManager.js";
+
+/**
+ * Temps réel (config/websocket/wsManager.js, client @uvcdr/realtime côté
+ * front) : même règle que fsa/ticketing/vinidoc, payload réduit aux
+ * identifiants. wsManager ne route les évènements `usersmanager.*` que vers
+ * les connexions de users-manager (USRMAN) ; chaque écran ouvert recharge
+ * ensuite ses données avec ses propres droits.
+ *   - usersmanager.user.created { USRID }        POST /          (création)
+ *   - usersmanager.user.updated { USRID }        POST /          (modification :
+ *                                                identité, activation, poste,
+ *                                                groupes, permissions directes,
+ *                                                subordonnés, copies mails,
+ *                                                remplacement de la photo)
+ *   - usersmanager.group.created { GRPID }       POST /group     (création)
+ *   - usersmanager.group.updated { GRPID }       POST /group     (modification,
+ *                                                matrice de permissions incluse)
+ *   - usersmanager.service.created { SRVID }     POST /service   (création)
+ *   - usersmanager.service.updated { SRVID }     POST /service   (modification)
+ *   - usersmanager.position.created { POSID }    POST /position  (création)
+ *   - usersmanager.position.updated { POSID }    POST /position  (modification),
+ *                                                PATCH /service/position
+ *                                                (déplacement vers un autre service)
+ *   - usersmanager.application.created { APPID } POST /application (création)
+ *   - usersmanager.application.updated { APPID } POST /application (modification,
+ *                                                MNTCE inclus)
+ *   - usersmanager.version.updated { VID, APPCOD } POST /last-version
+ *                                                (création ou modification
+ *                                                d'une version)
+ *   - usersmanager.version.deleted { VID }       DELETE /version
+ * N'émettent rien, car ce sont des préférences propres à l'utilisateur
+ * connecté qu'aucun autre écran n'affiche : POST /theme (thèmes) et
+ * POST /last-version-details/opened (notes de version lues). La photo de
+ * profil elle-même (envoi/suppression de la pièce jointe USRID) passe par le
+ * module files : seul l'enregistrement de l'utilisateur qui la précède émet
+ * usersmanager.user.updated.
+ */
+function broadcastUsersManager(type, payload) {
+  if (!payload || !Object.values(payload).some((id) => id != null)) return;
+  try {
+    broadcastToAll({ type, payload });
+  } catch (err) {
+    logger.warn(`[WS] ${type} non diffusé : ${err.message}`);
+  }
+}
+
+/** Identifiant transmis par le client : absent ou <= 0 = création. */
+function isCreation(id) {
+  return !(Number(id) > 0);
+}
 
 /**
  * GET /me — profil de l'utilisateur connecté (déduit du JWT, déjà
@@ -333,6 +384,11 @@ export async function upsertUser(req) {
     );
   }
 
+  broadcastUsersManager(
+    isCreation(USRID) ? "usersmanager.user.created" : "usersmanager.user.updated",
+    { USRID: newUSRID },
+  );
+
   const user = await services.getUserById(newUSRID);
   const formattedUser = await utils.formatUsers(user);
 
@@ -352,6 +408,13 @@ export async function upsertService(req) {
     SRVCOD,
     SRVNAM,
     SRVDES,
+  );
+
+  broadcastUsersManager(
+    isCreation(SRVID)
+      ? "usersmanager.service.created"
+      : "usersmanager.service.updated",
+    { SRVID: serviceId },
   );
 
   const servicesData = await services.getServicesAll(serviceId);
@@ -376,6 +439,13 @@ export async function upsertPosition(req) {
     POSCOD,
     POSLVL,
     SRVCOD,
+  );
+
+  broadcastUsersManager(
+    isCreation(POSID)
+      ? "usersmanager.position.created"
+      : "usersmanager.position.updated",
+    { POSID: positionId },
   );
 
   const positions = await services.getPositions(positionId);
@@ -404,6 +474,11 @@ export async function upsertGroup(req) {
   );
 
   await services.delsertGroupPermissions(groupId, jsonPERMISSIONS || []);
+
+  broadcastUsersManager(
+    isCreation(GRPID) ? "usersmanager.group.created" : "usersmanager.group.updated",
+    { GRPID: groupId },
+  );
 
   const groups = await services.getGroups(groupId);
   const groupsData = utils.formatGroupsPermissions(groups);
@@ -444,6 +519,13 @@ export async function upsertApplication(req) {
     0,
   );
 
+  broadcastUsersManager(
+    isCreation(APPID)
+      ? "usersmanager.application.created"
+      : "usersmanager.application.updated",
+    { APPID: applicationId },
+  );
+
   const applications = await services.getApplications(applicationId);
   if (applications.length === 0) throw new Error("DATA_NOT_FOUND");
 
@@ -471,6 +553,11 @@ export async function setLastVersion(req) {
 
   if (!version) throw new Error("DATA_NOT_FOUND");
 
+  broadcastUsersManager("usersmanager.version.updated", {
+    VID: version.VID ?? VID ?? null,
+    APPCOD,
+  });
+
   return version;
 }
 
@@ -480,6 +567,8 @@ export async function deleteAppVersion(req) {
   );
 
   await services.deleteAppVersion(VID);
+
+  broadcastUsersManager("usersmanager.version.deleted", { VID });
 
   return true;
 }
@@ -506,6 +595,8 @@ export async function patchServicePosition(req) {
   if (!USRID) throw new Error("MISSING_PARAMETERS");
 
   await services.patchServicePosition(SRVCOD, POSID, USRID);
+
+  broadcastUsersManager("usersmanager.position.updated", { POSID });
 
   return true;
 }

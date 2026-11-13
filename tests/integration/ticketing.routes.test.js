@@ -15,6 +15,8 @@ vi.mock("../../modules/usersmanager/services.js", () => ({
 vi.mock("../../config/websocket/wsManager.js", () => ({
   broadcastToAll: vi.fn(),
   broadcastToUsers: vi.fn(),
+  broadcastToApps: vi.fn(),
+  broadcastToCaves: vi.fn(),
 }));
 vi.mock("../../core/services/mail.service.js", () => ({
   sendTemplatedMail: vi.fn().mockResolvedValue(undefined),
