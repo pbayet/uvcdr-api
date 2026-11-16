@@ -1,6 +1,7 @@
 import sql from "mssql";
 import { runQuery } from "../../core/utils/db.utils.js";
 import { truncate } from "../../core/utils/functions.utils.js";
+import { notifyActivityLogged } from "./activityRealtime.js";
 
 /**
  * Périmètre étendu par rapport à la version initiale de V1.1.0 : les écrans
@@ -665,6 +666,9 @@ export async function postLoginStats(success, EMAIL, APPCOD, DEVEMAIL = null) {
     inputs,
   });
 
+  // Temps réel : journal d'activité (cf. activityRealtime.js).
+  notifyActivityLogged(DEVEMAIL ? "LOGINDEV" : "LOGIN");
+
   return true;
 }
 
@@ -732,6 +736,9 @@ export async function postActivityStats(
       DEVEMAIL: { type: sql.NVarChar(320), value: truncate(DEVEMAIL, 320) },
     },
   });
+
+  // Temps réel : journal d'activité (cf. activityRealtime.js).
+  notifyActivityLogged("ACTIVITY");
 
   return true;
 }

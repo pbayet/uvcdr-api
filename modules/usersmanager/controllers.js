@@ -36,6 +36,10 @@ import { broadcastToAll } from "../../config/websocket/wsManager.js";
  *                                                (création ou modification
  *                                                d'une version)
  *   - usersmanager.version.deleted { VID }       DELETE /version
+ *   - usersmanager.activity.created { SOURCES }  ligne ajoutée au journal
+ *                                                (USERSACTIVITY / LOGINHISTORY),
+ *                                                émis par services.js, regroupé
+ *                                                (cf. activityRealtime.js)
  * N'émettent rien, car ce sont des préférences propres à l'utilisateur
  * connecté qu'aucun autre écran n'affiche : POST /theme (thèmes) et
  * POST /last-version-details/opened (notes de version lues). La photo de
