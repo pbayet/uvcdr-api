@@ -242,7 +242,8 @@ function getCurrentUserDisplayName(req) {
  * signataire (getCurrentUserDisplayName) mais pas son droit à signer CETTE
  * PJ précise : n'importe quelle cave authentifiée pourrait alors signer les
  * PJ de n'importe quel autre dossier en devinant/énumérant un FILECODE.
- * Ne s'applique volontairement qu'aux tokens DCLING : le staff (comptes
+ * Ne s'applique qu'aux tokens DCLING (propriété du dossier : caves
+ * uniquement, `isCave`) : le staff des autres applications (comptes
  * LDAP/usersmanager) n'est pas restreint ici — cf. plutôt le front
  * (FolderInfos.tsx#CAN_SIGN_FOLDER_ATTACHMENTS), qui ne propose la
  * signature qu'à la cave sur cet écran.
@@ -257,6 +258,18 @@ async function assertCaveOwnsAttachment(req, filecode) {
   }
 
   if (attachment.ENTITYTYPE !== "NUMDOS") {
+    throw new Error("ACCESS_DENIED_WO_LOGOUT");
+  }
+
+  // Jeton de cave : le dossier de la PJ doit être le sien (data.id = CAVEID).
+  // Un compte staff connecté à DCLING (mode admin) n'a pas de cave : il
+  // garde la seule restriction ci-dessus.
+  if (!req?.payload?.isCave) return;
+
+  const ownCaveId = Number(req.payload.data?.id) || null;
+  const folderCaveId = await services.getFolderCaveId(String(attachment.ENTITYID));
+
+  if (!ownCaveId || Number(folderCaveId) !== ownCaveId) {
     throw new Error("ACCESS_DENIED_WO_LOGOUT");
   }
 }

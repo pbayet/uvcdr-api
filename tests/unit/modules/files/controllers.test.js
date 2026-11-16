@@ -213,7 +213,7 @@ describe("modules/files/controllers :: signFileAttachment", () => {
     services.signAttachment.mockResolvedValue({ SIGID: 1, STATUS: "VALID" });
 
     const req = buildSignReq({
-      payload: { application: "DCLING", data: { id: 42, CAVENOM: "Cave Test" } },
+      payload: { application: "DCLING", isCave: true, data: { id: 42, CAVENOM: "Cave Test" } },
     });
 
     await controllers.signFileAttachment(req);
@@ -229,11 +229,41 @@ describe("modules/files/controllers :: signFileAttachment", () => {
     services.getFolderCaveId.mockResolvedValue(99); // dossier appartient à une autre cave
 
     const req = buildSignReq({
-      payload: { application: "DCLING", data: { id: 42, CAVENOM: "Cave Test" } },
+      payload: { application: "DCLING", isCave: true, data: { id: 42, CAVENOM: "Cave Test" } },
     });
 
     await expect(controllers.signFileAttachment(req)).rejects.toThrow("ACCESS_DENIED_WO_LOGOUT");
     expect(services.signAttachment).not.toHaveBeenCalled();
+  });
+
+  it("rejette une cave si le dossier de la PJ n'a pas de cave connue", async () => {
+    services.getFiles.mockResolvedValue([
+      { ID: 1, ENTITYTYPE: "NUMDOS", ENTITYID: "DOS-1", DELETEDAT: null },
+    ]);
+    services.getFolderCaveId.mockResolvedValue(null);
+
+    const req = buildSignReq({
+      payload: { application: "DCLING", isCave: true, data: { id: 42, CAVENOM: "Cave Test" } },
+    });
+
+    await expect(controllers.signFileAttachment(req)).rejects.toThrow("ACCESS_DENIED_WO_LOGOUT");
+    expect(services.signAttachment).not.toHaveBeenCalled();
+  });
+
+  it("un compte staff sur DCLING (mode admin) signe une PJ de dossier sans contrôle de cave", async () => {
+    services.getFiles.mockResolvedValue([
+      { ID: 1, ENTITYTYPE: "NUMDOS", ENTITYID: "DOS-1", DELETEDAT: null },
+    ]);
+    services.signAttachment.mockResolvedValue({ SIGID: 1, STATUS: "VALID" });
+
+    const req = buildSignReq({
+      payload: { application: "DCLING", isCave: false, data: { id: 7, LastName: "Dupont", FirstName: "Jean" } },
+    });
+
+    await controllers.signFileAttachment(req);
+
+    expect(services.getFolderCaveId).not.toHaveBeenCalled();
+    expect(services.signAttachment).toHaveBeenCalledWith("FILE1", "Dupont Jean");
   });
 
   it("rejette une cave qui tente de signer une PJ hors dossier (ex: ENTITYTYPE TCKCOD)", async () => {
@@ -242,7 +272,7 @@ describe("modules/files/controllers :: signFileAttachment", () => {
     ]);
 
     const req = buildSignReq({
-      payload: { application: "DCLING", data: { id: 42, CAVENOM: "Cave Test" } },
+      payload: { application: "DCLING", isCave: true, data: { id: 42, CAVENOM: "Cave Test" } },
     });
 
     await expect(controllers.signFileAttachment(req)).rejects.toThrow("ACCESS_DENIED_WO_LOGOUT");

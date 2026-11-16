@@ -184,7 +184,7 @@ export async function getCavesPW(EMAIL) {
   const result = await runQuery({
     moduleUrl: import.meta.url,
     query: `
-      SELECT TOP 1 c.ID, c.PASSHSH
+      SELECT TOP 1 c.ID, c.PASSHSH, c.CAVENOM
       FROM CAVE AS c
       LEFT JOIN CAVEMAIL AS cm ON cm.CAVEID = c.ID
       WHERE cm.MAILADR = @EMAIL

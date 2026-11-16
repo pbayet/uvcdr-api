@@ -162,11 +162,29 @@ export async function loginMiddleware(req, res, next) {
     checkBruteForce(ip);
 
     if (appcode === "DCLING" && declcavServices) {
+      function extractNames(text) {
+        const match = text.match(/\(([^()]*)\)\s*$/);
+
+        return {
+          LSTNAM: match ? match[1].trim() : "",
+          FSTNAM: match ? text.slice(0, match.index).trim() : text.trim(),
+        };
+      }
+
       const [cave] = await declcavServices.getCavesPW(email);
 
       if (cave?.PASSHSH && (await verifyPassword(cave.PASSHSH, password))) {
+        const { LSTNAM, FSTNAM } = extractNames(cave.CAVENOM || "");
+
         const payload = jwtUtils.generatePayload(
-          { USRID: cave.ID, EMAIL: email, USRACTV: true, ISCAVE: true },
+          {
+            USRID: cave.ID,
+            EMAIL: email,
+            USRACTV: true,
+            ISCAVE: true,
+            LSTNAM: `(${LSTNAM})`,
+            FSTNAM: FSTNAM,
+          },
           { PRMNAM: "USER", PRMLVL: 4 },
           appcode,
         );
@@ -240,6 +258,11 @@ export async function loginMiddleware(req, res, next) {
  */
 export async function loginDevMiddleware(req, res, next) {
   let devEmail = null;
+  let connexionSuccessful = false;
+
+  const { email, permlvl, appcode, isbase } = (
+    await requestUtils.getRequestParams(req)
+  ).params;
 
   try {
     const myToken = getRequestAuthorization(req);
@@ -248,10 +271,6 @@ export async function loginDevMiddleware(req, res, next) {
 
     if (!myPayload) throw new Error("INVALID_TOKEN");
     if (myPayload.permissionLevel !== 1) throw new Error("ACCESS_DENIED");
-
-    const { email, permlvl, appcode, isbase } = (
-      await requestUtils.getRequestParams(req)
-    ).params;
 
     if (!email || !permlvl || !appcode) throw new Error("MISSING_PARAMETERS");
 
@@ -319,7 +338,11 @@ export async function loginDevMiddleware(req, res, next) {
     );
 
     res.status(200).json(myNewToken);
+
+    connexionSuccessful = true;
   } catch (err) {
+    connexionSuccessful = false;
+
     logger.warn(
       `[LOGIN_DEV] échec dev=${devEmail || "unknown"} : ${err?.message}`,
     );
@@ -327,6 +350,11 @@ export async function loginDevMiddleware(req, res, next) {
     if (req?.ip) registerFailedAttempt(req.ip);
 
     next(err);
+  } finally {
+    // devEmail → LOGINHISTORY.DEVEMAIL (connexion "en tant que").
+    await postLoginStats(connexionSuccessful, email, appcode, devEmail).catch(
+      () => {},
+    );
   }
 }
 
