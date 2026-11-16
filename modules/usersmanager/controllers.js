@@ -216,7 +216,10 @@ export async function getActivityStats(req) {
     to: TO.toISOString(),
     ...stats,
     daily: stats.daily.map((r) => ({ ...r, DAY: day(r.DAY) })),
-    topUsers: stats.topUsers.map((r) => ({ ...r, LAST_EVENT: iso(r.LAST_EVENT) })),
+    topUsers: stats.topUsers.map((r) => ({
+      ...r,
+      LAST_EVENT: iso(r.LAST_EVENT),
+    })),
     failedLogins: stats.failedLogins.map((r) => ({
       ...r,
       LAST_EVENT: iso(r.LAST_EVENT),
@@ -385,7 +388,9 @@ export async function upsertUser(req) {
   }
 
   broadcastUsersManager(
-    isCreation(USRID) ? "usersmanager.user.created" : "usersmanager.user.updated",
+    isCreation(USRID)
+      ? "usersmanager.user.created"
+      : "usersmanager.user.updated",
     { USRID: newUSRID },
   );
 
@@ -476,7 +481,9 @@ export async function upsertGroup(req) {
   await services.delsertGroupPermissions(groupId, jsonPERMISSIONS || []);
 
   broadcastUsersManager(
-    isCreation(GRPID) ? "usersmanager.group.created" : "usersmanager.group.updated",
+    isCreation(GRPID)
+      ? "usersmanager.group.created"
+      : "usersmanager.group.updated",
     { GRPID: groupId },
   );
 

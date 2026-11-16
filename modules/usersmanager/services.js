@@ -180,7 +180,8 @@ const LOGIN_BRANCH_COLUMNS = `
     CAST(NULL AS varchar(45)) AS IPADRESS,
     CAST(NULL AS int) AS DURATIONMS,
     APPCOD,
-    'LOGIN' AS SOURCE`;
+    -- Connexion "en tant que" (impersonation dev) : source dédiée LOGINDEV
+    CASE WHEN DEVEMAIL IS NOT NULL THEN 'LOGINDEV' ELSE 'LOGIN' END AS SOURCE`;
 
 const whereClause = (conditions) =>
   conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -192,7 +193,8 @@ const whereClause = (conditions) =>
  * @param {string}  [filters.email]    - compte concerné (USEREMAIL / EMAIL)
  * @param {string}  [filters.devEmail] - dev aux commandes (impersonation)
  * @param {boolean} [filters.devOnly]  - uniquement les lignes avec DEVEMAIL
- * @param {"ACTIVITY"|"LOGIN"} [filters.source] - une seule des deux sources
+ * @param {"ACTIVITY"|"LOGIN"|"LOGINDEV"} [filters.source] - une seule des
+ *   deux sources (LOGINDEV = connexions avec DEVEMAIL uniquement)
  * @param {number}  [filters.limit=5000] - nombre max de lignes renvoyées
  */
 export async function getGeneralActivity({
@@ -231,10 +233,15 @@ export async function getGeneralActivity({
     activityWhere.push("DEVEMAIL IS NOT NULL");
     loginWhere.push("DEVEMAIL IS NOT NULL");
   }
+  // LOGINDEV = connexions faites "en tant que" uniquement (LOGIN = toutes)
+  if (source === "LOGINDEV" && !devEmail && !devOnly) {
+    loginWhere.push("DEVEMAIL IS NOT NULL");
+  }
 
+  const isLoginSource = source === "LOGIN" || source === "LOGINDEV";
   const branches = [];
 
-  if (source !== "LOGIN") {
+  if (!isLoginSource) {
     branches.push(`SELECT * FROM (
       SELECT TOP (@LIMIT) ${ACTIVITY_BRANCH_COLUMNS},
         CAST(CASE WHEN PARAMS IS NULL OR DATALENGTH(PARAMS) = 0 THEN 0 ELSE 1 END AS bit) AS HAS_PARAMS
@@ -472,14 +479,14 @@ export async function getUserActivity(EMAIL, SOURCE) {
   const loginBranch = `SELECT * FROM (
       SELECT TOP 1 ${LOGIN_BRANCH_COLUMNS}, CAST(NULL AS nvarchar(max)) AS PARAMS
       FROM [USERSMANAGER].[dbo].[LOGINHISTORY]
-      WHERE EMAIL = @EMAIL
+      WHERE EMAIL = @EMAIL${SOURCE === "LOGINDEV" ? " AND DEVEMAIL IS NOT NULL" : ""}
       ORDER BY LOGIN_DATE DESC
     ) AS lh`;
 
   const branches =
     SOURCE === "ACTIVITY"
       ? [activityBranch]
-      : SOURCE === "LOGIN"
+      : SOURCE === "LOGIN" || SOURCE === "LOGINDEV"
         ? [loginBranch]
         : [activityBranch, loginBranch];
 
@@ -1262,8 +1269,8 @@ export async function insertAppVersion(
   let result;
   try {
     result = await runQuery({
-    moduleUrl: import.meta.url,
-    query: `
+      moduleUrl: import.meta.url,
+      query: `
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
@@ -1349,18 +1356,18 @@ export async function insertAppVersion(
       THROW;
     END CATCH;
     `,
-    inputs: {
-      VIDIN: { type: sql.Int, value: VID ?? null },
-      APPCOD: { type: sql.NVarChar(20), value: APPCOD },
-      VNUM: { type: sql.NVarChar(20), value: VNUM },
-      RELEASEDTE: { type: sql.DateTime2(3), value: RELEASEDTE ?? null },
-      CREUSR: { type: sql.NVarChar(50), value: String(USRID) },
-      SUMMARY: { type: sql.NVarChar(1000), value: SUMMARY ?? null },
-      CHANGES: {
-        type: sql.NVarChar(sql.MAX),
-        value: CHANGES?.length ? JSON.stringify(CHANGES) : null,
+      inputs: {
+        VIDIN: { type: sql.Int, value: VID ?? null },
+        APPCOD: { type: sql.NVarChar(20), value: APPCOD },
+        VNUM: { type: sql.NVarChar(20), value: VNUM },
+        RELEASEDTE: { type: sql.DateTime2(3), value: RELEASEDTE ?? null },
+        CREUSR: { type: sql.NVarChar(50), value: String(USRID) },
+        SUMMARY: { type: sql.NVarChar(1000), value: SUMMARY ?? null },
+        CHANGES: {
+          type: sql.NVarChar(sql.MAX),
+          value: CHANGES?.length ? JSON.stringify(CHANGES) : null,
+        },
       },
-    },
     });
   } catch (err) {
     throw toVersionError(err);

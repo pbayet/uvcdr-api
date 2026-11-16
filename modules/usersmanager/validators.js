@@ -137,7 +137,7 @@ export const generalActivityQuerySchema = z
       .nullish()
       .transform((v) => v === true || v === "1" || v === "true"),
     SOURCE: z
-      .enum(["ACTIVITY", "LOGIN"])
+      .enum(["ACTIVITY", "LOGIN", "LOGINDEV"])
       .nullish()
       .transform((v) => v || undefined),
     LIMIT: z.coerce
