@@ -6,7 +6,8 @@ import { runQuery } from "../../core/utils/db.utils.js";
    Tables (cf. sql/FAQ.tables.sql) :
      FAQPOSTS, FAQANSWERS, FAQANSWERLIKES, FAQCATEGORIES, FAQSTATUSES,
      FAQPOSTLIKES (cf. sql/FAQPOSTLIKES.table.sql),
-     FAQKEYWORDS, FAQMODERATORS, FAQTICKETS
+     FAQKEYWORDS, FAQMODERATORS, FAQTICKETS,
+     FAQPOSTCHANGES / FAQPOSTREADS / FAQPOSTCHANGEREADS (cf. sql/FAQPOSTCHANGES.table.sql)
    Cross-base :
      USERSMANAGER.dbo.USERS         (nom / email des auteurs)
      USERSMANAGER.dbo.APPLICATIONS  (application concernée, FAQPOSTS.APPID)
@@ -20,6 +21,26 @@ import { runQuery } from "../../core/utils/db.utils.js";
 
 const USER_NAME = (alias) =>
   `NULLIF(LTRIM(RTRIM(CONCAT(${alias}.FSTNAM, ' ', ${alias}.LSTNAM))), '')`;
+
+/** Fenêtre au-delà de laquelle une modification n'est plus signalée. */
+const UNREAD_WINDOW_DAYS = 30;
+
+/** Durée pendant laquelle une nouveauté reste mise en évidence après sa lecture. */
+const HIGHLIGHT_AFTER_READ_MINUTES = 60;
+
+/**
+ * Modification (alias `ch` de FAQPOSTCHANGES) non lue par @USRID : faite par
+ * un autre utilisateur, récente, et postérieure à son dernier accusé de
+ * lecture (FAQPOSTREADS). Toujours fausse sans utilisateur (@USRID NULL).
+ */
+const UNREAD_CHANGES = (ch) => `
+  ${ch}.USRID <> @USRID
+  AND ${ch}.CREDAT > DATEADD(DAY, -${UNREAD_WINDOW_DAYS}, SYSUTCDATETIME())
+  AND ${ch}.CHGID > ISNULL((
+    SELECT rd.LASTCHGID FROM dbo.FAQPOSTREADS AS rd
+    WHERE rd.PSTID = ${ch}.PSTID AND rd.USRID = @USRID
+  ), 0)
+`;
 
 const SELECT_POSTS = `
 SELECT
@@ -60,8 +81,26 @@ SELECT
   -- GÉNÉRAL (modérateurs) reste FAQPOSTS.PINNED.
   CASE WHEN EXISTS (
     SELECT 1 FROM dbo.FAQUSERPINS up WHERE up.PSTID = p.PSTID AND up.USRID = @USRID
-  ) THEN 1 ELSE 0 END AS MYPIN
+  ) THEN 1 ELSE 0 END AS MYPIN,
+  -- Modifications non lues par l'utilisateur courant (cf. UNREAD_CHANGES).
+  unr.UNREADCOUNT, unr.UNREADCHGID, unr.UNREADDAT,
+  -- Nouveautés lues depuis moins d'une heure (point jaune) : fin de la
+  -- mise en évidence.
+  DATEADD(MINUTE, ${HIGHLIGHT_AFTER_READ_MINUTES}, rr.LASTREADDAT) AS RECENTUNTIL
 FROM dbo.FAQPOSTS AS p
+OUTER APPLY (
+  SELECT COUNT(*) AS UNREADCOUNT, MAX(ch.CHGID) AS UNREADCHGID,
+    MAX(ch.CREDAT) AS UNREADDAT
+  FROM dbo.FAQPOSTCHANGES AS ch
+  WHERE ch.PSTID = p.PSTID AND ${UNREAD_CHANGES("ch")}
+) AS unr
+OUTER APPLY (
+  SELECT MAX(cr.READDAT) AS LASTREADDAT
+  FROM dbo.FAQPOSTCHANGEREADS AS cr
+  INNER JOIN dbo.FAQPOSTCHANGES AS rch ON rch.CHGID = cr.CHGID
+  WHERE rch.PSTID = p.PSTID AND cr.USRID = @USRID
+    AND cr.READDAT > DATEADD(MINUTE, -${HIGHLIGHT_AFTER_READ_MINUTES}, SYSUTCDATETIME())
+) AS rr
 LEFT JOIN dbo.FAQCATEGORIES AS c ON c.CATID = p.CATID
 LEFT JOIN dbo.FAQSTATUSES AS s ON s.STSID = p.STSID
 LEFT JOIN USERSMANAGER.dbo.USERS AS u ON u.USRID = p.CREUSR
@@ -327,6 +366,11 @@ export async function deletePostPermanently(PSTID) {
       DELETE FROM dbo.FAQKEYWORDS WHERE PSTID = @PSTID;
       DELETE FROM dbo.FAQUSERPINS WHERE PSTID = @PSTID;
       DELETE FROM dbo.FAQPOSTLIKES WHERE PSTID = @PSTID;
+      DELETE cr FROM dbo.FAQPOSTCHANGEREADS AS cr
+        INNER JOIN dbo.FAQPOSTCHANGES AS ch ON ch.CHGID = cr.CHGID
+        WHERE ch.PSTID = @PSTID;
+      DELETE FROM dbo.FAQPOSTCHANGES WHERE PSTID = @PSTID;
+      DELETE FROM dbo.FAQPOSTREADS WHERE PSTID = @PSTID;
       DELETE FROM dbo.FAQANSWERS WHERE PSTID = @PSTID;
       DELETE FROM dbo.FAQPOSTS WHERE PSTID = @PSTID;
     COMMIT;
@@ -678,6 +722,126 @@ export async function deleteAnswerPermanently(ANSID) {
     COMMIT;
     `,
     inputs: { ANSID: { type: sql.Int, value: ANSID } },
+  });
+}
+
+/* -------------------------------------------------------------------------- */
+/*                 MODIFICATIONS SIGNALÉES & ACCUSÉS DE LECTURE                */
+/* -------------------------------------------------------------------------- */
+
+/** Types de modification signalés (cf. FAQPOSTCHANGES.KIND). */
+export const CHANGE_KINDS = Object.freeze({
+  ANSWER_NEW: "ANSWER_NEW",
+  ANSWER_EDIT: "ANSWER_EDIT",
+  POST_EDIT: "POST_EDIT",
+  /** Réponse retenue comme bonne réponse (FIELDS "BODY" si reformulée). */
+  ANSWER_VALIDATED: "ANSWER_VALIDATED",
+  /** Bonne réponse retirée. */
+  ANSWER_UNVALIDATED: "ANSWER_UNVALIDATED",
+});
+
+/**
+ * Enregistre une modification à signaler aux autres utilisateurs (point
+ * rouge sur la carte). Les modifications de son auteur lui sont d'office
+ * considérées comme lues.
+ */
+export async function recordChange({ PSTID, KIND, ANSID = null, FIELDS = null, USRID }) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    INSERT INTO dbo.FAQPOSTCHANGES (PSTID, KIND, ANSID, FIELDS, USRID)
+    OUTPUT inserted.CHGID
+    VALUES (@PSTID, @KIND, @ANSID, @FIELDS, @USRID)
+    `,
+    inputs: {
+      PSTID: { type: sql.Int, value: PSTID },
+      KIND: { type: sql.NVarChar(20), value: KIND },
+      ANSID: { type: sql.Int, value: ANSID },
+      FIELDS: {
+        type: sql.NVarChar(200),
+        value: Array.isArray(FIELDS) ? FIELDS.join(",") : FIELDS,
+      },
+      USRID: { type: sql.Int, value: USRID },
+    },
+  });
+
+  return result.recordset[0]?.CHGID ?? null;
+}
+
+/**
+ * Nouveautés à mettre en évidence dans le détail d'une publication : les
+ * modifications non lues, et celles lues depuis moins d'une heure
+ * (FAQPOSTCHANGEREADS). READ = déjà lue (le point rouge n'est plus affiché).
+ */
+export async function getRecentChanges(PSTID, USRID) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    SELECT ch.CHGID, ch.KIND, ch.ANSID, ch.FIELDS, ch.USRID, ch.CREDAT,
+      ${USER_NAME("u")} AS USRNAM,
+      cr.READDAT,
+      CASE WHEN ${UNREAD_CHANGES("ch")} THEN 0 ELSE 1 END AS [READ]
+    FROM dbo.FAQPOSTCHANGES AS ch
+    LEFT JOIN USERSMANAGER.dbo.USERS AS u ON u.USRID = ch.USRID
+    LEFT JOIN dbo.FAQPOSTCHANGEREADS AS cr
+      ON cr.CHGID = ch.CHGID AND cr.USRID = @USRID
+    WHERE ch.PSTID = @PSTID
+      AND (
+        (${UNREAD_CHANGES("ch")})
+        OR cr.READDAT > DATEADD(MINUTE, -${HIGHLIGHT_AFTER_READ_MINUTES}, SYSUTCDATETIME())
+      )
+    ORDER BY ch.CHGID ASC
+    `,
+    inputs: {
+      PSTID: { type: sql.Int, value: PSTID },
+      USRID: { type: sql.Int, value: USRID },
+    },
+  });
+
+  return result.recordset;
+}
+
+/**
+ * Accusé de lecture (à l'ouverture du détail) : les modifications non lues
+ * de la publication passent en lues. Leur date de lecture est conservée
+ * (FAQPOSTCHANGEREADS) pour les garder en évidence encore une heure.
+ */
+export async function markPostRead(PSTID, USRID) {
+  await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    SET XACT_ABORT ON;
+    BEGIN TRAN;
+      DECLARE @PREV INT = ISNULL((
+        SELECT LASTCHGID FROM dbo.FAQPOSTREADS WITH (UPDLOCK, HOLDLOCK)
+        WHERE PSTID = @PSTID AND USRID = @USRID
+      ), 0);
+      DECLARE @LAST INT = ISNULL(
+        (SELECT MAX(CHGID) FROM dbo.FAQPOSTCHANGES WHERE PSTID = @PSTID), 0);
+
+      INSERT INTO dbo.FAQPOSTCHANGEREADS (USRID, CHGID)
+      SELECT @USRID, ch.CHGID
+      FROM dbo.FAQPOSTCHANGES AS ch
+      WHERE ch.PSTID = @PSTID AND ch.CHGID > @PREV AND ch.CHGID <= @LAST
+        AND ch.USRID <> @USRID
+        AND NOT EXISTS (
+          SELECT 1 FROM dbo.FAQPOSTCHANGEREADS AS cr
+          WHERE cr.USRID = @USRID AND cr.CHGID = ch.CHGID
+        );
+
+      MERGE dbo.FAQPOSTREADS AS t
+      USING (SELECT @USRID AS USRID, @PSTID AS PSTID) AS s
+         ON t.USRID = s.USRID AND t.PSTID = s.PSTID
+      WHEN MATCHED THEN
+        UPDATE SET LASTCHGID = @LAST, READDAT = SYSUTCDATETIME()
+      WHEN NOT MATCHED THEN
+        INSERT (USRID, PSTID, LASTCHGID) VALUES (@USRID, @PSTID, @LAST);
+    COMMIT;
+    `,
+    inputs: {
+      PSTID: { type: sql.Int, value: PSTID },
+      USRID: { type: sql.Int, value: USRID },
+    },
   });
 }
 

@@ -66,10 +66,32 @@ async function loadVisiblePost(ctx, PSTID) {
 
 async function buildPost(ctx, PSTID) {
   const post = await loadVisiblePost(ctx, PSTID);
-  const answers = await services.getAnswers(ctx, [PSTID]);
+  const [answers, changes] = await Promise.all([
+    services.getAnswers(ctx, [PSTID]),
+    services.getRecentChanges(PSTID, ctx.USRID),
+  ]);
   const [formatted] = await attachFiles([utils.formatPost(post, answers)]);
-  return formatted;
+  // Nouveautés à mettre en évidence dans le détail (non lues, ou lues
+  // depuis moins d'une heure).
+  return { ...formatted, CHANGES: changes.map(utils.formatChange) };
 }
+
+/**
+ * Enregistre une modification à signaler (point rouge) — best-effort : un
+ * incident ne doit jamais faire échouer l'action de l'utilisateur.
+ * Renvoie le CHGID créé (ou null).
+ */
+async function recordChange(change) {
+  try {
+    return await services.recordChange(change);
+  } catch (err) {
+    logger.warn(`[FAQ] Modification non enregistrée (${change.KIND}) : ${err.message}`);
+    return null;
+  }
+}
+
+/** Champs dont la modification par un modérateur est signalée aux utilisateurs. */
+const SIGNALED_POST_FIELDS = ["TITLE", "BODY", "CATID", "APPID", "STSID"];
 
 /**
  * Ajoute les pièces jointes (PJS) aux publications formatées et à leurs
@@ -349,7 +371,27 @@ export async function updatePost(req) {
   }
 
   await services.updatePost(pstid, fields);
-  emit("faq.post.updated", { PSTID: pstid });
+
+  // Modification par un modérateur : signalée aux autres utilisateurs, avec
+  // les champs réellement modifiés (mis en évidence dans le détail).
+  let CHGID = null;
+  if (ctx.ISMOD) {
+    const changed = SIGNALED_POST_FIELDS.filter(
+      (name) =>
+        fields[name] !== undefined &&
+        (fields[name] ?? null) !== (post[name] ?? null),
+    );
+    if (changed.length) {
+      CHGID = await recordChange({
+        PSTID: pstid,
+        KIND: services.CHANGE_KINDS.POST_EDIT,
+        FIELDS: changed,
+        USRID: ctx.USRID,
+      });
+    }
+  }
+
+  emit("faq.post.updated", { PSTID: pstid, USRID: ctx.USRID, CHGID });
   return buildPost(ctx, pstid);
 }
 
@@ -411,6 +453,24 @@ export async function setUserPin(req) {
  * voient, comme likeAnswer. Le nouveau total est diffusé à tous pour mettre
  * à jour les compteurs sans recharger.
  */
+/**
+ * Accusé de lecture, envoyé par le front à l'ouverture du détail : les
+ * modifications signalées sont lues (point rouge retiré sur tous les onglets
+ * de l'utilisateur) et restent mises en évidence encore une heure.
+ */
+export async function markPostRead(req) {
+  const ctx = await utils.getUserContext(req);
+  const { pstid } = await params(req, v.pstidParamSchema);
+
+  await loadVisiblePost(ctx, pstid);
+  await services.markPostRead(pstid, ctx.USRID);
+  broadcastToUsers([ctx.USRID], {
+    type: "faq.post.read",
+    payload: { PSTID: pstid },
+  });
+  return { PSTID: pstid, UNREADCOUNT: 0 };
+}
+
 export async function likePost(req) {
   const ctx = await utils.getUserContext(req);
   const { pstid } = await params(req, v.pstidParamSchema);
@@ -575,7 +635,13 @@ export async function createAnswer(req) {
     await services.moveStatus(PSTID, "ANSWERED", ["OPEN"]);
   }
 
-  emit("faq.answer.created", { PSTID, ANSID });
+  const CHGID = await recordChange({
+    PSTID,
+    KIND: services.CHANGE_KINDS.ANSWER_NEW,
+    ANSID,
+    USRID: ctx.USRID,
+  });
+  emit("faq.answer.created", { PSTID, ANSID, USRID: ctx.USRID, CHGID });
 
   void services.getParticipantEmails(PSTID, ctx.USRID).then((emails) =>
     notifyFaqEvent({
@@ -606,7 +672,21 @@ export async function updateAnswer(req) {
   }
 
   await services.updateAnswer(ansid, BODY);
-  emit("faq.answer.updated", { PSTID: answer.PSTID, ANSID: ansid });
+  const CHGID =
+    BODY !== answer.BODY
+      ? await recordChange({
+          PSTID: answer.PSTID,
+          KIND: services.CHANGE_KINDS.ANSWER_EDIT,
+          ANSID: ansid,
+          USRID: ctx.USRID,
+        })
+      : null;
+  emit("faq.answer.updated", {
+    PSTID: answer.PSTID,
+    ANSID: ansid,
+    USRID: ctx.USRID,
+    CHGID,
+  });
   return buildPost(ctx, answer.PSTID);
 }
 
@@ -621,7 +701,8 @@ export async function validateAnswer(req) {
   if (answer.DLTD) throw new Error("FAQ_VALIDATION_NOT_ALLOWED");
 
   // Reformulation éventuelle par le modérateur au moment de la validation.
-  if (VALIDATED && BODY && BODY !== answer.BODY) {
+  const reworded = !!(VALIDATED && BODY && BODY !== answer.BODY);
+  if (reworded) {
     await services.updateAnswer(ansid, BODY);
   }
   await services.validateAnswer(ansid, VALIDATED, ctx.USRID);
@@ -632,7 +713,27 @@ export async function validateAnswer(req) {
     await services.moveStatus(answer.PSTID, "ANSWERED", ["RESOLVED"]);
   }
 
-  emit("faq.answer.validated", { PSTID: answer.PSTID, ANSID: ansid, VALIDATED });
+  // Nouveauté signalée (point rouge) seulement si la validation change.
+  const CHGID =
+    !!answer.VALIDATED !== !!VALIDATED
+      ? await recordChange({
+          PSTID: answer.PSTID,
+          KIND: VALIDATED
+            ? services.CHANGE_KINDS.ANSWER_VALIDATED
+            : services.CHANGE_KINDS.ANSWER_UNVALIDATED,
+          ANSID: ansid,
+          FIELDS: reworded ? ["BODY"] : null,
+          USRID: ctx.USRID,
+        })
+      : null;
+
+  emit("faq.answer.validated", {
+    PSTID: answer.PSTID,
+    ANSID: ansid,
+    VALIDATED,
+    USRID: ctx.USRID,
+    CHGID,
+  });
 
   if (VALIDATED) {
     const post = await services.getPostRaw(answer.PSTID);

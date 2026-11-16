@@ -144,7 +144,31 @@ export function formatPost(row, answers = undefined) {
     ANSLIKED: !!row.ANSLIKED,
     KEYWORDS: row.KEYWORDS ? String(row.KEYWORDS).split("|") : [],
     TICKET: row.TCKID ? { TCKID: row.TCKID, TCKCOD: row.TCKCOD } : null,
+    /** Modifications non lues par l'utilisateur courant (point rouge). */
+    UNREADCOUNT: row.UNREADCOUNT ?? 0,
+    /** Dernière modification non lue (détecte une nouvelle modification). */
+    UNREADCHGID: row.UNREADCHGID ?? null,
+    /** Date de la dernière modification non lue (remontée en tête de liste). */
+    UNREADDAT: row.UNREADDAT ?? null,
+    /** Nouveautés lues récemment : mises en évidence jusqu'à cette date (point jaune). */
+    RECENTUNTIL: row.RECENTUNTIL ?? null,
     ...(answers ? { ANSWERS: answers.map(formatAnswer) } : {}),
+  };
+}
+
+/** Nouveauté signalée (cf. services.getRecentChanges). */
+export function formatChange(row) {
+  return {
+    CHGID: row.CHGID,
+    KIND: row.KIND,
+    ANSID: row.ANSID ?? null,
+    FIELDS: row.FIELDS ? String(row.FIELDS).split(",") : [],
+    USRID: row.USRID,
+    USRNAM: row.USRNAM ?? `Utilisateur #${row.USRID}`,
+    CREDAT: row.CREDAT,
+    /** Déjà lue (reste mise en évidence une heure après la lecture). */
+    READ: !!row.READ,
+    READDAT: row.READDAT ?? null,
   };
 }
 

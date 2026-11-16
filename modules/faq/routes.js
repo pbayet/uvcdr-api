@@ -56,6 +56,7 @@ route("post", "/posts/:pstid/views", controllers.registerView);
 route("put", "/posts/:pstid/type", controllers.convertPost);
 route("put", "/posts/:pstid/keywords", controllers.setKeywords);
 route("put", "/posts/:pstid/pin", controllers.setUserPin);
+route("put", "/posts/:pstid/read", controllers.markPostRead);
 route("put", "/posts/:pstid/like", controllers.likePost);
 route("get", "/posts/:pstid/likes", controllers.getPostLikers);
 route("post", "/posts/:pstid/ticket", controllers.createTicket);
