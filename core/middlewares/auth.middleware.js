@@ -359,6 +359,65 @@ export async function loginDevMiddleware(req, res, next) {
 }
 
 /**
+ * Détecte une impersonation (GET /auth/dev) dans un payload JWT, que le
+ * front envoie :
+ * - le token simulé (devToken === "true", devEmail = email du dev) ;
+ * - ou le token principal du dev (devToken = token simulé signé).
+ * Retourne { devEmail, simulatedUserId } ou null hors impersonation.
+ */
+export function getImpersonation(payload) {
+  if (!payload) return null;
+
+  if (payload.devToken === "true") {
+    return payload.devEmail
+      ? { devEmail: payload.devEmail, simulatedUserId: payload.data?.id }
+      : null;
+  }
+
+  if (payload.devToken) {
+    const embedded = jwtUtils.decodeJWT(payload.devToken);
+    if (embedded?.devToken === "true" && embedded.data?.id) {
+      return {
+        devEmail: payload.data?.email,
+        simulatedUserId: embedded.data.id,
+      };
+    }
+  }
+
+  return null;
+}
+
+/** Meilleure permission active (PRMLVL le plus bas, hors -1) sur appcode. */
+function getBestPermission(user, appcode) {
+  return (
+    (user.PERMISSIONS || [])
+      .filter(
+        (p) =>
+          p.APPCOD === appcode &&
+          p.PERMISSION &&
+          String(p.PERMISSION.PRMLVL) !== "-1",
+      )
+      .reduce(
+        (min, p) =>
+          !min || p.PERMISSION.PRMLVL < min.PERMISSION.PRMLVL ? p : min,
+        null,
+      )?.PERMISSION || null
+  );
+}
+
+async function loadUserByEmail(email) {
+  if (!email) return null;
+  const formatted = await formatUsers(await getUserByEmail(email));
+  return (Array.isArray(formatted) ? formatted[0] : formatted) || null;
+}
+
+async function loadUserById(id) {
+  if (!id) return null;
+  const formatted = await formatUsers(await getUserById(id));
+  return (Array.isArray(formatted) ? formatted[0] : formatted) || null;
+}
+
+/**
  * GET /auth/app
  * Génère, à partir du token courant de l'utilisateur, un nouveau token
  * spécifique à l'application ciblée (appcode), à condition que l'utilisateur
@@ -377,47 +436,63 @@ export async function loginAppMiddleware(req, res, next) {
   try {
     const myToken = getRequestAuthorization(req);
     const myPayload = jwtUtils.decodeJWT(myToken);
-    devEmail = myPayload?.devEmail || null;
 
     if (!myPayload) throw new Error("INVALID_TOKEN");
     if (myPayload.permissionLevel === -1) throw new Error("ACCESS_DENIED");
 
     if (!appcode) throw new Error("MISSING_PARAMETERS");
 
-    const userId = myPayload.data.id;
+    // Le compte principal est TOUJOURS le vrai utilisateur (le dev en cas
+    // d'impersonation), jamais le compte simulé — sinon le changement
+    // d'application "promeut" le compte simulé en compte principal.
+    const impersonation = getImpersonation(myPayload);
 
-    const rawUsers = await getUserById(userId);
-    const formattedUser = await formatUsers(rawUsers);
-    const user = formattedUser[0];
+    const user = impersonation
+      ? await loadUserByEmail(impersonation.devEmail)
+      : await loadUserById(myPayload.data?.id);
 
     if (!user) throw new Error("USER_NOT_FOUND");
 
-    const userPermission = user.PERMISSIONS.filter(
-      (p) => p.APPCOD === appcode && p.PERMISSION !== -1,
-    ).reduce(
-      (min, p) =>
-        !min || p.PERMISSION.PRMLVL < min.PERMISSION.PRMLVL ? p : min,
-      null,
-    )?.PERMISSION;
+    const userPermission = getBestPermission(user, appcode);
+    if (!userPermission) throw new Error("ACCESS_DENIED");
 
-    if (!userPermission || String(userPermission.PRMLVL) === "-1") {
-      throw new Error("ACCESS_DENIED");
+    // Impersonation conservée (même structure que GET /auth/dev : token du
+    // dev contenant le token simulé dans devToken), si le dev reste
+    // Développeur sur l'application cible et que le compte simulé y a accès.
+    // Le compte simulé reprend sa propre permission sur la nouvelle
+    // application (équivalent permlvl=0 de /auth/dev).
+    let simulatedToken = "";
+    if (impersonation && Number(userPermission.PRMLVL) === 1) {
+      const simulatedUser = await loadUserById(impersonation.simulatedUserId);
+      const simulatedPermission = simulatedUser
+        ? getBestPermission(simulatedUser, appcode)
+        : null;
+
+      if (simulatedPermission) {
+        simulatedToken = jwtUtils.generateJWT(
+          jwtUtils.generatePayload(
+            simulatedUser,
+            simulatedPermission,
+            appcode,
+            "true",
+            user.EMAIL,
+          ),
+        );
+        email = simulatedUser.EMAIL;
+        devEmail = user.EMAIL;
+      }
     }
 
-    // Si le token courant est une impersonation, on conserve l'email du dev
-    // pour que l'audit (USERSACTIVITY.DEVEMAIL) suive aussi le changement
-    // d'application.
     const myNewPayload = jwtUtils.generatePayload(
       user,
       userPermission,
       appcode,
-      "",
-      myPayload.devEmail || "",
+      simulatedToken,
     );
 
     const myNewToken = jwtUtils.generateJWT(myNewPayload);
 
-    email = user.EMAIL;
+    email = email || user.EMAIL;
     connexionSuccessful = true;
 
     res.status(200).json(myNewToken);

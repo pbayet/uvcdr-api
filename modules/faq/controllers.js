@@ -23,8 +23,8 @@ import { logger } from "../../config/logger.config.js";
        dans la limite de la visibilité par application (cf. services.js) ;
      - modification de sa publication / réponse : son auteur (une réponse
        validée n'est plus modifiable que par un modérateur) ;
-     - statut, épinglage, mots-clés, bonne réponse, ticket, suppression
-       définitive, catégories : modérateurs (FAQMODERATORS) et gestionnaires
+     - statut, épinglage, catégorisation des publications, mots-clés, bonne
+       réponse, ticket, suppression définitive, catégories : modérateurs (FAQMODERATORS) et gestionnaires
        globaux (MODIFY_PERMS) ;
      - désignation des modérateurs : gestionnaires globaux uniquement.
 
@@ -295,7 +295,12 @@ export async function createPost(req) {
   const ctx = await utils.getUserContext(req);
   const body = await params(req, v.postCreateSchema);
 
-  const PSTID = await services.createPost({ ...body, CREUSR: ctx.USRID });
+  // Catégorisation réservée aux modérateurs / gestionnaires globaux.
+  const PSTID = await services.createPost({
+    ...body,
+    CATID: ctx.ISMOD ? body.CATID : null,
+    CREUSR: ctx.USRID,
+  });
   if (!PSTID) throw new Error("DB_QUERY_ERROR");
 
   const post = await loadVisiblePost(ctx, PSTID);
@@ -327,11 +332,12 @@ export async function updatePost(req) {
   const fields = {
     TITLE: body.TITLE,
     BODY: body.BODY,
-    CATID: body.CATID,
     APPID: body.APPID,
   };
 
   if (ctx.ISMOD) {
+    // Catégorisation réservée aux modérateurs : ignorée pour un auteur.
+    fields.CATID = body.CATID;
     fields.PINNED = body.PINNED;
     if (body.STSID !== undefined) {
       if (body.STSID !== null) {

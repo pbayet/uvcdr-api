@@ -69,6 +69,15 @@ export function getMe(req) {
   return req.payload?.data ?? null;
 }
 
+function getUserIdentity(req) {
+  return {
+    CREUSR:
+      `${req?.payload?.data?.LastName ?? ""} ${req?.payload?.data?.FirstName ?? ""}`.trim(),
+    USRID: req?.payload?.data?.id,
+    NUMGES: req?.payload?.data?.position?.code,
+  };
+}
+
 /* -------------------------------------------------------------------------- */
 /*                                    GETS                                    */
 /* -------------------------------------------------------------------------- */
@@ -129,11 +138,19 @@ export async function getApplicationCurrentVersion(req) {
 }
 
 export async function getHomeApplications(req) {
-  const { USRID } = v.homeApplicationsQuerySchema.parse(
-    (await requestUtils.getRequestParams(req)).params,
-  );
+  // const { USRID } = v.homeApplicationsQuerySchema.parse(
+  //   (await requestUtils.getRequestParams(req)).params,
+  // );
 
-  const rawUsers = await services.getUserById(USRID);
+  // En impersonation (token simulé issu de GET /auth/dev), les applications
+  // de l'accueil sont celles du vrai utilisateur (le dev), pas du compte
+  // simulé.
+  const devEmail =
+    req?.payload?.devToken === "true" ? req?.payload?.devEmail : null;
+
+  const rawUsers = devEmail
+    ? await services.getUserByEmail(devEmail)
+    : await services.getUserById(getUserIdentity(req).USRID);
   const formattedUsers = await utils.formatUsers(rawUsers);
 
   return services.getHomeApplications(formattedUsers[0]);

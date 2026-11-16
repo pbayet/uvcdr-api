@@ -1031,8 +1031,9 @@ export async function getParticipantEmails(PSTID, EXCLUDE_USRID) {
 /* -------------------------------------------------------------------------- */
 
 /**
- * Chiffres clés (page Statistiques), calculés sur les publications visibles
- * par l'utilisateur. Plusieurs jeux de résultats en une requête.
+ * Chiffres clés (page Statistiques) : toutes les publications visibles pour
+ * un modérateur / gestionnaire, ses seules publications pour un autre
+ * utilisateur. Plusieurs jeux de résultats en une requête.
  */
 export async function getStats(ctx) {
   const result = await runQuery({
@@ -1054,7 +1055,9 @@ export async function getStats(ctx) {
       INTO #P
       FROM dbo.FAQPOSTS AS p
       LEFT JOIN USERSMANAGER.dbo.APPLICATIONS AS a ON a.APPID = p.APPID
-     WHERE p.DLTD = 0 AND ${VISIBILITY};
+     WHERE p.DLTD = 0 AND ${VISIBILITY}
+       -- Hors modérateurs / gestionnaires : uniquement ses propres publications.
+       AND (@ISMOD = 1 OR p.CREUSR = @USRID);
 
     DECLARE @ANSWERS INT = (
       SELECT COUNT(*) FROM dbo.FAQANSWERS an
