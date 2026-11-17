@@ -24,6 +24,7 @@ import {
 import { z } from "zod";
 import * as authMiddlewares from "./core/middlewares/auth.middleware.js";
 import { loadModules } from "./modules/index.js";
+import { startLogsPurgeCron } from "./core/services/logsPurge.service.js";
 
 import {
   sendTemplatedMail,
@@ -58,6 +59,10 @@ process.on("unhandledRejection", (reason) => {
 
   // Connecter toutes les bases avant de charger les routes
   await initDatabases();
+
+  // Purge des logs > 1 an (PROD) / 2 mois (DEV) : BDD (USERSACTIVITY,
+  // LOGINHISTORY) + dossier logs/ — cf. core/services/logsPurge.service.js.
+  startLogsPurgeCron();
 
   app.use(express.json({ limit: "2mb" }));
   app.use(express.urlencoded({ extended: true }));

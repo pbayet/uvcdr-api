@@ -2,6 +2,7 @@ import winston from "winston";
 import "winston-daily-rotate-file";
 import path from "path";
 import fs from "fs";
+import { getLogsRetentionDays } from "../core/config/logsRetention.config.js";
 
 const production = process.env.NODE_ENV === "production";
 
@@ -10,6 +11,10 @@ const production = process.env.NODE_ENV === "production";
 // (utile aussi sur les montages réseau où la rotation/suppression de fichiers
 // peut échouer). Comportement dev/prod inchangé.
 const isTest = process.env.NODE_ENV === "test";
+
+// Rétention alignée sur la purge planifiée (core/services/logsPurge.service.js) :
+// 1 an en PROD, 2 mois en DEV (cf. core/config/logsRetention.config.js).
+const maxFiles = `${getLogsRetentionDays()}d`;
 
 const logDir = path.resolve("logs");
 const errorDir = path.join(logDir, "errors");
@@ -52,7 +57,7 @@ const transports = isTest
         datePattern: "YYYY-MM-DD",
         level: "error",
         maxSize: "20m",
-        maxFiles: "14d",
+        maxFiles,
         format: fileFormat,
       }),
       new winston.transports.DailyRotateFile({
@@ -61,7 +66,7 @@ const transports = isTest
         datePattern: "YYYY-MM-DD",
         level: "info",
         maxSize: "20m",
-        maxFiles: "14d",
+        maxFiles,
         format: fileFormat,
       }),
     ];
