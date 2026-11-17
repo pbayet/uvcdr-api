@@ -266,13 +266,19 @@ function buildFolderListQuery(extraWhere = "") {
     LEFT JOIN dbo.FSACLIENTS c ON c.NUMDOS = e.NUMDOS
     ${LEGACY_JOIN_SQL}
     -- TOP 1 : un poste peut être partagé par plusieurs utilisateurs, un
-    -- LEFT JOIN POSITIONS -> USERS dupliquait alors la ligne dossier
+    -- LEFT JOIN POSITIONS -> USERS dupliquait alors la ligne dossier.
+    -- On ne garde que les utilisateurs habilités sur le service demandeur
+    -- (FSAGES_UTILISATEURS), en priorité le créateur du dossier.
     OUTER APPLY (
         SELECT TOP 1 u.LSTNAM, u.FSTNAM
         FROM USERSMANAGER.dbo.POSITIONS p
-        INNER JOIN USERSMANAGER.dbo.USERS u ON u.POSID = p.POSID
+        INNER JOIN USERSMANAGER.dbo.USERS u        ON u.POSID = p.POSID
+        INNER JOIN dbo.FSAGES_UTILISATEURS gu      ON gu.USRID = u.USRID
+                                                  AND gu.GESID = dem.GESID
         WHERE p.POSCOD = e.NUMDEM
-        ORDER BY u.USRID
+        ORDER BY
+            CASE WHEN CONCAT(u.LSTNAM, ' ', u.FSTNAM) = e.CREUSR THEN 0 ELSE 1 END,
+            u.USRID
     ) udem
     OUTER APPLY (
         SELECT TOP 1 v.VALTYPCOD
@@ -738,8 +744,17 @@ const FOLDER_HEADER_QUERY = `
     LEFT JOIN dbo.FSAGES ges ON ges.NUMGES = e.NUMGES
     LEFT JOIN USERSMANAGER.dbo.USERS uges ON uges.USRID = e.GESUSRID
     LEFT JOIN dbo.FSAGES dem ON dem.NUMGES = e.NUMDEM
-    LEFT JOIN USERSMANAGER.dbo.POSITIONS posdem ON posdem.POSCOD = e.NUMDEM
-    LEFT JOIN USERSMANAGER.dbo.USERS udem ON udem.POSID = posdem.POSID
+    OUTER APPLY (
+        SELECT TOP 1 u.USRID, u.LSTNAM, u.FSTNAM
+        FROM USERSMANAGER.dbo.POSITIONS p
+        INNER JOIN USERSMANAGER.dbo.USERS u        ON u.POSID = p.POSID
+        INNER JOIN dbo.FSAGES_UTILISATEURS gu      ON gu.USRID = u.USRID
+                                                  AND gu.GESID = dem.GESID
+        WHERE p.POSCOD = e.NUMDEM
+        ORDER BY
+            CASE WHEN CONCAT(u.LSTNAM, ' ', u.FSTNAM) = e.CREUSR THEN 0 ELSE 1 END,
+            u.USRID
+    ) udem
     LEFT JOIN dbo.FSACLIENTS c ON c.NUMDOS = e.NUMDOS
     LEFT JOIN dbo.FSAPAYS pay ON pay.CLIPAY = c.CLIPAY
     LEFT JOIN dbo.FSAPRODUITS pr ON pr.NUMDOS = e.NUMDOS
@@ -879,50 +894,50 @@ export async function getFsa(NUMDOS) {
     validationsPjs,
     validationsLiens,
   ] = await Promise.all([
-      runQuery({
-        moduleUrl: import.meta.url,
-        key: "fsa.getFsa.header",
-        query: FOLDER_HEADER_QUERY,
-        inputs,
-        errorIfEmpty: "DATA_NOT_FOUND",
-      }),
-      runQuery({
-        moduleUrl: import.meta.url,
-        key: "fsa.getFsa.nomenclatures",
-        query: FOLDER_NOMENCLATURES_QUERY,
-        inputs,
-      }),
-      runQuery({
-        moduleUrl: import.meta.url,
-        key: "fsa.getFsa.pjs",
-        query: FOLDER_PJS_QUERY,
-        inputs,
-      }),
-      runQuery({
-        moduleUrl: import.meta.url,
-        key: "fsa.getFsa.liens",
-        query: FOLDER_LIENS_QUERY,
-        inputs,
-      }),
-      runQuery({
-        moduleUrl: import.meta.url,
-        key: "fsa.getFsa.validations",
-        query: FOLDER_VALIDATIONS_QUERY,
-        inputs,
-      }),
-      runQuery({
-        moduleUrl: import.meta.url,
-        key: "fsa.getFsa.validations.files",
-        query: FOLDER_VALIDATIONS_FILES_QUERY,
-        inputs,
-      }),
-      runQuery({
-        moduleUrl: import.meta.url,
-        key: "fsa.getFsa.validations.liens",
-        query: VALIDATION_LIENS_QUERY,
-        inputs,
-      }),
-    ]);
+    runQuery({
+      moduleUrl: import.meta.url,
+      key: "fsa.getFsa.header",
+      query: FOLDER_HEADER_QUERY,
+      inputs,
+      errorIfEmpty: "DATA_NOT_FOUND",
+    }),
+    runQuery({
+      moduleUrl: import.meta.url,
+      key: "fsa.getFsa.nomenclatures",
+      query: FOLDER_NOMENCLATURES_QUERY,
+      inputs,
+    }),
+    runQuery({
+      moduleUrl: import.meta.url,
+      key: "fsa.getFsa.pjs",
+      query: FOLDER_PJS_QUERY,
+      inputs,
+    }),
+    runQuery({
+      moduleUrl: import.meta.url,
+      key: "fsa.getFsa.liens",
+      query: FOLDER_LIENS_QUERY,
+      inputs,
+    }),
+    runQuery({
+      moduleUrl: import.meta.url,
+      key: "fsa.getFsa.validations",
+      query: FOLDER_VALIDATIONS_QUERY,
+      inputs,
+    }),
+    runQuery({
+      moduleUrl: import.meta.url,
+      key: "fsa.getFsa.validations.files",
+      query: FOLDER_VALIDATIONS_FILES_QUERY,
+      inputs,
+    }),
+    runQuery({
+      moduleUrl: import.meta.url,
+      key: "fsa.getFsa.validations.liens",
+      query: VALIDATION_LIENS_QUERY,
+      inputs,
+    }),
+  ]);
 
   return {
     header: header.recordset,
@@ -948,7 +963,10 @@ export async function getFsa(NUMDOS) {
 // FSAGES sans aucun utilisateur habilité (ex. créés par la reprise APP_FSA,
 // étape 4.1, qui n'alimente pas FSAGES_UTILISATEURS). Sans ça, l'écran
 // Paramètres > Gestionnaires les classe à tort en « Potentiels ».
-function gestionnairesQuery(extraWhere = "", { includeWithoutUsers = false } = {}) {
+function gestionnairesQuery(
+  extraWhere = "",
+  { includeWithoutUsers = false } = {},
+) {
   const join = includeWithoutUsers ? "LEFT JOIN" : "INNER JOIN";
   return `
     SELECT
@@ -1291,10 +1309,20 @@ export async function getValDelays() {
       -- (même montage que ENT_DEM_GESNAM dans getFsas()/getFsa()).
       LEFT JOIN dbo.FSAGES AS dem
           ON dem.NUMGES = e.NUMDEM
-      LEFT JOIN USERSMANAGER.dbo.POSITIONS AS posdem
-          ON posdem.POSCOD = e.NUMDEM
-      LEFT JOIN USERSMANAGER.dbo.USERS AS udem
-          ON udem.POSID = posdem.POSID
+      -- TOP 1 : poste partagé par plusieurs utilisateurs (sinon doublons de
+      -- validations) ; seuls les habilités du service demandeur
+      -- (FSAGES_UTILISATEURS), en priorité le créateur du dossier.
+      OUTER APPLY (
+          SELECT TOP 1 u.LSTNAM, u.FSTNAM
+          FROM USERSMANAGER.dbo.POSITIONS p
+          INNER JOIN USERSMANAGER.dbo.USERS u        ON u.POSID = p.POSID
+          INNER JOIN dbo.FSAGES_UTILISATEURS gu      ON gu.USRID = u.USRID
+                                                    AND gu.GESID = dem.GESID
+          WHERE p.POSCOD = e.NUMDEM
+          ORDER BY
+              CASE WHEN CONCAT(u.LSTNAM, ' ', u.FSTNAM) = e.CREUSR THEN 0 ELSE 1 END,
+              u.USRID
+      ) udem
       -- Utilisateur rattaché au service qui a validé : FSAGES.NUMGES ->
       -- POSITIONS -> USERS (même montage que GES_GESNAM dans
       -- dbo.vw_FsaValidations, complété ici avec le USRID brut).
@@ -2102,7 +2130,11 @@ export async function delsertLiens(
 
     FSALIENS.forEach((lien, i) => {
       requestInsert.input(`LIENURL${i}`, sql.NVarChar(2000), lien.LIENURL);
-      requestInsert.input(`LIENNOM${i}`, sql.NVarChar(255), lien.LIENNOM ?? null);
+      requestInsert.input(
+        `LIENNOM${i}`,
+        sql.NVarChar(255),
+        lien.LIENNOM ?? null,
+      );
     });
 
     await requestInsert.query(insertQuery);
