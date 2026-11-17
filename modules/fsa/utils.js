@@ -376,6 +376,11 @@ function mapFolderListItem(row, mustValidateMap) {
 
     PJ_COUNT: row.ENT_PJ_COUNT ?? 0,
 
+    // Tarifs cibles révisés (badge "Tarif révisé" sur la carte de la liste)
+    PRIREV: row.REQ_VEN_PRIREV ?? null,
+    PRIREV1: row.REQ_VEN_PRIREV1 ?? null,
+    PRIREV2: row.REQ_VEN_PRIREV2 ?? null,
+
     // CSV -> tableau, comme les autres listes sont déjà parsées côté
     // back (mapPjs/mapValidations) avant d'être envoyées au front.
     VALIDATED_SERVICES: (row.ENT_VALIDATED_SERVICES || "")

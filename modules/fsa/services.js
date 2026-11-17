@@ -335,6 +335,10 @@ function buildFolderListQuery(extraWhere = "") {
         ve.DATMAD     AS REQ_VEN_DATMAD,
         ve.VOLANN     AS REQ_VEN_VOLANN,
         ve.PRIANN     AS REQ_VEN_PRIANN,
+        -- Tarifs révisés (badge "Tarif révisé" sur la carte de la liste)
+        ve.PRIREV     AS REQ_VEN_PRIREV,
+        ve.PRIREV1    AS REQ_VEN_PRIREV1,
+        ve.PRIREV2    AS REQ_VEN_PRIREV2,
         ISNULL(nom.NOM_COUNT, 0)     AS REQ_NOM_COUNT,
 
         f.ENT_MY_VALIDATION_CODE,
