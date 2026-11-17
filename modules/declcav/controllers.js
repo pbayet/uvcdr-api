@@ -185,8 +185,7 @@ export async function notifyDeclcavEvent({
   actionUrl = null,
   actionLabel = "Voir la déclaration",
 }) {
-  // const to = IS_PROD ? recipient : DEV_FALLBACK_RECIPIENT;
-  const to = DEV_FALLBACK_RECIPIENT;
+  const to = IS_PROD ? recipient : DEV_FALLBACK_RECIPIENT;
 
   if (!to) {
     logger.warn(

@@ -182,7 +182,7 @@ export async function loginMiddleware(req, res, next) {
             EMAIL: email,
             USRACTV: true,
             ISCAVE: true,
-            LSTNAM: `(${LSTNAM})`,
+            LSTNAM: LSTNAM ? `(${LSTNAM})` : "",
             FSTNAM: FSTNAM,
           },
           { PRMNAM: "USER", PRMLVL: 4 },
