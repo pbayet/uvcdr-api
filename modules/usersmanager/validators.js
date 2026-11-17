@@ -164,6 +164,46 @@ export const activityStatsQuerySchema = z
     message: "Période limitée à 2 ans.",
   });
 
+/** Plafond du nombre de lignes renvoyées par GET /global/activity/stats/details. */
+export const ACTIVITY_DETAILS_MAX_LIMIT = 2000;
+
+/**
+ * GET /global/activity/stats/details — événements derrière un point des
+ * graphiques "Activité par jour / mois" (FROM–TO) et "Répartition horaire"
+ * (FROM–TO + HOUR). KIND restreint à une série (actions, connexions, échecs).
+ */
+export const activityDetailsQuerySchema = z
+  .object({
+    FROM: optionalDate,
+    TO: optionalDate,
+    HOUR: z.coerce
+      .number()
+      .int()
+      .min(0)
+      .max(23)
+      .nullish()
+      .transform((v) => (v === null ? undefined : v)),
+    KIND: z
+      .enum(["ACTIONS", "LOGINS", "FAILED"])
+      .nullish()
+      .transform((v) => v || undefined),
+    LIMIT: z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(ACTIVITY_DETAILS_MAX_LIMIT)
+      .default(1000),
+  })
+  .transform(({ FROM, TO, ...rest }) => {
+    const to = TO ?? new Date();
+    const from = FROM ?? new Date(to.getTime() - 30 * 86_400_000);
+    return { ...rest, FROM: from, TO: to };
+  })
+  .refine((d) => d.FROM <= d.TO, { message: "FROM doit être antérieure à TO." })
+  .refine((d) => d.TO.getTime() - d.FROM.getTime() <= 731 * 86_400_000, {
+    message: "Période limitée à 2 ans.",
+  });
+
 export const activityParamsQuerySchema = z.object({
   LOG_ID: z.coerce.number().int("LOG_ID est obligatoire.").positive(),
 });

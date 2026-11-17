@@ -252,6 +252,40 @@ export async function getActivityStats(req) {
   };
 }
 
+/**
+ * GET /global/activity/stats/details?FROM&TO&HOUR&KIND&LIMIT — événements
+ * derrière un point des graphiques de la page Statistiques (gestionnaires).
+ */
+export async function getActivityDetails(req) {
+  assertManager(req);
+
+  const { FROM, TO, HOUR, KIND, LIMIT } = v.activityDetailsQuerySchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  const { total, rows } = await services.getActivityDetails({
+    from: FROM,
+    to: TO,
+    hour: HOUR,
+    kind: KIND,
+    limit: LIMIT,
+  });
+
+  // Heure murale de Paris sans fuseau, comme getActivityStats.
+  const iso = (d) =>
+    d instanceof Date && !Number.isNaN(d.getTime())
+      ? d.toISOString().slice(0, 19)
+      : null;
+
+  return {
+    from: FROM.toISOString(),
+    to: TO.toISOString(),
+    total,
+    limit: LIMIT,
+    rows: rows.map((r) => ({ ...r, EVENT_DATE: iso(r.EVENT_DATE) })),
+  };
+}
+
 /** GET /global/activity/params?LOG_ID= — PARAMS d'une action (à la demande). */
 export async function getActivityParams(req) {
   assertDev(req);

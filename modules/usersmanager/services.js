@@ -453,6 +453,91 @@ export async function getActivityStats({ from, to }) {
   };
 }
 
+/**
+ * Événements derrière un point des graphiques de la page Statistiques
+ * (activité par jour / mois, répartition horaire). Ouvert aux gestionnaires :
+ * ni IP, ni méthode, ni PARAMS — seulement le libellé déjà exposé par
+ * "Actions les plus fréquentes" (COMMENT, sinon ROUTE).
+ *
+ * Mêmes conventions que getActivityStats : colonnes en heure locale de
+ * Paris, bornes converties par toParisWallClock.
+ *
+ * @param {object} filters
+ * @param {Date}   filters.from
+ * @param {Date}   filters.to
+ * @param {number} [filters.hour] - 0–23, heure locale de l'événement
+ * @param {"ACTIONS"|"LOGINS"|"FAILED"} [filters.kind] - une seule série
+ * @param {number} [filters.limit=1000]
+ * @returns {Promise<{ total: number, rows: object[] }>}
+ */
+export async function getActivityDetails({ from, to, hour, kind, limit = 1000 }) {
+  const inputs = {
+    FROM: { type: sql.DateTime2, value: toParisWallClock(from) },
+    TO: { type: sql.DateTime2, value: toParisWallClock(to) },
+    LIMIT: { type: sql.Int, value: limit },
+  };
+  const uaWhere = ["CREDAT >= @FROM", "CREDAT <= @TO"];
+  const lhWhere = ["LOGIN_DATE >= @FROM", "LOGIN_DATE <= @TO"];
+
+  if (hour !== undefined) {
+    inputs.HOUR = { type: sql.Int, value: hour };
+    uaWhere.push("DATEPART(hour, CREDAT) = @HOUR");
+    lhWhere.push("DATEPART(hour, LOGIN_DATE) = @HOUR");
+  }
+  if (kind === "FAILED") {
+    uaWhere.push("SUCCESS = 0");
+    lhWhere.push("SUCCESS = 0");
+  }
+
+  const withUA = kind !== "LOGINS";
+  const withLH = kind !== "ACTIONS";
+  const UA = `[GENERALACTIVITY].[dbo].[USERSACTIVITY]`;
+  const LH = `[USERSMANAGER].[dbo].[LOGINHISTORY]`;
+
+  const branches = [];
+  const counts = [];
+  if (withUA) {
+    branches.push(`SELECT * FROM (
+      SELECT TOP (@LIMIT)
+        ID AS LOG_ID, CREDAT AS EVENT_DATE, USEREMAIL AS EMAIL, DEVEMAIL, SUCCESS,
+        ISNULL(NULLIF(COMMENT, ''), ROUTE) AS LABEL, APPCOD, DURATIONMS,
+        'ACTIVITY' AS SOURCE
+      FROM ${UA} WHERE ${uaWhere.join(" AND ")}
+      ORDER BY CREDAT DESC
+    ) AS ua`);
+    counts.push(`(SELECT COUNT(*) FROM ${UA} WHERE ${uaWhere.join(" AND ")})`);
+  }
+  if (withLH) {
+    branches.push(`SELECT * FROM (
+      SELECT TOP (@LIMIT)
+        LOGID AS LOG_ID, LOGIN_DATE AS EVENT_DATE, EMAIL, DEVEMAIL, SUCCESS,
+        CAST(NULL AS nvarchar(300)) AS LABEL, APPCOD, CAST(NULL AS int) AS DURATIONMS,
+        CASE WHEN DEVEMAIL IS NOT NULL THEN 'LOGINDEV' ELSE 'LOGIN' END AS SOURCE
+      FROM ${LH} WHERE ${lhWhere.join(" AND ")}
+      ORDER BY LOGIN_DATE DESC
+    ) AS lh`);
+    counts.push(`(SELECT COUNT(*) FROM ${LH} WHERE ${lhWhere.join(" AND ")})`);
+  }
+
+  const run = (query) =>
+    runQuery({
+      moduleUrl: import.meta.url,
+      dbConnectionName: "generalactivity",
+      query,
+      inputs,
+    }).then((r) => r.recordset);
+
+  const [rows, total] = await Promise.all([
+    run(`SELECT TOP (@LIMIT) * FROM (
+      ${branches.join("\n      UNION ALL\n      ")}
+    ) AS t
+    ORDER BY EVENT_DATE DESC`),
+    run(`SELECT ${counts.join(" + ")} AS TOTAL`),
+  ]);
+
+  return { total: total[0]?.TOTAL ?? rows.length, rows };
+}
+
 /** PARAMS d'une ligne de USERSACTIVITY (chargé à la demande par le journal). */
 export async function getActivityParams(LOG_ID) {
   const result = await runQuery({

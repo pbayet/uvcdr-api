@@ -121,6 +121,18 @@ router.get(
 );
 
 router.get(
+  "/global/activity/stats/details",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.getActivityDetails(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
+router.get(
   "/global/activity/params",
   authMiddlewares.authVerifyMiddleware,
   async (req, res, next) => {
