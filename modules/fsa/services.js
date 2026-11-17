@@ -2224,6 +2224,39 @@ export async function patchPrixRevise(
   return (result?.rowsAffected?.[0] ?? 0) > 0;
 }
 
+// Gestionnaire FSAGES du service financier (cf. #MAP_VALIDEUR dans
+// sql/FSA.reprise_APP_FSA.sql : 'CG' → 'DAF', Directeur adm. financier).
+const FINANCE_NUMGES = process.env.FSA_FINANCE_NUMGES || "DAF";
+
+/**
+ * Emails des valideurs du service financier : utilisateurs habilités
+ * (FSAGES_UTILISATEURS) du gestionnaire FINANCE_NUMGES, s'il est bien
+ * valideur (VALGES = 1). Destinataires de la notification de saisie d'un
+ * tarif révisé (cf. controllers.patchFsaPrixRevise).
+ * @returns {Promise<Array<{EMAIL: string, GESNAM: string}>>}
+ */
+export async function getFinanceValEmails() {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+      SELECT DISTINCT
+          u.EMAIL,
+          CONCAT(u.LSTNAM, ' ', u.FSTNAM) AS GESNAM
+      FROM dbo.FSAGES g
+      INNER JOIN dbo.FSAGES_UTILISATEURS gu ON gu.GESID = g.GESID
+      -- V_Users : même source que getValEmails() (utilisateurs actifs).
+      INNER JOIN USERSMANAGER.dbo.V_Users u ON u.USRID = gu.USRID
+      WHERE g.NUMGES = @NUMGES
+        AND g.VALGES = 1
+        AND u.EMAIL IS NOT NULL
+        AND u.EMAIL <> '';
+    `,
+    inputs: { NUMGES: { type: sql.VarChar(15), value: FINANCE_NUMGES } },
+  });
+
+  return result.recordset ?? [];
+}
+
 /**
  * Effectue un UPSERT sur les notes de dossier (FSAENT.NOTDOS).
  * @param {string} NUMDOS - Numéro du dossier

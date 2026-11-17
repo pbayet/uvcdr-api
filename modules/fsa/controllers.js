@@ -536,6 +536,29 @@ function getMailTemplateVariants(fsa) {
         DOSSIER_COUNT: SAMPLE_TEST_DOSSIERS.length,
       },
     },
+    (() => {
+      const mail = buildPrixReviseMail({
+        NUMDOS,
+        ANNEE: 1,
+        PRIREV: 3.25,
+        REVNOT: "Alignement sur l'offre concurrente (test).",
+        author: GEST.GESNAM,
+        fsa,
+      });
+      return {
+        key: "PRICE_REVISION",
+        // Réutilise la mise en page générique de fsa/validation.
+        template: "fsa/validation",
+        subject: mail.subject,
+        message: mail.message,
+        data: {
+          DOSSIER_CODE: NUMDOS,
+          NOMDOS: mail.nomdos,
+          DETAILS_ROWS_HTML: renderDetailGroups(mail.detailGroups),
+          NOTES_HTML: renderNoteList([mail.comment]),
+        },
+      };
+    })(),
   ];
 }
 
@@ -1378,10 +1401,104 @@ export async function patchFsaPrixRevise(req) {
   const gestsMustValidate = await services.getGestsMustValidate();
   const formattedGests = utils.formatGestsMustValidate(gestsMustValidate);
   const rawFsa = await services.getFsa(NUMDOS);
+  const formattedFsa = utils.formatFsasJson(rawFsa, formattedGests)[0];
 
   broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
 
-  return utils.formatFsasJson(rawFsa, formattedGests)[0];
+  // Saisie (pas l'effacement) d'un tarif révisé : on prévient les valideurs
+  // du service financier. Non bloquant, comme toutes les notifications FSA.
+  if (PRIREV != null) {
+    notifyFinancePrixRevise({
+      fsa: formattedFsa,
+      NUMDOS,
+      ANNEE,
+      PRIREV,
+      REVNOT,
+      author: getUserIdentity(req).CREUSR,
+    }).catch((err) =>
+      logger.error(
+        `[FSA][MAIL] Notification tarif révisé ${NUMDOS} : ${err.message}`,
+      ),
+    );
+  }
+
+  return formattedFsa;
+}
+
+const PRIX_REVISE_YEAR_LABELS = ["Année N", "Année N+1", "Année N+2"];
+const PRIX_ANNEE_KEYS = ["PRIANN", "PRIANN1", "PRIANN2"];
+
+function formatPrix(value) {
+  if (value == null || value === "") return "—";
+  const n = Number(value);
+  return Number.isFinite(n)
+    ? n.toLocaleString("fr-FR", { maximumFractionDigits: 6 })
+    : String(value);
+}
+
+/**
+ * Construit les champs du mail "tarif révisé" (partagés avec la variante
+ * PRICE_REVISION de getMailTemplateVariants() pour la route de test).
+ */
+function buildPrixReviseMail({ NUMDOS, ANNEE, PRIREV, REVNOT, author, fsa }) {
+  const yearLabel = PRIX_REVISE_YEAR_LABELS[ANNEE] ?? `Année ${ANNEE}`;
+  const initial = fsa?.FSAVENTES?.[PRIX_ANNEE_KEYS[ANNEE]];
+
+  return {
+    subject: `Tarif révisé sur le dossier FSA ${NUMDOS}`,
+    message: `Un tarif révisé (${yearLabel}) vient d'être saisi sur un dossier FSA.`,
+    nomdos: fsa?.FSAENT?.NOMDOS,
+    detailGroups: [
+      {
+        title: "Tarif révisé",
+        items: [
+          { label: "Année", value: yearLabel },
+          { label: "Tarif initial", value: formatPrix(initial) },
+          { label: "Tarif révisé", value: formatPrix(PRIREV) },
+        ],
+      },
+      {
+        title: "Saisie",
+        items: [{ label: "Saisi par", value: author || "—" }],
+      },
+    ],
+    comment: REVNOT ? { author: author || undefined, content: REVNOT } : null,
+  };
+}
+
+async function notifyFinancePrixRevise({
+  fsa,
+  NUMDOS,
+  ANNEE,
+  PRIREV,
+  REVNOT,
+  author,
+}) {
+  const financeEmails = await services.getFinanceValEmails();
+  const recipient = [...new Set(financeEmails.map((e) => e.EMAIL))]
+    .filter(Boolean)
+    .join(",");
+
+  const mail = buildPrixReviseMail({
+    NUMDOS,
+    ANNEE,
+    PRIREV,
+    REVNOT,
+    author,
+    fsa,
+  });
+
+  await notifyFsaEvent({
+    template: "fsa/validation",
+    subject: mail.subject,
+    message: mail.message,
+    recipient,
+    dossierCode: NUMDOS,
+    nomdos: mail.nomdos,
+    detailGroups: mail.detailGroups,
+    comment: mail.comment,
+    actionUrl: `${DOMAIN}/fsa/folders/${NUMDOS}/0`,
+  });
 }
 
 export async function patchGestionnaires(req) {
