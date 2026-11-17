@@ -2226,7 +2226,7 @@ export async function patchPrixRevise(
 
 // Gestionnaire FSAGES du service financier (cf. #MAP_VALIDEUR dans
 // sql/FSA.reprise_APP_FSA.sql : 'CG' → 'DAF', Directeur adm. financier).
-const FINANCE_NUMGES = process.env.FSA_FINANCE_NUMGES || "DAF";
+const FINANCE_NUMSRV = process.env.FSA_FINANCE_NUMSRV || "FINANCIER";
 
 /**
  * Emails des valideurs du service financier : utilisateurs habilités
@@ -2246,12 +2246,12 @@ export async function getFinanceValEmails() {
       INNER JOIN dbo.FSAGES_UTILISATEURS gu ON gu.GESID = g.GESID
       -- V_Users : même source que getValEmails() (utilisateurs actifs).
       INNER JOIN USERSMANAGER.dbo.V_Users u ON u.USRID = gu.USRID
-      WHERE g.NUMGES = @NUMGES
+      WHERE u.SRVNAM = @NUMSRV
         AND g.VALGES = 1
         AND u.EMAIL IS NOT NULL
         AND u.EMAIL <> '';
     `,
-    inputs: { NUMGES: { type: sql.VarChar(15), value: FINANCE_NUMGES } },
+    inputs: { NUMSRV: { type: sql.VarChar(15), value: FINANCE_NUMSRV } },
   });
 
   return result.recordset ?? [];
