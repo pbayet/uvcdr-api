@@ -833,6 +833,37 @@ export const ERROR_REGISTRY = {
     HTTP_RESPONSE_CODE: 423,
   },
 
+  // ── 1800 DCKMNG (Dock Manager) ─────────────────────────────
+  DCKMNG_LOAD_NOT_FOUND: {
+    CODE: 1801,
+    MESSAGE: { en: "Load not found", fr: "Chargement introuvable" },
+    DESCRIPTION: {
+      en: "This load does not exist or has been deleted.",
+      fr: "Ce chargement n'existe pas ou a été supprimé.",
+    },
+    HTTP_RESPONSE_CODE: 404,
+  },
+
+  DCKMNG_LOAD_LOCKED: {
+    CODE: 1802,
+    MESSAGE: { en: "Load not editable", fr: "Chargement non modifiable" },
+    DESCRIPTION: {
+      en: "Only today's loads can be edited from the forklift operator area.",
+      fr: "Seuls les chargements du jour peuvent être modifiés depuis l'espace cariste.",
+    },
+    HTTP_RESPONSE_CODE: 409,
+  },
+
+  DCKMNG_TOO_MANY_LISTENERS: {
+    CODE: 1803,
+    MESSAGE: { en: "Too many connections", fr: "Trop de connexions" },
+    DESCRIPTION: {
+      en: "The maximum number of live connections has been reached. Please try again later.",
+      fr: "Le nombre maximal de connexions en direct est atteint. Réessayez plus tard.",
+    },
+    HTTP_RESPONSE_CODE: 503,
+  },
+
   INTERNAL_ERROR: {
     CODE: 9999,
     MESSAGE: { en: "Internal server error", fr: "Erreur interne du serveur" },

@@ -350,6 +350,34 @@ export const ROUTES_TO_SAVE_IN_BASE = [
     comment: "Modification des paramètres globaux FSA",
   },
 
+  // ── dckmng ───────────────────────────────────────────────────────────
+  // Espace admin
+  {
+    method: "POST",
+    route: "/api/dckmng/loads",
+    appcode: "DCKMNG",
+    comment: "Création d'un chargement",
+  },
+  {
+    method: "PUT",
+    route: "/api/dckmng/loads/:LODID",
+    appcode: "DCKMNG",
+    comment: "Modification d'un chargement",
+  },
+  {
+    method: "DELETE",
+    route: "/api/dckmng/loads/:LODID",
+    appcode: "DCKMNG",
+    comment: "Suppression d'un chargement",
+  },
+  // Espace cariste (public, sans connexion — utilisateur non identifié)
+  {
+    method: "PATCH",
+    route: "/api/dckmng/public/loads/:LODID",
+    appcode: "DCKMNG",
+    comment: "Mise à jour d'un chargement par un cariste",
+  },
+
   // ── files ────────────────────────────────────────────────────────────
   {
     method: "POST",

@@ -43,6 +43,7 @@ export const APPS_BY_EVENT_PREFIX = Object.freeze({
   fsa: ["FSA"],
   declcav: ["DCLING"],
   usersmanager: ["USRMAN"],
+  dckmng: ["DCKMNG"],
 });
 
 /** Map<clé utilisateur, Set<WebSocket>> — cf. clientKey */
