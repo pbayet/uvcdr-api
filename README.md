@@ -52,6 +52,13 @@ x3v12) resteront sur V1.0.0 jusqu'à leur propre reconstruction.
   PowerPoint). Base `VINIDOC` (`modules/vinidoc/sql/VINIDOC.tables.sql`) —
   documentation complète : `modules/vinidoc/README.md`.
 
+- **procs** : Procédures UVCDR (application `PROCS`, front `UNIS/procedures`) —
+  procédures / modes opératoires Word-PDF, catégories, recherche plein texte
+  dans le contenu des documents, versions, journal de traçabilité,
+  consultations et accusés de lecture. Base `PROCS`
+  (`modules/procs/sql/PROCS.tables.sql`) — documentation :
+  `modules/procs/README.md`.
+
 ## Périmètre volontairement exclu (à reconstruire plus tard si besoin)
 
 - Émails (`modules/emails`), FSA, journal, x3v12.

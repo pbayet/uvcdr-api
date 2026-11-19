@@ -378,6 +378,69 @@ export const ROUTES_TO_SAVE_IN_BASE = [
     comment: "Mise à jour d'un chargement par un cariste",
   },
 
+  // ── procs (Procédures UVCDR) ─────────────────────────────────────────
+  // Détail champ par champ dans PROCS.dbo.PROCHISTORY (cf. modules/procs).
+  {
+    method: "POST",
+    route: "/api/procs/procedures",
+    appcode: "PROCS",
+    comment: "Création d'une procédure",
+  },
+  {
+    method: "PUT",
+    route: "/api/procs/procedures/:prcid",
+    appcode: "PROCS",
+    comment: "Modification d'une procédure",
+  },
+  {
+    method: "DELETE",
+    route: "/api/procs/procedures/:prcid",
+    appcode: "PROCS",
+    comment: "Suppression / restauration d'une procédure",
+  },
+  {
+    method: "PUT",
+    route: "/api/procs/procedures/:prcid/status",
+    appcode: "PROCS",
+    comment: "Changement de statut d'une procédure",
+  },
+  {
+    method: "POST",
+    route: "/api/procs/procedures/:prcid/versions",
+    appcode: "PROCS",
+    comment: "Nouvelle version d'une procédure",
+  },
+  {
+    method: "PUT",
+    route: "/api/procs/procedures/:prcid/acknowledge",
+    appcode: "PROCS",
+    comment: "Accusé de lecture d'une procédure",
+  },
+  {
+    method: "PUT",
+    route: "/api/procs/versions/:verid/restore",
+    appcode: "PROCS",
+    comment: "Retour à une version antérieure d'une procédure",
+  },
+  {
+    method: "PUT",
+    route: "/api/procs/versions/:verid/reindex",
+    appcode: "PROCS",
+    comment: "Réindexation du texte d'une procédure",
+  },
+  {
+    method: "POST",
+    route: "/api/procs/categories",
+    appcode: "PROCS",
+    comment: "Création d'une catégorie de procédures",
+  },
+  {
+    method: "PUT",
+    route: "/api/procs/categories/:catid",
+    appcode: "PROCS",
+    comment: "Modification d'une catégorie de procédures",
+  },
+
   // ── files ────────────────────────────────────────────────────────────
   {
     method: "POST",

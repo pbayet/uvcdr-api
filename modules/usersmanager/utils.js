@@ -1,6 +1,57 @@
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as functionsUtils from "../../core/utils/functions.utils.js";
 
 const domain = process.env.DOMAIN || "";
+
+const ASSETS_DIR = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../assets",
+);
+// Ordre de priorité si plusieurs fichiers portent le même APPCOD
+const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".svg", ".gif", ".avif", ".bmp", ".ico"];
+const ASSETS_CACHE_TTL_MS = 60_000;
+let assetsCache = { map: new Map(), expiresAt: 0 };
+
+/**
+ * Construit (avec cache court) un index APPCOD (minuscule) -> nom de fichier image
+ * à partir du dossier assets, quelle que soit l'extension.
+ */
+function getAssetsIndex() {
+  const now = Date.now();
+  if (now < assetsCache.expiresAt) return assetsCache.map;
+
+  const map = new Map();
+  try {
+    const files = fs.readdirSync(ASSETS_DIR);
+    for (const file of files) {
+      const ext = path.extname(file).toLowerCase();
+      const rank = IMAGE_EXTENSIONS.indexOf(ext);
+      if (rank === -1) continue;
+      const key = path.basename(file, path.extname(file)).toLowerCase();
+      const current = map.get(key);
+      if (!current || rank < current.rank) map.set(key, { file, rank });
+    }
+  } catch {
+    // Dossier absent/inaccessible : on retombe sur le .jpg par défaut
+  }
+  assetsCache = { map, expiresAt: now + ASSETS_CACHE_TTL_MS };
+  return map;
+}
+
+/**
+ * Renvoie l'URL de l'image d'une application : IMGLNK si défini, sinon le
+ * premier fichier de /assets dont le nom est l'APPCOD (toute extension image),
+ * sinon `${APPCOD}.jpg` par défaut.
+ */
+export function getAppImageLink(appcod, imglnk) {
+  if (!appcod || !domain) return "";
+  if (imglnk) return imglnk;
+  const found = getAssetsIndex().get(String(appcod).toLowerCase());
+  const fileName = found ? found.file : `${appcod}.jpg`;
+  return `${domain}/API/assets/${encodeURIComponent(fileName)}`;
+}
 
 /**
  * sp_GetUsers_JSON renvoie SERVICE/PERMISSIONS/GROUPS/SUBORDINATES/MAILCOPIES/USRIMG
@@ -28,10 +79,7 @@ export async function formatUsers(rows) {
         return {
           ...perm,
           APPLNK: perm.APPLNK ? perm.APPLNK.replace("[DOMAIN]", domain) : "",
-          IMGLNK:
-            perm.APPCOD && domain
-              ? perm.IMGLNK || `${domain}/API/assets/${perm.APPCOD}.jpg`
-              : "",
+          IMGLNK: getAppImageLink(perm.APPCOD, perm.IMGLNK),
           PERMISSION: permParsed,
         };
       });
@@ -53,11 +101,7 @@ export function formatApplications(rows = []) {
   return rows.length > 0
     ? rows.map((application) => ({
         ...application,
-        IMGLNK:
-          application.APPCOD && domain
-            ? application.IMGLNK ||
-              `${domain}/API/assets/${application.APPCOD}.jpg`
-            : "",
+        IMGLNK: getAppImageLink(application.APPCOD, application.IMGLNK),
       }))
     : [];
 }
@@ -149,8 +193,7 @@ export function formatGroupsPermissions(rows = []) {
         LOGLNK: row.LOGLNK,
         APPLNK: row.APPLNK?.replace("[DOMAIN]", domain) || "[DOMAIN]/",
         DOCLNK: row.DOCLNK,
-        IMGLNK:
-          row.IMGLNK || domain ? `${domain}/API/assets/${row.APPCOD}.jpg` : "",
+        IMGLNK: getAppImageLink(row.APPCOD, row.IMGLNK),
         ACTIVE: Boolean(row.APPACTV),
         PERMISSION: null,
       };
