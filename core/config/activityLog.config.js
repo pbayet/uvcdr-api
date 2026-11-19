@@ -435,6 +435,12 @@ export const ROUTES_TO_SAVE_IN_BASE = [
     comment: "Création d'une catégorie de procédures",
   },
   {
+    method: "DELETE",
+    route: "/api/procs/categories/:catid",
+    appcode: "PROCS",
+    comment: "Suppression d'une catégorie de procédures (inutilisée)",
+  },
+  {
     method: "PUT",
     route: "/api/procs/categories/:catid",
     appcode: "PROCS",

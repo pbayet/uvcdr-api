@@ -245,6 +245,18 @@ export function checkCategoryPlacement(links, CATID, PARENTID) {
   return null;
 }
 
+/**
+ * Raison pour laquelle une catégorie ne peut pas être supprimée (null :
+ * supprimable), d'après son utilisation { PROCCOUNT, CHILDCOUNT }.
+ */
+export function categoryDeleteError({ PROCCOUNT = 0, CHILDCOUNT = 0 } = {}) {
+  const reasons = [];
+  if (CHILDCOUNT > 0) reasons.push(`${CHILDCOUNT} sous-catégorie${CHILDCOUNT > 1 ? "s" : ""}`);
+  if (PROCCOUNT > 0) reasons.push(`${PROCCOUNT} procédure${PROCCOUNT > 1 ? "s" : ""} (corbeille comprise)`);
+  if (!reasons.length) return null;
+  return `elle contient encore ${reasons.join(" et ")}. Désactivez-la plutôt.`;
+}
+
 export function formatCategory(row) {
   return {
     CATID: row.CATID,
@@ -256,6 +268,7 @@ export function formatCategory(row) {
     SORTORD: row.SORTORD ?? 0,
     ACTIVE: !!row.ACTIVE,
     PROCCOUNT: row.PROCCOUNT ?? 0,
+    CANDELETE: !!row.CANDELETE,
   };
 }
 

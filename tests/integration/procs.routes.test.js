@@ -219,6 +219,31 @@ describe("Intégration :: /api/procs", () => {
     expect(services.createCategory).not.toHaveBeenCalled();
   });
 
+  it("DELETE /categories/:catid : catégorie inutilisée supprimée", async () => {
+    services.getCategory.mockResolvedValue({ CATID: 5, NAME: "Vide" });
+    services.getCategoryUsage.mockResolvedValue({ PROCCOUNT: 0, CHILDCOUNT: 0 });
+    const res = await request(app).delete("/api/procs/categories/5").set(auth("admin"));
+    expect(res.status).toBe(200);
+    expect(res.body.data ?? res.body).toEqual({ CATID: 5 });
+    expect(services.deleteCategory).toHaveBeenCalledWith(5);
+    expect(broadcastToAll).toHaveBeenCalled();
+  });
+
+  it("DELETE /categories/:catid : catégorie utilisée → 409", async () => {
+    services.getCategory.mockResolvedValue({ CATID: 2, NAME: "Réseau" });
+    services.getCategoryUsage.mockResolvedValue({ PROCCOUNT: 1, CHILDCOUNT: 2 });
+    const res = await request(app).delete("/api/procs/categories/2").set(auth("admin"));
+    expect(res.status).toBe(409);
+    expect(JSON.stringify(res.body)).toContain("2 sous-catégories");
+    expect(services.deleteCategory).not.toHaveBeenCalled();
+  });
+
+  it("DELETE /categories/:catid : réservé aux rédacteurs", async () => {
+    const res = await request(app).delete("/api/procs/categories/5").set(auth("reader"));
+    expect(res.status).toBeGreaterThanOrEqual(400);
+    expect(services.deleteCategory).not.toHaveBeenCalled();
+  });
+
   it("POST /procedures : référence déjà utilisée → 409", async () => {
     services.isRefcodeTaken.mockResolvedValue(true);
     const res = await request(app)

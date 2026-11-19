@@ -644,3 +644,23 @@ export async function updateCategory(req) {
   emit("procs.categories.updated", { CATID: catid });
   return utils.formatCategory(await services.getCategory(catid));
 }
+
+/**
+ * Suppression définitive d'une catégorie inutilisée : ni procédure (même
+ * à la corbeille), ni sous-catégorie. Sinon 409 — la désactiver à la place.
+ */
+export async function deleteCategory(req) {
+  const ctx = utils.getUserContext(req);
+  utils.assertEditor(ctx);
+  const { catid } = await params(req, v.catidParamSchema);
+
+  const category = await services.getCategory(catid);
+  if (!category) throw new Error("DATA_NOT_FOUND");
+
+  const error = utils.categoryDeleteError(await services.getCategoryUsage(catid));
+  if (error) throw utils.httpError(409, `Impossible de supprimer « ${category.NAME} » : ${error}`);
+
+  await services.deleteCategory(catid);
+  emit("procs.categories.updated", { CATID: catid });
+  return { CATID: catid };
+}

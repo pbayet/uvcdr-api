@@ -68,6 +68,7 @@ XML directe, DOC/RTF via LibreOffice. Un PDF scanné sans couche texte donne
 | GET | `/me` | tous |
 | GET | `/categories` (`?ALL=true` rédacteurs) | tous |
 | POST / PUT | `/categories`, `/categories/:catid` | rédacteurs |
+| DELETE | `/categories/:catid` (inutilisée seulement : ni procédure, corbeille comprise, ni sous-catégorie ; sinon 409 — `CANDELETE` dans `GET /categories`) | rédacteurs |
 | GET | `/procedures` (`SEARCH`, `CATID`, + `STATUS`, `OVERDUE`, `DLTD` rédacteurs) | tous |
 | POST | `/procedures` (multipart : champs + `file`) | rédacteurs |
 | GET | `/procedures/:prcid` | tous (publiées) |

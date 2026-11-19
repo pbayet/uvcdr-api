@@ -77,6 +77,7 @@ route("get", "/me", controllers.getMe);
 route("get", "/categories", controllers.getCategories);
 route("post", "/categories", controllers.createCategory);
 route("put", "/categories/:catid", controllers.updateCategory);
+route("delete", "/categories/:catid", controllers.deleteCategory);
 
 /* ── Journal & statistiques (rédacteurs) ─── */
 route("get", "/history", controllers.getHistory);

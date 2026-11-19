@@ -768,7 +768,11 @@ export async function getCategories(ctx, { includeInactive = false } = {}) {
       c.CREDAT, c.UPDDAT,
       (SELECT COUNT(*) FROM dbo.PROCEDURES AS p
         WHERE p.CATID = c.CATID AND p.DLTD = 0
-          AND (@ISEDITOR = 1 OR (p.STATUS = 'PUBLISHED' AND p.CURVERID IS NOT NULL))) AS PROCCOUNT
+          AND (@ISEDITOR = 1 OR (p.STATUS = 'PUBLISHED' AND p.CURVERID IS NOT NULL))) AS PROCCOUNT,
+      -- Supprimable : aucune procédure (corbeille comprise) ni sous-catégorie.
+      CASE WHEN NOT EXISTS (SELECT 1 FROM dbo.PROCEDURES AS p WHERE p.CATID = c.CATID)
+            AND NOT EXISTS (SELECT 1 FROM dbo.PROCCATEGORIES AS sc WHERE sc.PARENTID = c.CATID)
+        THEN 1 ELSE 0 END AS CANDELETE
     FROM dbo.PROCCATEGORIES AS c
     WHERE (@INCLUDEINACTIVE = 1 OR c.ACTIVE = 1)
     ORDER BY c.SORTORD, c.NAME
@@ -820,6 +824,32 @@ export async function createCategory(data, USRID) {
     },
   });
   return result.recordset[0].CATID;
+}
+
+/**
+ * Utilisation d'une catégorie : procédures rattachées (corbeille comprise,
+ * la clé étrangère les compte aussi) et sous-catégories (actives ou non).
+ */
+export async function getCategoryUsage(CATID) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    SELECT
+      (SELECT COUNT(*) FROM dbo.PROCEDURES WHERE CATID = @CATID) AS PROCCOUNT,
+      (SELECT COUNT(*) FROM dbo.PROCCATEGORIES WHERE PARENTID = @CATID) AS CHILDCOUNT
+    `,
+    inputs: { CATID: { type: sql.Int, value: CATID } },
+  });
+  return result.recordset[0];
+}
+
+/** Suppression définitive (à n'appeler que sur une catégorie inutilisée). */
+export async function deleteCategory(CATID) {
+  await runQuery({
+    moduleUrl: import.meta.url,
+    query: `DELETE FROM dbo.PROCCATEGORIES WHERE CATID = @CATID`,
+    inputs: { CATID: { type: sql.Int, value: CATID } },
+  });
 }
 
 const CATEGORY_FIELDS = {

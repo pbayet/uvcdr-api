@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { checkCategoryPlacement, formatProcedure } from "../../../../modules/procs/utils.js";
+import { categoryDeleteError, checkCategoryPlacement, formatProcedure } from "../../../../modules/procs/utils.js";
 import { procedureCreateSchema, procedureUpdateSchema } from "../../../../modules/procs/validators.js";
 
 // Arborescence de test :
@@ -65,5 +65,18 @@ describe("procs :: catégorie d'une procédure", () => {
       CATGPNAME: "Informatique",
     });
     expect(p.CAT.PATH.map((c) => c.NAME)).toEqual(["Informatique", "Réseau", "Serveur EXT"]);
+  });
+});
+
+describe("procs :: suppression d'une catégorie", () => {
+  it("autorisée si ni procédure ni sous-catégorie", () => {
+    expect(categoryDeleteError({ PROCCOUNT: 0, CHILDCOUNT: 0 })).toBeNull();
+  });
+
+  it("refusée avec la raison (sous-catégories, procédures)", () => {
+    expect(categoryDeleteError({ PROCCOUNT: 0, CHILDCOUNT: 1 })).toContain("1 sous-catégorie");
+    expect(categoryDeleteError({ PROCCOUNT: 3, CHILDCOUNT: 0 })).toContain("3 procédures");
+    const both = categoryDeleteError({ PROCCOUNT: 1, CHILDCOUNT: 2 });
+    expect(both).toContain("2 sous-catégories et 1 procédure");
   });
 });
