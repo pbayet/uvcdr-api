@@ -104,6 +104,12 @@ export function formatProcedure(row) {
           PARENT: row.CATPARENTID
             ? { CATID: row.CATPARENTID, NAME: row.CATPARENTNAME }
             : null,
+          // Chemin complet, de la catégorie racine à la catégorie elle-même.
+          PATH: [
+            row.CATGPID ? { CATID: row.CATGPID, NAME: row.CATGPNAME } : null,
+            row.CATPARENTID ? { CATID: row.CATPARENTID, NAME: row.CATPARENTNAME } : null,
+            { CATID: row.CATID, NAME: row.CATNAME },
+          ].filter(Boolean),
         }
       : null,
     KEYWORDS: splitKeywords(row.KEYWORDS),
@@ -195,6 +201,48 @@ export function formatReader(row) {
     LASTACKVERNUM: row.LASTACKVERNUM ?? null,
     LASTACKDAT: row.LASTACKDAT ?? null,
   };
+}
+
+/** Profondeur maximale de l'arborescence des catégories. */
+export const MAX_CATEGORY_DEPTH = 3;
+
+/**
+ * Contrôle le rangement de la catégorie CATID (null : nouvelle catégorie)
+ * sous PARENTID, d'après les liens { CATID, PARENTID } de toutes les
+ * catégories. Renvoie "NOT_FOUND" (parent inconnu), un message d'erreur,
+ * ou null si le rangement est valide : pas de cycle (une catégorie ne peut
+ * pas être rangée sous elle-même ni sous une de ses sous-catégories) et
+ * MAX_CATEGORY_DEPTH niveaux au plus, en comptant les sous-catégories que
+ * CATID emporte avec elle.
+ */
+export function checkCategoryPlacement(links, CATID, PARENTID) {
+  if (!PARENTID) return null;
+  const parentOf = new Map(links.map((l) => [l.CATID, l.PARENTID ?? null]));
+  if (!parentOf.has(PARENTID)) return "NOT_FOUND";
+
+  // Niveau du parent (1 = catégorie racine), en détectant un cycle.
+  let level = 0;
+  for (let id = PARENTID; id != null; id = parentOf.get(id) ?? null) {
+    if (CATID && id === CATID) {
+      return "Une catégorie ne peut pas être rangée dans elle-même ni dans une de ses sous-catégories.";
+    }
+    if (++level > MAX_CATEGORY_DEPTH) break;
+  }
+
+  // Nombre de niveaux sous CATID (0 : aucune sous-catégorie).
+  const height = (id, depth = 0) => {
+    if (depth > MAX_CATEGORY_DEPTH) return depth;
+    const children = links.filter((l) => l.PARENTID === id);
+    return children.length ? Math.max(...children.map((c) => height(c.CATID, depth + 1))) : depth;
+  };
+  const below = CATID ? height(CATID) : 0;
+
+  if (level + 1 + below > MAX_CATEGORY_DEPTH) {
+    return below
+      ? `${MAX_CATEGORY_DEPTH} niveaux au plus : avec ses sous-catégories, cette catégorie ne peut pas être rangée ici.`
+      : `${MAX_CATEGORY_DEPTH} niveaux au plus : la catégorie parente est déjà au dernier niveau.`;
+  }
+  return null;
 }
 
 export function formatCategory(row) {

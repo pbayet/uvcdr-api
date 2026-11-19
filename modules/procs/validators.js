@@ -83,8 +83,10 @@ export const catidParamSchema = z.object({ catid: id });
 
 export const procedureListQuerySchema = z.object({
   SEARCH: z.string().trim().max(200).optional(),
-  /** Catégorie : inclut ses sous-catégories. */
+  /** Catégorie : inclut ses sous-catégories (jusqu'à 2 niveaux sous elle). */
   CATID: id.optional(),
+  /** true : uniquement les procédures rangées directement dans CATID. */
+  DIRECT: bool,
   /** Filtre de statut (rédacteurs uniquement ; lecteurs : PUBLISHED forcé). */
   STATUS: z.enum(STATUSES).optional(),
   /** Révision dépassée (REVIEWDAT < aujourd'hui) — rédacteurs. */
@@ -97,7 +99,11 @@ export const procedureCreateSchema = z.object({
   REFCODE: nullableText(50),
   TITLE: text(255),
   SUMMARY: nullableText(2000),
-  CATID: nullableId,
+  /** Catégorie obligatoire (n'importe quel niveau de l'arborescence). */
+  CATID: z.coerce
+    .number({ message: "La catégorie est obligatoire." })
+    .int()
+    .positive("La catégorie est obligatoire."),
   OWNER: nullableText(150),
   REVIEWDAT: nullableDate,
   KEYWORDS: keywords.optional(),
@@ -111,7 +117,8 @@ export const procedureUpdateSchema = z.object({
   REFCODE: nullableText(50),
   TITLE: text(255).optional(),
   SUMMARY: nullableText(2000),
-  CATID: nullableId,
+  /** Catégorie : modifiable mais jamais retirée (obligatoire). */
+  CATID: id.optional(),
   OWNER: nullableText(150),
   REVIEWDAT: nullableDate,
   KEYWORDS: keywords.optional(),

@@ -3,7 +3,7 @@
    Base : PROCS — module API : modules/procs — front : UNIS/procedures
 
    Tables :
-     PROCCATEGORIES   catégories (2 niveaux : catégorie > sous-catégorie)
+     PROCCATEGORIES   catégories (3 niveaux max, ex : Informatique > Réseau > Serveur EXT)
      PROCEDURES       fiches (référence, titre, résumé, catégorie, statut,
                       version courante, date de prochaine révision)
      PROCKEYWORDS     mots-clés d'une fiche

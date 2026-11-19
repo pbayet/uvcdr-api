@@ -146,7 +146,11 @@ describe("Intégration :: /api/procs", () => {
   });
 
   it("POST /procedures sans document → 400", async () => {
-    const res = await request(app).post("/api/procs/procedures").set(auth("admin")).field("TITLE", "Test");
+    const res = await request(app)
+      .post("/api/procs/procedures")
+      .set(auth("admin"))
+      .field("TITLE", "Test")
+      .field("CATID", "2");
     expect(res.status).toBe(400);
   });
 
@@ -155,6 +159,7 @@ describe("Intégration :: /api/procs", () => {
       .post("/api/procs/procedures")
       .set(auth("admin"))
       .field("TITLE", "Test")
+      .field("CATID", "2")
       .attach("file", Buffer.from("MZ"), "virus.exe");
     expect(res.status).toBe(400);
     expect(services.createProcedure).not.toHaveBeenCalled();
@@ -187,12 +192,40 @@ describe("Intégration :: /api/procs", () => {
     expect(broadcastToAll).toHaveBeenCalledWith({ type: "procs.procedure.created", payload: { PRCID: 7 } });
   });
 
+  it("POST /procedures sans catégorie → 400", async () => {
+    const res = await request(app)
+      .post("/api/procs/procedures")
+      .set(auth("admin"))
+      .field("TITLE", "Sans catégorie")
+      .attach("file", Buffer.from("%PDF-1.4"), "a.pdf");
+    expect(res.status).toBe(400);
+    expect(services.createProcedure).not.toHaveBeenCalled();
+  });
+
+  it("GET /procedures : filtre DIRECT transmis (masquer les sous-catégories)", async () => {
+    services.listProcedures.mockResolvedValue([]);
+    await request(app).get("/api/procs/procedures").query({ CATID: 1, DIRECT: "true" }).set(auth("reader"));
+    expect(services.listProcedures.mock.calls[0][1]).toEqual({ CATID: 1, DIRECT: true });
+  });
+
+  it("POST /categories : 4ᵉ niveau refusé (400)", async () => {
+    services.getCategoryLinks.mockResolvedValue([
+      { CATID: 1, PARENTID: null },
+      { CATID: 2, PARENTID: 1 },
+      { CATID: 3, PARENTID: 2 },
+    ]);
+    const res = await request(app).post("/api/procs/categories").set(auth("admin")).send({ NAME: "Trop profond", PARENTID: 3 });
+    expect(res.status).toBe(400);
+    expect(services.createCategory).not.toHaveBeenCalled();
+  });
+
   it("POST /procedures : référence déjà utilisée → 409", async () => {
     services.isRefcodeTaken.mockResolvedValue(true);
     const res = await request(app)
       .post("/api/procs/procedures")
       .set(auth("admin"))
       .field("TITLE", "Doublon")
+      .field("CATID", "2")
       .field("REFCODE", "PROC-QUA-001")
       .attach("file", Buffer.from("%PDF-1.4"), "a.pdf");
     expect(res.status).toBe(409);

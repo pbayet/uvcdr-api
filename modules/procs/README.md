@@ -33,7 +33,7 @@ autre application UNIS n'est pas rédacteur ici (460 sinon).
 
 | Table | Rôle |
 |---|---|
-| `PROCCATEGORIES` | catégories (2 niveaux), couleur, icône, ordre, active |
+| `PROCCATEGORIES` | catégories (3 niveaux max, ex. Informatique › Réseau › Serveur EXT), couleur, icône, ordre, active |
 | `PROCEDURES` | fiche : référence (unique), titre, résumé, catégorie, responsable, statut `DRAFT`/`PUBLISHED`/`ARCHIVED`, version courante, prochaine révision, suppression logique |
 | `PROCKEYWORDS` | mots-clés |
 | `PROCVERSIONS` | versions du document : n°, motif, fichier (`FILECODE` → `APPATTACHMENTS.ATTACHMENTS`), aperçu PDF (`PREVIEWCODE`), SHA-256, **texte extrait** (`CONTENTTEXT`) et état de l'extraction (`TEXTSTATUS`) |

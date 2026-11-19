@@ -269,7 +269,7 @@ export async function createProcedure(req) {
     if (await services.isRefcodeTaken(data.REFCODE)) {
       throw utils.httpError(409, `La référence « ${data.REFCODE} » est déjà utilisée par une autre procédure.`);
     }
-    if (data.CATID && !(await services.getCategory(data.CATID))) throw new Error("DATA_NOT_FOUND");
+    if (!(await services.getCategory(data.CATID))) throw new Error("DATA_NOT_FOUND");
 
     const { PRCID, VERID } = await services.createProcedure(data, file, ctx.USRID);
 
@@ -612,17 +612,12 @@ export async function getCategories(req) {
   return rows.map(utils.formatCategory);
 }
 
+/** Arborescence : MAX_CATEGORY_DEPTH (3) niveaux au plus, sans cycle. */
 async function assertValidParent(PARENTID, CATID = null) {
   if (!PARENTID) return;
-  if (PARENTID === CATID) throw utils.httpError(400, "Une catégorie ne peut pas être sa propre catégorie parente.");
-  const parent = await services.getCategory(PARENTID);
-  if (!parent) throw new Error("DATA_NOT_FOUND");
-  if (parent.PARENTID) {
-    throw utils.httpError(400, "Deux niveaux au plus : la catégorie parente ne peut pas être elle-même une sous-catégorie.");
-  }
-  if (CATID && (await services.countChildren(CATID)) > 0) {
-    throw utils.httpError(400, "Cette catégorie a des sous-catégories : elle ne peut pas devenir une sous-catégorie.");
-  }
+  const error = utils.checkCategoryPlacement(await services.getCategoryLinks(), CATID, PARENTID);
+  if (error === "NOT_FOUND") throw new Error("DATA_NOT_FOUND");
+  if (error) throw utils.httpError(400, error);
 }
 
 export async function createCategory(req) {

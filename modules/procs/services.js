@@ -88,8 +88,11 @@ const SELECT_PROCEDURE_COLUMNS = `
   p.PRCID, p.REFCODE, p.TITLE, p.SUMMARY, p.OWNER, p.STATUS, p.REVIEWDAT,
   p.PUBDAT, p.DLTD, p.CREDAT, p.UPDDAT, p.CREUSR, p.UPDUSR,
   ${USER_NAME("uc")} AS CREUSRNAM, ${USER_NAME("uu")} AS UPDUSRNAM,
-  p.CATID, c.NAME AS CATNAME, c.COLOR AS CATCOLOR, c.ICON AS CATICON,
+  p.CATID, c.NAME AS CATNAME,
+  -- Couleur et icône : celles de la catégorie, sinon héritées de ses parents.
+  COALESCE(c.COLOR, pc.COLOR, gpc.COLOR) AS CATCOLOR, COALESCE(c.ICON, pc.ICON, gpc.ICON) AS CATICON,
   c.PARENTID AS CATPARENTID, pc.NAME AS CATPARENTNAME,
+  pc.PARENTID AS CATGPID, gpc.NAME AS CATGPNAME,
   p.CURVERID, v.VERNUM, v.ORIGINALNAME, v.EXTENSION, v.MIMETYPE, v.SIZEBYTES,
   v.TEXTSTATUS, v.PAGES, v.CREDAT AS VERDAT, v.COMMENT AS VERCOMMENT,
   CASE WHEN v.PREVIEWCODE IS NOT NULL THEN 1 ELSE 0 END AS HASPREVIEW,
@@ -107,6 +110,7 @@ FROM dbo.PROCEDURES AS p
 LEFT JOIN dbo.PROCVERSIONS AS v ON v.VERID = p.CURVERID
 LEFT JOIN dbo.PROCCATEGORIES AS c ON c.CATID = p.CATID
 LEFT JOIN dbo.PROCCATEGORIES AS pc ON pc.CATID = c.PARENTID
+LEFT JOIN dbo.PROCCATEGORIES AS gpc ON gpc.CATID = pc.PARENTID
 LEFT JOIN USERSMANAGER.dbo.USERS AS uc ON uc.USRID = p.CREUSR
 LEFT JOIN USERSMANAGER.dbo.USERS AS uu ON uu.USRID = p.UPDUSR
 `;
@@ -159,7 +163,7 @@ export async function listProcedures(ctx, filters = {}) {
       + CASE WHEN ${MATCH("ISNULL(p.REFCODE, N'')")} THEN 80 ELSE 0 END
       + CASE WHEN ${KEYWORD_MATCH} THEN 60 ELSE 0 END
       + CASE WHEN ${MATCH("ISNULL(p.SUMMARY, N'')")} THEN 30 ELSE 0 END
-      + CASE WHEN ${MATCH("ISNULL(c.NAME, N'')")} OR ${MATCH("ISNULL(pc.NAME, N'')")} THEN 20 ELSE 0 END
+      + CASE WHEN ${MATCH("ISNULL(c.NAME, N'')")} OR ${MATCH("ISNULL(pc.NAME, N'')")} OR ${MATCH("ISNULL(gpc.NAME, N'')")} THEN 20 ELSE 0 END
       + CASE WHEN ${MATCH("ISNULL(p.OWNER, N'')")} THEN 15 ELSE 0 END
       + CASE WHEN ${MATCH("ISNULL(v.CONTENTTEXT, N'')")} THEN 10 ELSE 0 END
       AS S
@@ -184,8 +188,10 @@ export async function listProcedures(ctx, filters = {}) {
       : ""
   }
   WHERE ${VISIBILITY}
+    -- Catégorie : la procédure y est rangée directement, ou (sauf @DIRECT)
+    -- dans une sous-catégorie ou sous-sous-catégorie (3 niveaux au plus).
     AND (@CATID IS NULL OR p.CATID = @CATID
-         OR p.CATID IN (SELECT sub.CATID FROM dbo.PROCCATEGORIES AS sub WHERE sub.PARENTID = @CATID))
+         OR (@DIRECT = 0 AND (c.PARENTID = @CATID OR pc.PARENTID = @CATID)))
     AND (@STATUS IS NULL OR p.STATUS = @STATUS)
     AND (@OVERDUE = 0 OR (p.REVIEWDAT IS NOT NULL AND p.REVIEWDAT < CAST(GETDATE() AS DATE)))
     ${
@@ -199,6 +205,7 @@ export async function listProcedures(ctx, filters = {}) {
         OR ${MATCH("ISNULL(p.OWNER, N'')")}
         OR ${MATCH("ISNULL(c.NAME, N'')")}
         OR ${MATCH("ISNULL(pc.NAME, N'')")}
+        OR ${MATCH("ISNULL(gpc.NAME, N'')")}
         OR ${KEYWORD_MATCH}
         OR ${MATCH("ISNULL(v.CONTENTTEXT, N'')")}
       )
@@ -214,6 +221,7 @@ export async function listProcedures(ctx, filters = {}) {
     inputs: {
       ...ctxInputs(ctx, filters.DLTD),
       CATID: { type: sql.Int, value: filters.CATID ?? null },
+      DIRECT: { type: sql.Bit, value: filters.DIRECT ? 1 : 0 },
       STATUS: { type: sql.VarChar(20), value: ctx.ISEDITOR ? (filters.STATUS ?? null) : null },
       OVERDUE: { type: sql.Bit, value: filters.OVERDUE ? 1 : 0 },
       TERMS: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(terms) },
@@ -782,14 +790,13 @@ export async function getCategory(CATID) {
   return result.recordset[0] ?? null;
 }
 
-/** Nombre de sous-catégories d'une catégorie. */
-export async function countChildren(CATID) {
+/** Liens parent / enfant de toutes les catégories (contrôle de l'arborescence). */
+export async function getCategoryLinks() {
   const result = await runQuery({
     moduleUrl: import.meta.url,
-    query: `SELECT COUNT(*) AS N FROM dbo.PROCCATEGORIES WHERE PARENTID = @CATID`,
-    inputs: { CATID: { type: sql.Int, value: CATID } },
+    query: `SELECT CATID, PARENTID FROM dbo.PROCCATEGORIES`,
   });
-  return result.recordset[0].N;
+  return result.recordset;
 }
 
 export async function createCategory(data, USRID) {
