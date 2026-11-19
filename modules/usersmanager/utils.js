@@ -5,10 +5,10 @@ import * as functionsUtils from "../../core/utils/functions.utils.js";
 
 const domain = process.env.DOMAIN || "";
 
-const ASSETS_DIR = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../assets",
-);
+// Dossier physique servi en ${DOMAIN}/API/assets (par défaut : <api>/assets)
+const ASSETS_DIR = process.env.ASSETS_DIR
+  ? path.resolve(process.env.ASSETS_DIR)
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../assets");
 // Ordre de priorité si plusieurs fichiers portent le même APPCOD
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".svg", ".gif", ".avif", ".bmp", ".ico"];
 const ASSETS_CACHE_TTL_MS = 60_000;
