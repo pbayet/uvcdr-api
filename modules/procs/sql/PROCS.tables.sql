@@ -217,22 +217,6 @@ IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_PROCACKS_PRCID' AND o
 GO
 
 /* ───────────────────────────────────────────
-   Catégories de départ (à adapter)
-─────────────────────────────────────────── */
-IF NOT EXISTS (SELECT 1 FROM dbo.PROCCATEGORIES)
-BEGIN
-    INSERT INTO dbo.PROCCATEGORIES (NAME, DESCR, ICON, COLOR, SORTORD) VALUES
-        (N'Qualité',              N'Procédures qualité, HACCP, traçabilité produit.', 'award',        '#2e7d32', 10),
-        (N'Production',           N'Modes opératoires de production et de chai.',     'industry',     '#6a1b9a', 20),
-        (N'Logistique',           N'Expéditions, réceptions, stocks, quais.',         'truck',        '#ef6c00', 30),
-        (N'Informatique',         N'Outils, applications, sécurité informatique.',    'laptop-code',  '#1565c0', 40),
-        (N'Ressources humaines',  N'Accueil, absences, formation.',                   'users',        '#ad1457', 50),
-        (N'Sécurité',             N'Hygiène, sécurité et environnement.',             'helmet-safety','#c62828', 60),
-        (N'Administratif',        N'Comptabilité, achats, administration.',           'file-invoice', '#455a64', 70);
-END
-GO
-
-/* ───────────────────────────────────────────
    Déclaration de l'application dans USERSMANAGER (portail, permissions).
    Les permissions des utilisateurs se donnent ensuite dans users-manager :
      - DEV / SUPERADMIN / ADMIN → rédacteurs (ajout, modification, publication)
