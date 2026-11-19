@@ -298,12 +298,45 @@ export async function isRefcodeTaken(REFCODE, EXCLUDEPRCID = null) {
  * Crée la fiche (brouillon) et sa première version (sans fichier : il est
  * rattaché ensuite par `attachVersionFile`). Renvoie { PRCID, VERID }.
  */
+/** Nom de la catégorie racine d'une catégorie (arborescence sur 3 niveaux). */
+export async function getRootCategoryName(CATID) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    SELECT COALESCE(gpc.NAME, pc.NAME, c.NAME) AS ROOTNAME
+    FROM dbo.PROCCATEGORIES AS c
+    LEFT JOIN dbo.PROCCATEGORIES AS pc ON pc.CATID = c.PARENTID
+    LEFT JOIN dbo.PROCCATEGORIES AS gpc ON gpc.CATID = pc.PARENTID
+    WHERE c.CATID = @CATID
+    `,
+    inputs: { CATID: { type: sql.Int, value: CATID } },
+  });
+  return result.recordset[0]?.ROOTNAME ?? null;
+}
+
+/**
+ * Crée la fiche et sa version 1. La référence est générée dans la même
+ * transaction : préfixe (`REFPREFIX`, ex. « PROC-QUA- ») + numéro suivant
+ * pour ce préfixe, fiches supprimées comprises (un numéro n'est jamais
+ * réattribué). Le verrou UPDLOCK / HOLDLOCK sérialise les créations
+ * simultanées.
+ */
 export async function createProcedure(data, file, USRID) {
   const result = await runQuery({
     moduleUrl: import.meta.url,
     query: `
     SET XACT_ABORT ON;
     BEGIN TRANSACTION;
+
+    DECLARE @NUM INT = 1 + ISNULL((
+      SELECT MAX(CAST(SUBSTRING(REFCODE, LEN(@REFPREFIX) + 1, 10) AS INT))
+      FROM dbo.PROCEDURES WITH (UPDLOCK, HOLDLOCK)
+      WHERE LEFT(REFCODE, LEN(@REFPREFIX)) = @REFPREFIX
+        AND LEN(REFCODE) BETWEEN LEN(@REFPREFIX) + 1 AND LEN(@REFPREFIX) + 9
+        AND SUBSTRING(REFCODE, LEN(@REFPREFIX) + 1, 10) NOT LIKE '%[^0-9]%'
+    ), 0);
+    DECLARE @REFCODE NVARCHAR(50) =
+      @REFPREFIX + CASE WHEN @NUM < 1000 THEN RIGHT('00' + CAST(@NUM AS VARCHAR(10)), 3) ELSE CAST(@NUM AS VARCHAR(10)) END;
 
     INSERT INTO dbo.PROCEDURES (REFCODE, TITLE, SUMMARY, CATID, OWNER, REVIEWDAT, STATUS, CREUSR, CREDAT)
     VALUES (@REFCODE, @TITLE, @SUMMARY, @CATID, @OWNER, @REVIEWDAT, 'DRAFT', @USRID, SYSDATETIME());
@@ -324,10 +357,10 @@ export async function createProcedure(data, file, USRID) {
 
     COMMIT TRANSACTION;
 
-    SELECT @PRCID AS PRCID, @VERID AS VERID;
+    SELECT @PRCID AS PRCID, @VERID AS VERID, @REFCODE AS REFCODE;
     `,
     inputs: {
-      REFCODE: { type: sql.NVarChar(50), value: data.REFCODE ?? null },
+      REFPREFIX: { type: sql.NVarChar(20), value: data.REFPREFIX },
       TITLE: { type: sql.NVarChar(255), value: data.TITLE },
       SUMMARY: { type: sql.NVarChar(2000), value: data.SUMMARY ?? null },
       CATID: { type: sql.Int, value: data.CATID ?? null },
@@ -584,6 +617,23 @@ export async function setVersionText(VERID, { TEXTSTATUS, CONTENTTEXT, PAGES }) 
       TEXTSTATUS: { type: sql.VarChar(20), value: TEXTSTATUS },
       CONTENTTEXT: { type: sql.NVarChar(sql.MAX), value: CONTENTTEXT ?? null },
       PAGES: { type: sql.Int, value: PAGES ?? null },
+    },
+  });
+}
+
+/** Texte saisi à la main pour une version (le nombre de pages est conservé). */
+export async function setVersionContentText(VERID, CONTENTTEXT) {
+  await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    UPDATE dbo.PROCVERSIONS
+    SET TEXTSTATUS = @TEXTSTATUS, CONTENTTEXT = @CONTENTTEXT
+    WHERE VERID = @VERID
+    `,
+    inputs: {
+      VERID: { type: sql.Int, value: VERID },
+      TEXTSTATUS: { type: sql.VarChar(20), value: CONTENTTEXT ? "OK" : "EMPTY" },
+      CONTENTTEXT: { type: sql.NVarChar(sql.MAX), value: CONTENTTEXT || null },
     },
   });
 }

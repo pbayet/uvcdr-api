@@ -76,6 +76,12 @@ async function trace(ctx, entry) {
   }
 }
 
+/** Résumé d'un texte de document pour le journal (le texte n'y est pas copié). */
+function textSummary(text) {
+  const n = String(text ?? "").trim().length;
+  return n ? `${n.toLocaleString("fr-FR")} caractère${n > 1 ? "s" : ""}` : null;
+}
+
 async function loadProcedure(ctx, PRCID, opts) {
   const row = await services.getProcedure(ctx, PRCID, opts);
   if (!row) throw new Error("DATA_NOT_FOUND");
@@ -84,9 +90,10 @@ async function loadProcedure(ctx, PRCID, opts) {
 
 async function buildProcedure(ctx, PRCID, opts) {
   const proc = utils.formatProcedure(await loadProcedure(ctx, PRCID, opts));
-  if (!ctx.ISEDITOR) return { ...proc, VERSIONS: [] };
-  const versions = await services.getVersions(PRCID);
-  return { ...proc, VERSIONS: versions.map(utils.formatVersion) };
+  const versions = (await services.getVersions(PRCID)).map(utils.formatVersion);
+  // Lecteurs : liste des versions consultables, sans le suivi des lectures.
+  if (!ctx.ISEDITOR) return { ...proc, VERSIONS: versions.map((ver) => ({ ...ver, ACKCOUNT: 0 })) };
+  return { ...proc, VERSIONS: versions };
 }
 
 /* ─────────────────────────────────────────────
@@ -163,13 +170,20 @@ function resolveStoredPath(relativePath) {
 /**
  * Extraction du texte + aperçu PDF d'une version, en arrière-plan. Ne lève
  * jamais : TEXTSTATUS reflète le résultat (OK / EMPTY / UNSUPPORTED / ERROR).
+ * `MANUALTEXT` (texte saisi à la création) remplace le texte extrait ; le
+ * document est tout de même analysé (nombre de pages, aperçu PDF).
  */
-async function processVersionContent({ PRCID, VERID, RELATIVEPATH, EXTENSION, ORIGINALNAME, USRNAM }) {
+async function processVersionContent({ PRCID, VERID, RELATIVEPATH, EXTENSION, ORIGINALNAME, USRNAM, MANUALTEXT }) {
   try {
     const absPath = resolveStoredPath(RELATIVEPATH);
 
     const { status, text, pages } = await extract.extractDocumentText(absPath, EXTENSION);
-    await services.setVersionText(VERID, { TEXTSTATUS: status, CONTENTTEXT: text, PAGES: pages });
+    await services.setVersionText(
+      VERID,
+      MANUALTEXT
+        ? { TEXTSTATUS: "OK", CONTENTTEXT: MANUALTEXT, PAGES: pages }
+        : { TEXTSTATUS: status, CONTENTTEXT: text, PAGES: pages },
+    );
 
     if (extract.needsPreview(EXTENSION)) {
       const preview = await extract.generatePdfPreview(absPath);
@@ -203,7 +217,12 @@ async function processVersionContent({ PRCID, VERID, RELATIVEPATH, EXTENSION, OR
   } catch (err) {
     logger.error(`[PROCS][PROCESS] Version #${VERID} : ${err.message}`);
     await services
-      .setVersionText(VERID, { TEXTSTATUS: "ERROR", CONTENTTEXT: null, PAGES: null })
+      .setVersionText(
+        VERID,
+        MANUALTEXT
+          ? { TEXTSTATUS: "OK", CONTENTTEXT: MANUALTEXT, PAGES: null }
+          : { TEXTSTATUS: "ERROR", CONTENTTEXT: null, PAGES: null },
+      )
       .catch(() => {});
   } finally {
     emit("procs.procedure.updated", { PRCID, VERID });
@@ -266,12 +285,11 @@ export async function createProcedure(req) {
     const data = await params(req, v.procedureCreateSchema);
     const file = describeUpload(req.file);
 
-    if (await services.isRefcodeTaken(data.REFCODE)) {
-      throw utils.httpError(409, `La référence « ${data.REFCODE} » est déjà utilisée par une autre procédure.`);
-    }
     if (!(await services.getCategory(data.CATID))) throw new Error("DATA_NOT_FOUND");
 
-    const { PRCID, VERID } = await services.createProcedure(data, file, ctx.USRID);
+    // Référence générée d'après la catégorie racine (PROC-QUA-001), figée ensuite.
+    const REFPREFIX = utils.refcodePrefix(await services.getRootCategoryName(data.CATID));
+    const { PRCID, VERID, REFCODE } = await services.createProcedure({ ...data, REFPREFIX }, file, ctx.USRID);
 
     let stored;
     try {
@@ -286,12 +304,13 @@ export async function createProcedure(req) {
       VERID,
       ACTION: "CREATE",
       DETAILS: {
-        REFCODE: data.REFCODE ?? null,
+        REFCODE,
         TITLE: data.TITLE,
         VERNUM: 1,
         FILE: file.ORIGINALNAME,
         CHECKSUM: stored.CHECKSUMSHA256,
         COMMENT: data.COMMENT ?? null,
+        ...(data.CONTENTTEXT ? { CONTENTTEXT: textSummary(data.CONTENTTEXT) } : {}),
       },
     });
 
@@ -307,6 +326,7 @@ export async function createProcedure(req) {
       EXTENSION: file.EXTENSION,
       ORIGINALNAME: file.ORIGINALNAME,
       USRNAM: ctx.USRNAM,
+      MANUALTEXT: data.CONTENTTEXT || null,
     });
 
     emit("procs.procedure.created", { PRCID });
@@ -325,9 +345,6 @@ export async function updateProcedure(req) {
   const before = await services.getProcedureRow(prcid);
   if (!before || before.DLTD) throw new Error("DATA_NOT_FOUND");
 
-  if (data.REFCODE !== undefined && (await services.isRefcodeTaken(data.REFCODE, prcid))) {
-    throw utils.httpError(409, `La référence « ${data.REFCODE} » est déjà utilisée par une autre procédure.`);
-  }
   if (data.CATID && !(await services.getCategory(data.CATID))) throw new Error("DATA_NOT_FOUND");
 
   const changes = utils.diffFields(
@@ -335,8 +352,19 @@ export async function updateProcedure(req) {
     data,
     PROCEDURE_FIELDS,
   );
+
+  // Texte de la version en vigueur saisi à la main (remplace le texte extrait).
+  let textChanged = false;
+  if (data.CONTENTTEXT !== undefined && before.CURVERID) {
+    const current = (await services.getVersionText(before.CURVERID))?.CONTENTTEXT ?? "";
+    if (current.replace(/\r\n/g, "\n").trim() !== data.CONTENTTEXT) {
+      textChanged = true;
+      changes.CONTENTTEXT = { from: textSummary(current), to: textSummary(data.CONTENTTEXT) };
+    }
+  }
   if (!Object.keys(changes).length) return buildProcedure(ctx, prcid);
 
+  if (textChanged) await services.setVersionContentText(before.CURVERID, data.CONTENTTEXT);
   await services.updateProcedure(prcid, data, ctx.USRID);
   await trace(ctx, { PRCID: prcid, VERID: before.CURVERID, ACTION: "UPDATE", DETAILS: changes });
 
@@ -522,8 +550,9 @@ export async function sendVersionFile(req, res) {
 
   const version = await services.getVersion(verid);
   if (!version) throw new Error("DATA_NOT_FOUND");
+  // Visibilité contrôlée par loadProcedure (lecteurs : procédure publiée et
+  // catégorie active) ; toutes les versions d'une procédure visible se consultent.
   await loadProcedure(ctx, version.PRCID, { includeDeleted: true });
-  if (!ctx.ISEDITOR && !version.ISCURRENT) throw new Error("ACCESS_DENIED_WO_LOGOUT");
 
   const code = KIND === "preview" ? version.PREVIEWCODE : version.FILECODE;
   if (!code) throw new Error("DATA_NOT_FOUND");

@@ -34,7 +34,8 @@ const upload = multer({
       cb(null, `${unique}-procs${path.extname(file.originalname || "").toLowerCase()}`);
     },
   }),
-  limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: 1 },
+  // fieldSize : texte du document saisi à la main (CONTENTTEXT, 500 000 caractères).
+  limits: { fileSize: MAX_FILE_MB * 1024 * 1024, files: 1, fieldSize: 2 * 1024 * 1024 },
 });
 
 /** Champ multipart "file" (un seul document) ; erreurs multer → 400/413. */

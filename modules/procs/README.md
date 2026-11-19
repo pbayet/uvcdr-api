@@ -37,7 +37,7 @@ autre application UNIS n'est pas rédacteur ici (460 sinon).
 | Table | Rôle |
 |---|---|
 | `PROCCATEGORIES` | catégories (3 niveaux max, ex. Informatique › Réseau › Serveur EXT), couleur, icône, ordre, active |
-| `PROCEDURES` | fiche : référence (unique), titre, résumé, catégorie, responsable, statut `DRAFT`/`PUBLISHED`/`ARCHIVED`, version courante, prochaine révision, suppression logique |
+| `PROCEDURES` | fiche : référence (unique, générée — voir ci-dessous), titre, résumé, catégorie, responsable, statut `DRAFT`/`PUBLISHED`/`ARCHIVED`, version courante, prochaine révision, suppression logique |
 | `PROCKEYWORDS` | mots-clés |
 | `PROCVERSIONS` | versions du document : n°, motif, fichier (`FILECODE` → `APPATTACHMENTS.ATTACHMENTS`), aperçu PDF (`PREVIEWCODE`), SHA-256, **texte extrait** (`CONTENTTEXT`) et état de l'extraction (`TEXTSTATUS`) |
 | `PROCHISTORY` | journal : action, détail JSON (avant/après champ par champ, fichier, empreinte, motif), auteur, dev en simulation (`DEVEMAIL`), date |
@@ -64,6 +64,22 @@ XML directe, DOC/RTF via LibreOffice. Un PDF scanné sans couche texte donne
 `TEXTSTATUS = EMPTY` (seules ses métadonnées sont cherchables).
 `PUT /versions/:verid/reindex` relance l'extraction.
 
+Texte saisi à la main : `CONTENTTEXT` (500 000 caractères au plus) sur
+`POST /procedures` (remplace l'extraction de la version 1 ; vide →
+extraction) et `PUT /procedures/:prcid` (remplace le texte de la version
+courante ; chaîne vide → aucun texte). Le journal trace la longueur, pas le
+texte. Une réindexation remplace le texte saisi par le texte extrait.
+
+## Référence
+
+Générée par l'API à la création, jamais saisie (une valeur `REFCODE` envoyée
+est ignorée) : `PROC-` + 3 lettres de la catégorie racine sans accents
+(« Qualité » → `QUA`, sans catégorie : `GEN`) + numéro sur 3 chiffres, suivant
+pour ce préfixe (fiches supprimées comprises : jamais réattribué), ex.
+`PROC-QUA-001`. Figée ensuite, même si la fiche change de catégorie.
+`sql/PROCS.refcodes.sql` attribue une référence aux fiches existantes qui
+n'en ont pas.
+
 ## Routes (`/api/procs`)
 
 | Méthode | Route | Droits |
@@ -83,7 +99,7 @@ XML directe, DOC/RTF via LibreOffice. Un PDF scanné sans couche texte donne
 | PUT | `/procedures/:prcid/acknowledge` | tous |
 | POST | `/procedures/:prcid/versions` (multipart `file`, `COMMENT`, `PUBLISH`) | rédacteurs |
 | PUT | `/versions/:verid/restore`, `/versions/:verid/reindex` | rédacteurs |
-| GET | `/versions/:verid/file` (`KIND=original|preview`, `DISPOSITION=inline|attachment`) | tous (version courante) / rédacteurs (toutes) |
+| GET | `/versions/:verid/file` (`KIND=original|preview`, `DISPOSITION=inline|attachment`) | tous (toutes les versions d'une procédure visible) |
 | GET | `/history`, `/stats` | rédacteurs |
 
 Temps réel : `procs.procedure.created|updated|deleted|acknowledged`,

@@ -208,6 +208,34 @@ export function formatReader(row) {
 }
 
 /** Profondeur maximale de l'arborescence des catégories. */
+/* ─────────────────────────────────────────────
+   Référence générée (PROC-QUA-001)
+───────────────────────────────────────────── */
+
+/**
+ * Préfixe de la référence d'une procédure d'après le nom de sa catégorie
+ * racine : 3 lettres majuscules sans accent (« Qualité » → « PROC-QUA- »,
+ * « Ressources humaines » → « PROC-RES- »), complétées par les mots suivants
+ * si le premier est trop court (« RH » → « PROC-RH- » faute de mieux).
+ * Sans catégorie exploitable : « PROC-GEN- ».
+ */
+export function refcodePrefix(rootCategoryName) {
+  const letters = String(rootCategoryName ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toUpperCase()
+    .split(/[^A-Z]+/)
+    .filter(Boolean)
+    .join("")
+    .slice(0, 3);
+  return `PROC-${letters || "GEN"}-`;
+}
+
+/** Numéro sur 3 chiffres au moins (1 → « 001 », 1234 → « 1234 »). */
+export function formatRefcode(prefix, num) {
+  return `${prefix}${String(num).padStart(3, "0")}`;
+}
+
 export const MAX_CATEGORY_DEPTH = 3;
 
 /**

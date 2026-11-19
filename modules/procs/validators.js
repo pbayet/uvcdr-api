@@ -95,8 +95,21 @@ export const procedureListQuerySchema = z.object({
   DLTD: bool,
 });
 
+/**
+ * Texte du document saisi à la main (recherche plein texte) : remplace le
+ * texte extrait de la version en vigueur. Absent : inchangé / extraction
+ * automatique ; chaîne vide : aucun texte.
+ */
+export const MAX_CONTENT_TEXT = 500_000;
+const contentText = z
+  .string()
+  .max(MAX_CONTENT_TEXT, `Le texte du document est limité à ${MAX_CONTENT_TEXT.toLocaleString("fr-FR")} caractères.`)
+  .transform((s) => s.replace(/\r\n/g, "\n").trim())
+  .optional();
+
+// REFCODE : générée par l'API à la création (PROC-QUA-001), jamais saisie ;
+// une valeur envoyée est ignorée (clé retirée par z.object).
 export const procedureCreateSchema = z.object({
-  REFCODE: nullableText(50),
   TITLE: text(255),
   SUMMARY: nullableText(2000),
   /** Catégorie obligatoire (n'importe quel niveau de l'arborescence). */
@@ -111,10 +124,11 @@ export const procedureCreateSchema = z.object({
   PUBLISH: bool.default(false),
   /** Motif / commentaire de la première version. */
   COMMENT: nullableText(1000),
+  /** Texte saisi : remplace l'extraction automatique (vide → extraction). */
+  CONTENTTEXT: contentText,
 });
 
 export const procedureUpdateSchema = z.object({
-  REFCODE: nullableText(50),
   TITLE: text(255).optional(),
   SUMMARY: nullableText(2000),
   /** Catégorie : modifiable mais jamais retirée (obligatoire). */
@@ -122,6 +136,8 @@ export const procedureUpdateSchema = z.object({
   OWNER: nullableText(150),
   REVIEWDAT: nullableDate,
   KEYWORDS: keywords.optional(),
+  /** Texte de la version en vigueur (remplace le texte extrait). */
+  CONTENTTEXT: contentText,
 });
 
 export const procedureStatusSchema = z.object({
