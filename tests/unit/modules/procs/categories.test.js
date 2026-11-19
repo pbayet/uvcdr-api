@@ -66,6 +66,15 @@ describe("procs :: catégorie d'une procédure", () => {
     });
     expect(p.CAT.PATH.map((c) => c.NAME)).toEqual(["Informatique", "Réseau", "Serveur EXT"]);
   });
+
+  it("signale une catégorie désactivée (elle-même ou un parent)", () => {
+    const base = { PRCID: 1, TITLE: "A", STATUS: "PUBLISHED", CATID: 3, CATNAME: "Serveur EXT" };
+    expect(formatProcedure({ ...base, CATACTIVE: 1 }).CAT).toMatchObject({ ACTIVE: true, INACTIVENAME: null });
+    expect(formatProcedure({ ...base, CATACTIVE: 0, CATINACTIVENAME: "Réseau" }).CAT).toMatchObject({
+      ACTIVE: false,
+      INACTIVENAME: "Réseau",
+    });
+  });
 });
 
 describe("procs :: suppression d'une catégorie", () => {

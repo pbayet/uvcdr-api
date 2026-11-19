@@ -104,6 +104,10 @@ export function formatProcedure(row) {
           PARENT: row.CATPARENTID
             ? { CATID: row.CATPARENTID, NAME: row.CATPARENTNAME }
             : null,
+          // false si la catégorie ou un de ses parents est désactivé (fiche
+          // alors masquée aux lecteurs) ; INACTIVENAME : la catégorie en cause.
+          ACTIVE: row.CATACTIVE === undefined ? true : !!row.CATACTIVE,
+          INACTIVENAME: row.CATINACTIVENAME ?? null,
           // Chemin complet, de la catégorie racine à la catégorie elle-même.
           PATH: [
             row.CATGPID ? { CATID: row.CATGPID, NAME: row.CATGPNAME } : null,

@@ -20,7 +20,10 @@ versions et traçabilité.
      → **rédacteurs** : ajout, modification, versions, publication,
      archivage, suppression, catégories, traçabilité ;
    - toute autre permission → **lecteurs** : recherche et lecture des
-     procédures publiées, accusé de lecture.
+     procédures publiées, accusé de lecture. Une procédure rangée dans
+     une catégorie désactivée (elle-même ou un de ses parents) leur est
+     masquée ; les rédacteurs la voient (`CAT.ACTIVE = false`,
+     `CAT.INACTIVENAME`).
 4. (Recommandé) LibreOffice sur le serveur : aperçu PDF des documents Word
    dans le navigateur et extraction du texte des `.doc` / `.rtf`. Sans
    LibreOffice, les `.docx` / `.odt` / `.pdf` restent indexés ; les Word

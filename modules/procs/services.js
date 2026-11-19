@@ -13,7 +13,8 @@ import { runQuery } from "../../core/utils/db.utils.js";
    Visibilité (cf. `VISIBILITY`) :
      - rédacteur (ISEDITOR) : toutes les fiches (brouillons, archivées et,
        sur demande, supprimées) ;
-     - lecteur : fiches publiées non supprimées ayant une version courante.
+     - lecteur : fiches publiées non supprimées ayant une version courante,
+       dont la catégorie et ses parents sont actifs (CATEGORY_CHAIN_ACTIVE).
 
    Recherche : chaque terme (accents et casse ignorés, French_CI_AI) doit
    apparaître dans au moins un des champs : référence, titre, résumé,
@@ -84,6 +85,12 @@ const TERMS_TABLE = `OPENJSON(@TERMS) WITH (RAWTERM NVARCHAR(100) '$.raw', LIKEP
 /*                                 PROCÉDURES                                 */
 /* -------------------------------------------------------------------------- */
 
+/**
+ * La catégorie de la fiche (alias c) et ses parents (pc, gpc) sont tous
+ * actifs — vrai aussi pour une fiche sans catégorie.
+ */
+const CATEGORY_CHAIN_ACTIVE = `(ISNULL(c.ACTIVE, 1) = 1 AND ISNULL(pc.ACTIVE, 1) = 1 AND ISNULL(gpc.ACTIVE, 1) = 1)`;
+
 const SELECT_PROCEDURE_COLUMNS = `
   p.PRCID, p.REFCODE, p.TITLE, p.SUMMARY, p.OWNER, p.STATUS, p.REVIEWDAT,
   p.PUBDAT, p.DLTD, p.CREDAT, p.UPDDAT, p.CREUSR, p.UPDUSR,
@@ -93,6 +100,9 @@ const SELECT_PROCEDURE_COLUMNS = `
   COALESCE(c.COLOR, pc.COLOR, gpc.COLOR) AS CATCOLOR, COALESCE(c.ICON, pc.ICON, gpc.ICON) AS CATICON,
   c.PARENTID AS CATPARENTID, pc.NAME AS CATPARENTNAME,
   pc.PARENTID AS CATGPID, gpc.NAME AS CATGPNAME,
+  -- Catégorie désactivée (elle-même ou un de ses parents) : fiche masquée aux lecteurs.
+  CASE WHEN ${CATEGORY_CHAIN_ACTIVE} THEN 1 ELSE 0 END AS CATACTIVE,
+  CASE WHEN c.ACTIVE = 0 THEN c.NAME WHEN pc.ACTIVE = 0 THEN pc.NAME WHEN gpc.ACTIVE = 0 THEN gpc.NAME END AS CATINACTIVENAME,
   p.CURVERID, v.VERNUM, v.ORIGINALNAME, v.EXTENSION, v.MIMETYPE, v.SIZEBYTES,
   v.TEXTSTATUS, v.PAGES, v.CREDAT AS VERDAT, v.COMMENT AS VERCOMMENT,
   CASE WHEN v.PREVIEWCODE IS NOT NULL THEN 1 ELSE 0 END AS HASPREVIEW,
@@ -119,7 +129,8 @@ LEFT JOIN USERSMANAGER.dbo.USERS AS uu ON uu.USRID = p.UPDUSR
 const VISIBILITY = `
   (
     (@ISEDITOR = 1 AND p.DLTD = @DLTD)
-    OR (@ISEDITOR = 0 AND p.DLTD = 0 AND p.STATUS = 'PUBLISHED' AND p.CURVERID IS NOT NULL)
+    OR (@ISEDITOR = 0 AND p.DLTD = 0 AND p.STATUS = 'PUBLISHED' AND p.CURVERID IS NOT NULL
+        AND ${CATEGORY_CHAIN_ACTIVE})
   )
 `;
 
@@ -241,7 +252,8 @@ export async function getProcedure(ctx, PRCID, { includeDeleted = false } = {}) 
     WHERE p.PRCID = @PRCID
       AND (
         (@ISEDITOR = 1 AND (@INCLUDEDELETED = 1 OR p.DLTD = 0))
-        OR (@ISEDITOR = 0 AND p.DLTD = 0 AND p.STATUS = 'PUBLISHED' AND p.CURVERID IS NOT NULL)
+        OR (@ISEDITOR = 0 AND p.DLTD = 0 AND p.STATUS = 'PUBLISHED' AND p.CURVERID IS NOT NULL
+            AND ${CATEGORY_CHAIN_ACTIVE})
       )
     `,
     inputs: {
@@ -774,7 +786,11 @@ export async function getCategories(ctx, { includeInactive = false } = {}) {
             AND NOT EXISTS (SELECT 1 FROM dbo.PROCCATEGORIES AS sc WHERE sc.PARENTID = c.CATID)
         THEN 1 ELSE 0 END AS CANDELETE
     FROM dbo.PROCCATEGORIES AS c
-    WHERE (@INCLUDEINACTIVE = 1 OR c.ACTIVE = 1)
+    LEFT JOIN dbo.PROCCATEGORIES AS pc ON pc.CATID = c.PARENTID
+    LEFT JOIN dbo.PROCCATEGORIES AS gpc ON gpc.CATID = pc.PARENTID
+    -- Sans @INCLUDEINACTIVE : catégories actives dont les parents le sont aussi
+    -- (une sous-catégorie d'une catégorie désactivée est masquée avec elle).
+    WHERE (@INCLUDEINACTIVE = 1 OR ${CATEGORY_CHAIN_ACTIVE})
     ORDER BY c.SORTORD, c.NAME
     `,
     inputs: {
