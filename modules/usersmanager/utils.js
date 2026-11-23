@@ -9,14 +9,28 @@ const domain = process.env.DOMAIN || "";
 const ASSETS_DIR = process.env.ASSETS_DIR
   ? path.resolve(process.env.ASSETS_DIR)
   : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../assets");
-// Ordre de priorité si plusieurs fichiers portent le même APPCOD
+// Extensions reconnues. Si plusieurs fichiers portent le même APPCOD, le plus
+// récemment modifié l'emporte ; cet ordre ne départage qu'à date égale.
 const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".webp", ".svg", ".gif", ".avif", ".bmp", ".ico"];
 const ASSETS_CACHE_TTL_MS = 60_000;
 let assetsCache = { map: new Map(), expiresAt: 0 };
 
 /**
+ * `true` si `candidate` doit remplacer `current` pour un même APPCOD : fichier
+ * le plus récent d'abord, puis ordre de IMAGE_EXTENSIONS à date égale.
+ */
+export function isPreferredAsset(candidate, current) {
+  if (!current) return true;
+  if (candidate.mtimeMs !== current.mtimeMs) {
+    return candidate.mtimeMs > current.mtimeMs;
+  }
+  return candidate.rank < current.rank;
+}
+
+/**
  * Construit (avec cache court) un index APPCOD (minuscule) -> nom de fichier image
- * à partir du dossier assets, quelle que soit l'extension.
+ * à partir du dossier assets, quelle que soit l'extension (le plus récent en
+ * cas de doublon, ex : ancien FSA.jpg et nouveau FSA.png).
  */
 function getAssetsIndex() {
   const now = Date.now();
@@ -30,8 +44,16 @@ function getAssetsIndex() {
       const rank = IMAGE_EXTENSIONS.indexOf(ext);
       if (rank === -1) continue;
       const key = path.basename(file, path.extname(file)).toLowerCase();
-      const current = map.get(key);
-      if (!current || rank < current.rank) map.set(key, { file, rank });
+      let mtimeMs = 0;
+      try {
+        const stat = fs.statSync(path.join(ASSETS_DIR, file));
+        if (!stat.isFile()) continue;
+        mtimeMs = stat.mtimeMs;
+      } catch {
+        // Fichier illisible : date inconnue, départagé par l'extension.
+      }
+      const candidate = { file, rank, mtimeMs };
+      if (isPreferredAsset(candidate, map.get(key))) map.set(key, candidate);
     }
   } catch {
     // Dossier absent/inaccessible : on retombe sur le .jpg par défaut
@@ -48,6 +70,16 @@ function getAssetsIndex() {
 export function getAppImageLink(appcod, imglnk) {
   if (!appcod || !domain) return "";
   if (imglnk) return imglnk;
+  return getAppDefaultImageLink(appcod);
+}
+
+/**
+ * Lien de l'image par défaut d'une application (indépendant de IMGLNK) : le
+ * premier fichier de /assets dont le nom est l'APPCOD, avec son extension
+ * réelle (toute extension image), sinon `${APPCOD}.jpg`.
+ */
+export function getAppDefaultImageLink(appcod) {
+  if (!appcod || !domain) return "";
   const found = getAssetsIndex().get(String(appcod).toLowerCase());
   const fileName = found ? found.file : `${appcod}.jpg`;
   return `${domain}/API/assets/${encodeURIComponent(fileName)}`;
@@ -102,6 +134,9 @@ export function formatApplications(rows = []) {
     ? rows.map((application) => ({
         ...application,
         IMGLNK: getAppImageLink(application.APPCOD, application.IMGLNK),
+        // Lien par défaut réel (extension existante dans /assets) : permet au
+        // front de reconnaître un IMGLNK "auto" et de l'afficher en placeholder.
+        DEFIMGLNK: getAppDefaultImageLink(application.APPCOD),
       }))
     : [];
 }

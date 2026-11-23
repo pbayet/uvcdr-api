@@ -5,6 +5,7 @@ import {
   formatAppVersions,
   formatGroupsPermissions,
   formatServices,
+  isPreferredAsset,
 } from "../../../../modules/usersmanager/utils.js";
 import { buildRawUserRow } from "../../../helpers/fixtures.js";
 
@@ -40,6 +41,41 @@ describe("modules/usersmanager/utils :: formatApplications", () => {
   it("génère IMGLNK par défaut si absent", () => {
     const [app] = formatApplications([{ APPCOD: "TICKETING", IMGLNK: null }]);
     expect(app.IMGLNK).toBe(`${process.env.DOMAIN}/API/assets/TICKETING.jpg`);
+  });
+
+  it("renvoie DEFIMGLNK (lien par défaut) même si IMGLNK est renseigné", () => {
+    const [app] = formatApplications([
+      { APPCOD: "TICKETING", IMGLNK: "https://exemple.fr/image.png" },
+    ]);
+    expect(app.IMGLNK).toBe("https://exemple.fr/image.png");
+    expect(app.DEFIMGLNK).toBe(`${process.env.DOMAIN}/API/assets/TICKETING.jpg`);
+  });
+
+  it("DEFIMGLNK reprend l'extension réelle du fichier présent dans /assets", () => {
+    // USRMAN.png existe dans le dossier assets du dépôt.
+    const [app] = formatApplications([{ APPCOD: "USRMAN", IMGLNK: null }]);
+    expect(app.DEFIMGLNK).toBe(`${process.env.DOMAIN}/API/assets/USRMAN.png`);
+    expect(app.IMGLNK).toBe(app.DEFIMGLNK);
+  });
+});
+
+describe("modules/usersmanager/utils :: isPreferredAsset", () => {
+  it("garde le fichier le plus récent, quelle que soit l'extension", () => {
+    const oldJpg = { file: "FSA.jpg", rank: 0, mtimeMs: 1000 };
+    const newPng = { file: "FSA.png", rank: 2, mtimeMs: 2000 };
+    expect(isPreferredAsset(newPng, oldJpg)).toBe(true);
+    expect(isPreferredAsset(oldJpg, newPng)).toBe(false);
+  });
+
+  it("départage par l'ordre des extensions à date égale", () => {
+    const jpg = { file: "FSA.jpg", rank: 0, mtimeMs: 1000 };
+    const png = { file: "FSA.png", rank: 2, mtimeMs: 1000 };
+    expect(isPreferredAsset(jpg, png)).toBe(true);
+    expect(isPreferredAsset(png, jpg)).toBe(false);
+  });
+
+  it("accepte le premier fichier trouvé", () => {
+    expect(isPreferredAsset({ file: "A.png", rank: 2, mtimeMs: 0 }, undefined)).toBe(true);
   });
 });
 
