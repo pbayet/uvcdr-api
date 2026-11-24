@@ -404,3 +404,139 @@ export async function markPurgedAttachment(id) {
 
   return true;
 }
+
+/* ─────────────────────────────────────────────
+   Liens directs (FILELINKS, cf. sql/FILELINKS.table.sql)
+   Dates comparées côté SQL (SYSDATETIME) : pas d'écart d'horloge ni de
+   fuseau entre l'API et la base.
+───────────────────────────────────────────── */
+
+const LINK_COLUMNS = `
+  LNKID, APPCODE, FILECODE, ENTITYTYPE, ENTITYID, PARAMS, FILENAME, LABEL,
+  WITHNAME, EXPIRESAT, CREATEDBY, CREATEDBYNAME, CREATEDAT, REVOKEDAT,
+  REVOKEDBY, REVOKEDBYNAME, OPENCOUNT, LASTOPENEDAT,
+  CASE
+    WHEN REVOKEDAT IS NOT NULL THEN 'REVOKED'
+    WHEN EXPIRESAT IS NOT NULL AND EXPIRESAT <= SYSDATETIME() THEN 'EXPIRED'
+    ELSE 'ACTIVE'
+  END AS STATUS
+`;
+
+/** Enregistre un lien ; `TTL` en secondes, `null` = permanent. */
+export async function insertLink(link) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `
+    INSERT INTO FILELINKS (
+      TOKENHASH, APPCODE, FILECODE, ENTITYTYPE, ENTITYID, PARAMS, FILENAME,
+      LABEL, WITHNAME, EXPIRESAT, CREATEDBY, CREATEDBYNAME, CREATEDAT
+    )
+    OUTPUT INSERTED.LNKID
+    VALUES (
+      @TOKENHASH, @APPCODE, @FILECODE, @ENTITYTYPE, @ENTITYID, @PARAMS, @FILENAME,
+      @LABEL, @WITHNAME,
+      CASE WHEN @TTL IS NULL THEN NULL ELSE DATEADD(SECOND, @TTL, SYSDATETIME()) END,
+      @CREATEDBY, @CREATEDBYNAME, SYSDATETIME()
+    );
+    `,
+    inputs: {
+      TOKENHASH: { type: sql.Char(64), value: link.TOKENHASH },
+      APPCODE: { type: sql.VarChar(20), value: link.APPCODE },
+      FILECODE: { type: sql.VarChar(50), value: link.FILECODE ?? null },
+      ENTITYTYPE: { type: sql.VarChar(100), value: link.ENTITYTYPE ?? null },
+      ENTITYID: { type: sql.VarChar(100), value: link.ENTITYID ?? null },
+      PARAMS: { type: sql.NVarChar(400), value: link.PARAMS ?? null },
+      FILENAME: { type: sql.NVarChar(255), value: link.FILENAME ?? null },
+      LABEL: { type: sql.NVarChar(300), value: link.LABEL ?? null },
+      WITHNAME: { type: sql.Bit, value: link.WITHNAME ? 1 : 0 },
+      TTL: { type: sql.Int, value: link.TTL ?? null },
+      CREATEDBY: { type: sql.Int, value: link.CREATEDBY },
+      CREATEDBYNAME: { type: sql.NVarChar(200), value: link.CREATEDBYNAME ?? null },
+    },
+  });
+  return getLinkById(result.recordset[0].LNKID);
+}
+
+export async function getLinkById(LNKID) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `SELECT ${LINK_COLUMNS} FROM FILELINKS WHERE LNKID = @LNKID`,
+    inputs: { LNKID: { type: sql.Int, value: LNKID } },
+  });
+  return result.recordset[0] ?? null;
+}
+
+export async function getLinkByTokenHash(TOKENHASH) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `SELECT ${LINK_COLUMNS} FROM FILELINKS WHERE TOKENHASH = @TOKENHASH`,
+    inputs: { TOKENHASH: { type: sql.Char(64), value: TOKENHASH } },
+  });
+  return result.recordset[0] ?? null;
+}
+
+/**
+ * Liens d'une application, filtrés par cible ; `CREATEDBY` : seulement ceux
+ * de cet utilisateur. Les plus récents d'abord (500 maximum).
+ */
+export async function listLinks({ APPCODE, FILECODE, ENTITYTYPE, ENTITYID, CREATEDBY, ACTIVEONLY }) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `
+    SELECT TOP 500 ${LINK_COLUMNS}
+    FROM FILELINKS
+    WHERE APPCODE = @APPCODE
+      AND (@FILECODE IS NULL OR FILECODE = @FILECODE)
+      AND (@ENTITYTYPE IS NULL OR ENTITYTYPE = @ENTITYTYPE)
+      AND (@ENTITYID IS NULL OR ENTITYID = @ENTITYID)
+      AND (@CREATEDBY IS NULL OR CREATEDBY = @CREATEDBY)
+      AND (@ACTIVEONLY = 0 OR (REVOKEDAT IS NULL AND (EXPIRESAT IS NULL OR EXPIRESAT > SYSDATETIME())))
+    ORDER BY CREATEDAT DESC, LNKID DESC
+    `,
+    inputs: {
+      APPCODE: { type: sql.VarChar(20), value: APPCODE },
+      FILECODE: { type: sql.VarChar(50), value: FILECODE ?? null },
+      ENTITYTYPE: { type: sql.VarChar(100), value: ENTITYTYPE ?? null },
+      ENTITYID: { type: sql.VarChar(100), value: ENTITYID ?? null },
+      CREATEDBY: { type: sql.Int, value: CREATEDBY ?? null },
+      ACTIVEONLY: { type: sql.Bit, value: ACTIVEONLY ? 1 : 0 },
+    },
+  });
+  return result.recordset;
+}
+
+/** Révoque un lien (sans effet s'il l'est déjà). */
+export async function revokeLink(LNKID, REVOKEDBY, REVOKEDBYNAME) {
+  await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `
+    UPDATE FILELINKS
+    SET REVOKEDAT = SYSDATETIME(), REVOKEDBY = @REVOKEDBY, REVOKEDBYNAME = @REVOKEDBYNAME
+    WHERE LNKID = @LNKID AND REVOKEDAT IS NULL
+    `,
+    inputs: {
+      LNKID: { type: sql.Int, value: LNKID },
+      REVOKEDBY: { type: sql.Int, value: REVOKEDBY },
+      REVOKEDBYNAME: { type: sql.NVarChar(200), value: REVOKEDBYNAME ?? null },
+    },
+  });
+  return getLinkById(LNKID);
+}
+
+/** Compte une ouverture du lien. */
+export async function markLinkOpened(LNKID) {
+  await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `
+    UPDATE FILELINKS SET OPENCOUNT = OPENCOUNT + 1, LASTOPENEDAT = SYSDATETIME()
+    WHERE LNKID = @LNKID
+    `,
+    inputs: { LNKID: { type: sql.Int, value: LNKID } },
+  });
+}

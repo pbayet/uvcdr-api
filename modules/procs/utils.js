@@ -329,6 +329,12 @@ export function diffFields(before, after, fields) {
   return changes;
 }
 
+/** Nom du fichier d'une version : nom d'origine, ou `<nom>.pdf` pour l'aperçu. */
+export function versionFileName(version, KIND) {
+  const name = String(version.ORIGINALNAME || "document");
+  return KIND === "preview" ? `${name.replace(/\.[^.]+$/, "")}.pdf` : name;
+}
+
 /** Nom de fichier pour Content-Disposition (RFC 6266 / 5987). */
 export function contentDisposition(disposition, filename) {
   const name = String(filename || "document").replace(/[\r\n"]/g, "");

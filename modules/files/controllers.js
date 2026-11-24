@@ -1,10 +1,17 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import * as services from "./services.js";
+import * as links from "./links.js";
 import { StorageService } from "../../core/services/storage.service.js";
 import {
   uploadFilesSchema,
   deleteFilesSchema,
   revokeSignatureSchema,
   isManagerPermission,
+  createFileLinkSchema,
+  listFileLinksSchema,
+  lnkidParamSchema,
+  fileLinkTokenParamSchema,
 } from "./utils.js";
 import * as requestUtils from "../../core/utils/request.utils.js";
 import {
@@ -396,4 +403,177 @@ export async function revokeFileSignature(req) {
   await services.revokeSignature(sigid, revokedBy, reason ?? null);
 
   return { SIGID: sigid, STATUS: "REVOKED" };
+}
+
+/* ─────────────────────────────────────────────
+   Liens directs vers un fichier (cf. links.js)
+───────────────────────────────────────────── */
+
+function httpError(status, message) {
+  const err = new Error(message);
+  err.status = status;
+  return err;
+}
+
+/** Application et auteur de la requête (jeton obligatoire). */
+function linkContext(req) {
+  const APPCODE = req?.payload?.application;
+  const user = links.currentUser(req);
+  if (!APPCODE || !user.USRID) throw httpError(403, "Utilisateur non identifiable.");
+  return { APPCODE, ...user };
+}
+
+/**
+ * POST /api/files/links — crée un lien direct. Corps : `FILECODE` (fichier
+ * précis) ou `TARGET` (cible propre à l'application, ex. PROCS :
+ * `{ PRCID, VERNUM?, KIND? }`), `EXPIRESIN` (« 7d », « 12h », secondes…)
+ * ou `PERMANENT: true`, `WITHNAME` (nom du fichier en fin d'URL, défaut
+ * true). Les droits (qui, vers quoi, quelle durée) dépendent de
+ * l'application du jeton. Le jeton du lien n'est renvoyé qu'ici.
+ */
+export async function createFileLink(req) {
+  const ctx = linkContext(req);
+  const input = createFileLinkSchema.parse((await requestUtils.getRequestParams(req)).params);
+
+  let EXPIRESIN;
+  if (input.EXPIRESIN !== undefined && input.EXPIRESIN !== "") {
+    EXPIRESIN = links.parseDuration(input.EXPIRESIN);
+    if (EXPIRESIN === null) {
+      throw httpError(400, "Durée illisible : indiquez des secondes ou « 30m », « 12h », « 7j », « 1a ».");
+    }
+  }
+
+  const provider = await links.getProvider(ctx.APPCODE);
+  const target = await provider.authorize(req, { ...input, EXPIRESIN });
+  const TTL = links.effectiveTtl({ PERMANENT: input.PERMANENT, EXPIRESIN }, target.POLICY);
+
+  const { token, hash } = links.newToken();
+  const row = await services.insertLink({
+    TOKENHASH: hash,
+    APPCODE: ctx.APPCODE,
+    FILECODE: target.FILECODE ?? null,
+    ENTITYTYPE: target.ENTITYTYPE ?? null,
+    ENTITYID: target.ENTITYID != null ? String(target.ENTITYID) : null,
+    PARAMS: target.PARAMS ? JSON.stringify(target.PARAMS) : null,
+    FILENAME: target.FILENAME ?? null,
+    LABEL: target.LABEL ?? null,
+    WITHNAME: input.WITHNAME,
+    TTL,
+    CREATEDBY: ctx.USRID,
+    CREATEDBYNAME: ctx.NAME,
+  });
+  const link = links.formatLink(row);
+
+  logger.info(
+    `[FILES][LINK] #${link.LNKID} ${ctx.APPCODE} ${link.FILECODE ?? `${link.ENTITYTYPE}:${link.ENTITYID}`} par ${ctx.NAME} — ${TTL === null ? "permanent" : `${TTL} s`}`,
+  );
+  return { ...link, PATH: links.linkPath(token, target.FILENAME, input.WITHNAME) };
+}
+
+/**
+ * GET /api/files/links — liens de l'application du jeton (filtres :
+ * `FILECODE`, `ENTITYTYPE`, `ENTITYID`, `ACTIVE=true`). Gestionnaires de
+ * l'application : tous les liens ; autres utilisateurs : les leurs.
+ */
+export async function listFileLinks(req) {
+  const ctx = linkContext(req);
+  const filters = listFileLinksSchema.parse((await requestUtils.getRequestParams(req)).params);
+  const provider = await links.getProvider(ctx.APPCODE);
+  const manager = await provider.canManage(req);
+  const rows = await services.listLinks({
+    APPCODE: ctx.APPCODE,
+    FILECODE: filters.FILECODE,
+    ENTITYTYPE: filters.ENTITYTYPE,
+    ENTITYID: filters.ENTITYID,
+    ACTIVEONLY: filters.ACTIVE,
+    CREATEDBY: manager ? null : ctx.USRID,
+  });
+  return rows.map(links.formatLink);
+}
+
+/** DELETE /api/files/links/:lnkid — révoque un lien (son auteur ou un gestionnaire). */
+export async function revokeFileLink(req) {
+  const ctx = linkContext(req);
+  const { lnkid } = lnkidParamSchema.parse(req.params);
+  const row = await services.getLinkById(lnkid);
+  if (!row || row.APPCODE !== ctx.APPCODE) throw httpError(404, "Lien introuvable.");
+
+  const provider = await links.getProvider(ctx.APPCODE);
+  if (row.CREATEDBY !== ctx.USRID && !(await provider.canManage(req))) {
+    throw httpError(403, "Seul l'auteur du lien ou un gestionnaire peut le désactiver.");
+  }
+  const updated = await services.revokeLink(lnkid, ctx.USRID, ctx.NAME);
+  logger.info(`[FILES][LINK] #${lnkid} révoqué par ${ctx.NAME}`);
+  return links.formatLink(updated);
+}
+
+/** Chemin absolu d'un fichier déposé, borné à UPLOAD_PATH. */
+function resolveStoredPath(relativePath) {
+  if (!UPLOAD_PATH) throw new Error("UPLOAD_PATH non configuré.");
+  const root = path.resolve(UPLOAD_PATH);
+  const abs = path.resolve(root, relativePath);
+  if (abs !== root && !abs.startsWith(root + path.sep)) throw httpError(404, "Document introuvable.");
+  return abs;
+}
+
+/** En-tête Content-Disposition avec nom UTF-8 (RFC 6266 / 5987). */
+function contentDisposition(type, filename) {
+  const ascii = String(filename).replace(/[^\x20-\x7e]/g, "_").replace(/["\\]/g, "_");
+  return `${type}; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(filename)}`;
+}
+
+/**
+ * GET (ou HEAD) /api/files/open/:token[/:filename] — route PUBLIQUE : ouvre
+ * le fichier d'un lien direct. Le nom final de l'URL est ignoré. PDF,
+ * images et texte s'affichent dans le navigateur, le reste se télécharge.
+ * Une requête HEAD (visionneuse qui sonde le type) n'est pas comptée.
+ */
+export async function openFileLink(req, res) {
+  const parsed = fileLinkTokenParamSchema.safeParse(req.params);
+  const row = parsed.success
+    ? await services.getLinkByTokenHash(links.hashToken(parsed.data.token))
+    : null;
+  if (!row) throw httpError(404, "Lien invalide : vérifiez qu'il a été copié en entier.");
+  if (row.STATUS === "REVOKED") throw httpError(410, "Ce lien a été désactivé.");
+  if (row.STATUS === "EXPIRED") throw httpError(410, "Ce lien a expiré : demandez-en un nouveau.");
+
+  const link = links.formatLink(row);
+  const provider = await links.getProvider(link.APPCODE);
+  const target = await provider.resolve(link, { method: req.method });
+  if (!target?.FILECODE) throw httpError(404, "Ce document n'est plus disponible.");
+
+  const [attachment] = await services.getFiles({ FILECODE: target.FILECODE });
+  if (!attachment || attachment.APPCODE !== link.APPCODE) {
+    throw httpError(404, "Ce document n'est plus disponible.");
+  }
+  const absPath = resolveStoredPath(attachment.RELATIVEPATH);
+  await fs.access(absPath).catch(() => {
+    throw httpError(404, "Ce document n'est plus disponible.");
+  });
+
+  const mimetype = attachment.MIMETYPE || "application/octet-stream";
+  const disposition = /^(application\/pdf|image\/|text\/plain)/.test(mimetype) ? "inline" : "attachment";
+  const filename = target.FILENAME || attachment.ORIGINALNAME || "document";
+
+  if (req.method !== "HEAD") {
+    services
+      .markLinkOpened(link.LNKID)
+      .catch((err) => logger.warn(`[FILES][LINK] ouverture #${link.LNKID} non comptée : ${err.message}`));
+    Promise.resolve()
+      .then(() => target.onOpen?.({ disposition }))
+      .catch((err) => logger.warn(`[FILES][LINK] traçabilité #${link.LNKID} : ${err.message}`));
+  }
+
+  res.setHeader("Content-Type", mimetype);
+  res.setHeader("Content-Disposition", contentDisposition(disposition, filename));
+  res.setHeader("Cache-Control", "private, no-store");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("X-Robots-Tag", "noindex, nofollow");
+
+  // dotfiles "allow" : chemin construit ici et borné à UPLOAD_PATH, qui peut
+  // lui-même passer par un dossier caché (ex. tests/.tmp/uploads).
+  await new Promise((resolve, reject) =>
+    res.sendFile(absPath, { dotfiles: "allow" }, (err) => (err ? reject(err) : resolve())),
+  );
 }

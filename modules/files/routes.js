@@ -4,6 +4,7 @@ import express from "express";
 import multer from "multer";
 import * as authMiddlewares from "../../core/middlewares/auth.middleware.js";
 import * as controllers from "./controllers.js";
+import { logger } from "../../config/logger.config.js";
 import {
   startTmpPurgeCron,
   startDeletedAttachmentsPurgeCron,
@@ -39,6 +40,42 @@ const upload = multer({
     fileSize: 20 * 1024 * 1024, // 20MB / fichier
     files: 10,
   },
+});
+
+// --------------------------------------------------------------------------
+//   LIENS DIRECTS (cf. links.js, sql/FILELINKS.table.sql)
+// --------------------------------------------------------------------------
+
+/** Route JSON authentifiée. */
+function authed(method, routePath, handler, status = 200) {
+  router[method](routePath, authMiddlewares.authVerifyMiddleware, async (req, res, next) => {
+    try {
+      res.status(status).json(await handler(req));
+    } catch (err) {
+      next(err);
+    }
+  });
+}
+
+authed("post", "/links", controllers.createFileLink, 201);
+authed("get", "/links", controllers.listFileLinks);
+authed("delete", "/links/:lnkid", controllers.revokeFileLink);
+
+// Ouverture d'un lien direct : SANS jeton (navigateur, mail, Teams…). Le nom
+// final (`/open/<jeton>/rapport.pdf`) est facultatif et ignoré. Erreurs en
+// texte brut : c'est une personne qui lit la réponse, pas une application.
+router.get("/open/:token{/:filename}", async (req, res) => {
+  try {
+    await controllers.openFileLink(req, res);
+  } catch (err) {
+    if (res.headersSent) return res.end();
+    const known = typeof err?.status === "number" && err.status < 500;
+    if (!known) logger.error(`[FILES][LINK] ouverture impossible : ${err?.message}`);
+    res
+      .status(known ? err.status : 500)
+      .type("text/plain; charset=utf-8")
+      .send(known ? err.message : "Le document ne peut pas être ouvert pour le moment.");
+  }
 });
 
 router.post(

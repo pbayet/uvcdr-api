@@ -4,7 +4,6 @@ import * as services from "./services.js";
 import * as utils from "./utils.js";
 import * as v from "./validators.js";
 import * as extract from "./extract.js";
-import * as links from "./links.js";
 import * as requestUtils from "../../core/utils/request.utils.js";
 import { StorageService } from "../../core/services/storage.service.js";
 import { broadcastToAll } from "../../config/websocket/wsManager.js";
@@ -574,7 +573,7 @@ async function streamVersionFile(res, { version, KIND, DISPOSITION, USRID }) {
     throw new Error("DATA_NOT_FOUND");
   });
 
-  const filename = versionFileName(version, KIND);
+  const filename = utils.versionFileName(version, KIND);
   const mimetype = att.MIMETYPE || "application/octet-stream";
   const disposition = DISPOSITION ?? (mimetype === "application/pdf" ? "inline" : "attachment");
 
@@ -595,73 +594,6 @@ async function streamVersionFile(res, { version, KIND, DISPOSITION, USRID }) {
   await new Promise((resolve, reject) =>
     res.sendFile(absPath, (err) => (err ? reject(err) : resolve())),
   );
-}
-
-/** Nom du fichier servi : nom d'origine, ou `<nom>.pdf` pour l'aperçu. */
-function versionFileName(version, KIND) {
-  return KIND === "preview" ? `${path.parse(version.ORIGINALNAME).name}.pdf` : version.ORIGINALNAME;
-}
-
-/** Version visée par un lien : `VERNUM`, ou la version en vigueur. */
-async function findLinkedVersion(proc, VERNUM) {
-  if (!VERNUM) return proc.CURVERID ? services.getVersion(proc.CURVERID) : null;
-  return (await services.getVersions(proc.PRCID)).find((ver) => ver.VERNUM === VERNUM) ?? null;
-}
-
-/**
- * Génère un lien direct signé et temporaire vers le document d'une
- * procédure (cf. links.js). Le lien n'ouvre que le document d'une procédure
- * publiée : il est vérifié avec les droits d'un lecteur, ici puis à chaque
- * ouverture.
- */
-export async function createFileLink(req) {
-  const ctx = utils.getUserContext(req);
-  const { prcid } = await params(req, v.prcidParamSchema);
-  const { KIND, VERNUM } = await params(req, v.fileLinkQuerySchema);
-
-  await loadProcedure(ctx, prcid);
-  const proc = await services.getProcedure({ USRID: ctx.USRID, ISEDITOR: false }, prcid);
-  if (!proc) {
-    throw utils.httpError(
-      409,
-      "Lien direct indisponible : la procédure doit être publiée (et sa catégorie active).",
-    );
-  }
-
-  const version = await findLinkedVersion(proc, VERNUM);
-  if (!version) throw new Error("DATA_NOT_FOUND");
-  if (!(KIND === "preview" ? version.PREVIEWCODE : version.FILECODE)) {
-    throw utils.httpError(409, "Ce document n'a pas de fichier à partager.");
-  }
-
-  const { TOKEN, EXPIRES } = links.signFileLink({ PRCID: prcid, VERNUM, KIND, USRID: ctx.USRID });
-  logger.info(
-    `[PROCS][LINK] lien direct #${prcid} v${VERNUM ?? "courante"} (${KIND}) par ${ctx.USRNAM}, expire le ${EXPIRES.toISOString()}`,
-  );
-  // Nom du fichier en fin d'URL : purement indicatif (seul le jeton fait foi),
-  // il permet aux visionneuses et navigateurs de reconnaître le type (.pdf,
-  // .docx) et d'afficher le bon nom.
-  const filename = encodeURIComponent(versionFileName(version, KIND));
-  return { PATH: `/procs/files/${TOKEN}/${filename}`, EXPIRES, TTLDAYS: links.linkTtlDays() };
-}
-
-/**
- * Ouverture d'un lien direct signé (route publique, sans jeton) : signature
- * et expiration vérifiées, puis visibilité de la procédure pour un lecteur.
- * La consultation est rattachée à l'auteur du lien.
- */
-export async function sendSharedFile(req, res) {
-  const { token } = v.fileTokenParamSchema.parse(req.params);
-  const link = links.verifyFileLink(token);
-
-  const proc = await services.getProcedure({ USRID: link.USRID, ISEDITOR: false }, link.PRCID);
-  if (!proc) throw utils.httpError(404, "Cette procédure n'est plus disponible.");
-  const version = await findLinkedVersion(proc, link.VERNUM);
-  if (!version) throw utils.httpError(404, "Cette version de la procédure n'existe plus.");
-
-  res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader("X-Robots-Tag", "noindex, nofollow");
-  await streamVersionFile(res, { version, KIND: link.KIND, USRID: link.USRID });
 }
 
 /* ─────────────────────────────────────────────
