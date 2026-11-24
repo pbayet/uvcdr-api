@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  describeTtl,
   effectiveTtl,
   hashToken,
   isTokenShape,
@@ -60,5 +61,16 @@ describe("liens directs — jeton et chemin", () => {
       `/files/open/${"t".repeat(32)}/Proc%C3%A9dure%20cuves.pdf`,
     );
     expect(linkPath("t".repeat(32), "a.pdf", false)).toBe(`/files/open/${"t".repeat(32)}`);
+  });
+});
+
+describe("liens directs — libellé de validité (journal)", () => {
+  it("unité la plus grande qui tombe juste", () => {
+    expect(describeTtl(null)).toBe("permanent");
+    expect(describeTtl(7 * DAY)).toBe("7 jours");
+    expect(describeTtl(DAY)).toBe("1 jour");
+    expect(describeTtl(365 * DAY)).toBe("1 an");
+    expect(describeTtl(36 * 3600)).toBe("36 heures");
+    expect(describeTtl(90)).toBe("90 secondes");
   });
 });

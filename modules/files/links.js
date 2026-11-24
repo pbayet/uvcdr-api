@@ -13,7 +13,10 @@ import { isManagerPermission } from "./utils.js";
    - nom du fichier en fin d'URL ou non (`WITHNAME`) : purement indicatif
      (seul le jeton fait foi), il permet aux visionneuses et navigateurs de
      reconnaître le type (.pdf, .docx) ;
-   - révocable un par un (DELETE /api/files/links/:lnkid).
+   - révocable un par un (DELETE /api/files/links/:lnkid), validité
+     modifiable (PUT /api/files/links/:lnkid : prolonger, réactiver un lien
+     expiré, rendre permanent) ;
+   - mouvements consultables (GET /api/files/links/events).
 
    Qui peut créer quel lien, et vers quoi : c'est l'application du jeton
    (APPCODE) qui le décide, via un « fournisseur » (cf. PROVIDERS) :
@@ -27,7 +30,13 @@ import { isManagerPermission } from "./utils.js";
        appelé à CHAQUE ouverture : null = cible plus disponible ;
        onOpen({ disposition }) : traçabilité propre à l'application
        (jamais appelé pour une requête HEAD).
-     canManage(req) → bool : voir et révoquer tous les liens de l'application.
+     canManage(req) → bool : voir, modifier et révoquer tous les liens de
+       l'application, et voir l'IP / le navigateur des ouvertures.
+     policy(req) → POLICY : validité qu'un utilisateur peut donner à un lien
+       existant (PUT /api/files/links/:lnkid).
+
+   Chaque mouvement (création, modification, désactivation, ouverture,
+   téléchargement, refus) est journalisé dans FILELINKEVENTS.
 
    Sans fournisseur : lien vers un FILECODE de l'application du jeton,
    réservé aux gestionnaires (MODIFY_PERMS).
@@ -121,6 +130,12 @@ const defaultProvider = {
   canManage(req) {
     return isManagerPermission(req?.payload?.permission);
   },
+  /** Validité qu'un utilisateur peut donner à un lien existant (modification). */
+  policy(req) {
+    return isManagerPermission(req?.payload?.permission)
+      ? { ALLOWPERMANENT: true, MAXTTL: null, DEFAULTTTL: defaultTtl() }
+      : { ALLOWPERMANENT: false, MAXTTL: defaultTtl(), DEFAULTTTL: defaultTtl() };
+  },
 };
 
 /** Fournisseur de l'application `APPCODE` (générique à défaut). */
@@ -132,6 +147,58 @@ export async function getProvider(APPCODE) {
     authorize: mod.authorize ?? defaultProvider.authorize,
     resolve: mod.resolve ?? defaultProvider.resolve,
     canManage: mod.canManage ?? defaultProvider.canManage,
+    policy: mod.policy ?? defaultProvider.policy,
+  };
+}
+
+/** Validité lisible pour le journal : « permanent », « 7 jours », « 12 heures »… */
+export function describeTtl(ttl) {
+  if (ttl === null || ttl === undefined) return "permanent";
+  const units = [
+    [365 * DAY, "an", "ans"],
+    [DAY, "jour", "jours"],
+    [3600, "heure", "heures"],
+    [60, "minute", "minutes"],
+  ];
+  for (const [size, one, many] of units) {
+    if (ttl >= size && ttl % size === 0) {
+      const n = ttl / size;
+      return `${n} ${n > 1 ? many : one}`;
+    }
+  }
+  return `${ttl} secondes`;
+}
+
+/** Origine d'une ouverture : IP (premier relais X-Forwarded-For) et navigateur. */
+export function requestClient(req) {
+  const forwarded = String(req?.headers?.["x-forwarded-for"] ?? "").split(",")[0].trim();
+  return {
+    IP: forwarded || req?.ip || req?.socket?.remoteAddress || null,
+    USERAGENT: req?.headers?.["user-agent"] ?? null,
+  };
+}
+
+/**
+ * Mouvement pour le client. IP et navigateur des ouvertures : gestionnaires
+ * seulement (`withClient`).
+ */
+export function formatLinkEvent(row, { withClient = false } = {}) {
+  let PARAMS = null;
+  try {
+    PARAMS = row.PARAMS ? JSON.parse(row.PARAMS) : null;
+  } catch {
+    PARAMS = null;
+  }
+  return {
+    EVTID: row.EVTID,
+    LNKID: row.LNKID,
+    EVENT: row.EVENT,
+    USRID: row.USRID ?? null,
+    USRNAME: row.USRNAME ?? null,
+    DETAIL: row.DETAIL ?? null,
+    CREATEDAT: row.CREATEDAT,
+    LINK: { PARAMS, FILENAME: row.FILENAME ?? null, CREATEDBY: row.CREATEDBY, CREATEDBYNAME: row.CREATEDBYNAME ?? null },
+    ...(withClient ? { IP: row.IP ?? null, USERAGENT: row.USERAGENT ?? null } : {}),
   };
 }
 

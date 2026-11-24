@@ -75,6 +75,25 @@ export const listFileLinksSchema = z.object({
 
 export const lnkidParamSchema = z.object({ lnkid: z.coerce.number().int().positive() });
 
+/** PUT /api/files/links/:lnkid — nouvelle validité, à partir de maintenant. */
+export const updateFileLinkSchema = z
+  .object({
+    EXPIRESIN: z.union([z.number(), z.string().trim().max(20)]).optional(),
+    PERMANENT: bool(false),
+  })
+  .refine((d) => d.PERMANENT !== (d.EXPIRESIN !== undefined && d.EXPIRESIN !== ""), {
+    message: "Indiquez soit EXPIRESIN, soit PERMANENT.",
+    path: ["EXPIRESIN"],
+  });
+
+/** GET /api/files/links/events — filtres (lien, fichier, cible). */
+export const listFileLinkEventsSchema = z.object({
+  LNKID: z.coerce.number().int().positive().optional(),
+  FILECODE: z.string().trim().max(50).optional(),
+  ENTITYTYPE: z.string().trim().max(100).optional(),
+  ENTITYID: z.string().trim().max(100).optional(),
+});
+
 export const fileLinkTokenParamSchema = z.object({
   token: z.string().regex(/^[A-Za-z0-9_-]{32}$/),
 });

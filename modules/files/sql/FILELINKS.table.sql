@@ -15,7 +15,8 @@
        vigueur d'une procédure (cf. modules/procs/fileLinks.js).
 
    Expiration : EXPIRESAT (NULL = lien permanent). Révocation : REVOKEDAT.
-   Suivi : OPENCOUNT / LASTOPENEDAT (les requêtes HEAD ne comptent pas).
+   Suivi : OPENCOUNT / LASTOPENEDAT (les requêtes HEAD ne comptent pas), et
+   le détail de chaque mouvement dans FILELINKEVENTS (voir plus bas).
 
    Script idempotent : relançable sans erreur.
 ═══════════════════════════════════════════════════════════════ */
@@ -61,4 +62,37 @@ GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_FILELINKS_FILECODE' AND object_id = OBJECT_ID(N'dbo.FILELINKS'))
     CREATE INDEX IX_FILELINKS_FILECODE ON dbo.FILELINKS (FILECODE) WHERE FILECODE IS NOT NULL;
+GO
+
+/* ───────────────────────────────────────────
+   Mouvements d'un lien (FILELINKEVENTS)
+     CREATED     création (auteur, validité)
+     UPDATED     validité modifiée (prolongé, rendu permanent…)
+     REVOKED     désactivé
+     OPENED      fichier affiché (navigateur, liseuse)
+     DOWNLOADED  fichier téléchargé
+     REFUSED     ouverture refusée (lien expiré, désactivé, document retiré)
+   Les ouvertures sont anonymes : IP et navigateur (USERAGENT) seulement,
+   visibles des gestionnaires uniquement. Les requêtes HEAD ne sont pas
+   journalisées.
+─────────────────────────────────────────── */
+IF OBJECT_ID(N'dbo.FILELINKEVENTS', N'U') IS NULL
+BEGIN
+    CREATE TABLE dbo.FILELINKEVENTS (
+        EVTID      INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_FILELINKEVENTS PRIMARY KEY,
+        LNKID      INT            NOT NULL CONSTRAINT FK_FILELINKEVENTS_LINK REFERENCES dbo.FILELINKS (LNKID),
+        EVENT      VARCHAR(20)    NOT NULL,
+        USRID      INT            NULL,
+        USRNAME    NVARCHAR(200)  NULL,
+        IP         VARCHAR(64)    NULL,
+        USERAGENT  NVARCHAR(300)  NULL,
+        DETAIL     NVARCHAR(400)  NULL,
+        CREATEDAT  DATETIME2(0)   NOT NULL CONSTRAINT DF_FILELINKEVENTS_CREATEDAT DEFAULT (SYSDATETIME()),
+        CONSTRAINT CK_FILELINKEVENTS_EVENT CHECK (EVENT IN ('CREATED', 'UPDATED', 'REVOKED', 'OPENED', 'DOWNLOADED', 'REFUSED'))
+    );
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_FILELINKEVENTS_LNKID' AND object_id = OBJECT_ID(N'dbo.FILELINKEVENTS'))
+    CREATE INDEX IX_FILELINKEVENTS_LNKID ON dbo.FILELINKEVENTS (LNKID, CREATEDAT DESC);
 GO

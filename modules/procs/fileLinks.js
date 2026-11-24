@@ -58,16 +58,13 @@ export async function authorize(req, input) {
   if (!version) throw new Error("DATA_NOT_FOUND");
   if (!fileCode(version, KIND)) throw utils.httpError(409, "Ce document n'a pas de fichier à partager.");
 
-  const ttl = defaultTtl();
   return {
     ENTITYTYPE: ENTITY_TYPE,
     ENTITYID: String(PRCID),
     PARAMS: { VERNUM: VERNUM ?? null, KIND },
     FILENAME: utils.versionFileName(version, KIND),
     LABEL: [proc.REFCODE, proc.TITLE].filter(Boolean).join(" — ").slice(0, 300),
-    POLICY: ctx.ISEDITOR
-      ? { ALLOWPERMANENT: true, MAXTTL: null, DEFAULTTTL: ttl }
-      : { ALLOWPERMANENT: false, MAXTTL: ttl, DEFAULTTTL: ttl },
+    POLICY: policy(req),
   };
 }
 
@@ -82,9 +79,12 @@ export async function resolve(link) {
   const code = version && fileCode(version, KIND);
   if (!code) return null;
 
+  const FILENAME = utils.versionFileName(version, KIND);
   return {
     FILECODE: code,
-    FILENAME: utils.versionFileName(version, KIND),
+    FILENAME,
+    // Mouvements du lien : version effectivement servie.
+    DETAIL: `v${version.VERNUM} · ${FILENAME}`,
     onOpen: ({ disposition }) =>
       services
         .addConsult({
@@ -97,7 +97,21 @@ export async function resolve(link) {
   };
 }
 
-/** Rédacteurs : voient et révoquent tous les liens de l'application. */
+/** Validité qu'un utilisateur peut donner à un lien existant (mêmes règles qu'à la création). */
+export function policy(req) {
+  const ttl = defaultTtl();
+  let editor = false;
+  try {
+    editor = utils.getUserContext(req).ISEDITOR;
+  } catch {
+    editor = false;
+  }
+  return editor
+    ? { ALLOWPERMANENT: true, MAXTTL: null, DEFAULTTTL: ttl }
+    : { ALLOWPERMANENT: false, MAXTTL: ttl, DEFAULTTTL: ttl };
+}
+
+/** Rédacteurs : voient, modifient et révoquent tous les liens de l'application. */
 export function canManage(req) {
   try {
     return utils.getUserContext(req).ISEDITOR;

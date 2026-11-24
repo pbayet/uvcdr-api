@@ -75,6 +75,8 @@ describe("Intégration :: liens directs /api/files", () => {
     procsServices.addConsult.mockResolvedValue(undefined);
     filesServices.insertLink.mockImplementation(async (l) => linkRow({ ...l, EXPIRESAT: l.TTL === null ? null : new Date() }));
     filesServices.markLinkOpened.mockResolvedValue(undefined);
+    filesServices.addLinkEvent.mockResolvedValue(undefined);
+    filesServices.updateLinkExpiry.mockImplementation(async (LNKID, TTL) => linkRow({ LNKID, EXPIRESAT: TTL === null ? null : new Date() }));
   });
 
   const auth = (who) => ({ Authorization: `Bearer ${users[who].token}` });
@@ -192,5 +194,91 @@ describe("Intégration :: liens directs /api/files", () => {
     expect(reader.status).toBe(403);
     expect(admin.status).toBe(200);
     expect(filesServices.revokeLink).toHaveBeenCalledTimes(1);
+  });
+
+  it("mouvements : création, ouverture (IP, navigateur) et refus journalisés ; HEAD ignoré", async () => {
+    await request(app).post("/api/files/links").set(auth("reader")).send({ TARGET: { PRCID: 7 } });
+    await vi.waitFor(() =>
+      expect(filesServices.addLinkEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ EVENT: "CREATED", USRID: 2, DETAIL: "Validité : 7 jours · nom du fichier dans le lien" }),
+      ),
+    );
+
+    filesServices.addLinkEvent.mockClear();
+    filesServices.getLinkByTokenHash.mockResolvedValue(linkRow());
+    filesServices.getFiles.mockResolvedValue([
+      { FILECODE: "F11", APPCODE: "PROCS", RELATIVEPATH: "LINKS/nettoyage.pdf", MIMETYPE: "application/pdf", ORIGINALNAME: "nettoyage.pdf" },
+    ]);
+    const token = "c".repeat(32);
+    await request(app).head(`/api/files/open/${token}`);
+    await request(app).get(`/api/files/open/${token}`).set("X-Forwarded-For", "10.1.2.3, 10.0.0.1").set("User-Agent", "Navigateur test");
+    await vi.waitFor(() =>
+      expect(filesServices.addLinkEvent).toHaveBeenCalledWith({
+        LNKID: 1,
+        EVENT: "OPENED",
+        IP: "10.1.2.3",
+        USERAGENT: "Navigateur test",
+        DETAIL: "v3 · nettoyage.pdf",
+      }),
+    );
+    expect(filesServices.addLinkEvent).toHaveBeenCalledTimes(1);
+
+    filesServices.getLinkByTokenHash.mockResolvedValue(linkRow({ STATUS: "EXPIRED" }));
+    await request(app).get(`/api/files/open/${token}`);
+    await vi.waitFor(() =>
+      expect(filesServices.addLinkEvent).toHaveBeenLastCalledWith(
+        expect.objectContaining({ EVENT: "REFUSED", DETAIL: "Lien expiré" }),
+      ),
+    );
+  });
+
+  it("modification : le lecteur prolonge son lien dans la limite, le rédacteur le rend permanent", async () => {
+    filesServices.getLinkById.mockResolvedValue(linkRow({ CREATEDBY: 2, STATUS: "EXPIRED" }));
+
+    const tooLong = await request(app).put("/api/files/links/1").set(auth("reader")).send({ EXPIRESIN: "30j" });
+    const permanentByReader = await request(app).put("/api/files/links/1").set(auth("reader")).send({ PERMANENT: true });
+    const extended = await request(app).put("/api/files/links/1").set(auth("reader")).send({ EXPIRESIN: "3j" });
+    expect(tooLong.status).toBe(403);
+    expect(permanentByReader.status).toBe(403);
+    expect(extended.status).toBe(200);
+    expect(filesServices.updateLinkExpiry).toHaveBeenLastCalledWith(1, 3 * DAY);
+
+    const permanent = await request(app).put("/api/files/links/1").set(auth("admin")).send({ PERMANENT: true });
+    expect(permanent.status).toBe(200);
+    expect(filesServices.updateLinkExpiry).toHaveBeenLastCalledWith(1, null);
+    await vi.waitFor(() =>
+      expect(filesServices.addLinkEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ EVENT: "UPDATED", USRID: 3, DETAIL: "Rendu permanent" }),
+      ),
+    );
+  });
+
+  it("modification : lien désactivé → 409 ; lien d'un autre → 403 pour un lecteur", async () => {
+    filesServices.getLinkById.mockResolvedValueOnce(linkRow({ CREATEDBY: 2, REVOKEDAT: new Date(), STATUS: "REVOKED" }));
+    const revoked = await request(app).put("/api/files/links/1").set(auth("reader")).send({ EXPIRESIN: "1j" });
+    filesServices.getLinkById.mockResolvedValueOnce(linkRow({ CREATEDBY: 99 }));
+    const other = await request(app).put("/api/files/links/1").set(auth("reader")).send({ EXPIRESIN: "1j" });
+    expect(revoked.status).toBe(409);
+    expect(other.status).toBe(403);
+    expect(filesServices.updateLinkExpiry).not.toHaveBeenCalled();
+  });
+
+  it("mouvements : le lecteur voit ceux de ses liens sans IP, le rédacteur tous avec IP", async () => {
+    const event = {
+      EVTID: 9, LNKID: 1, EVENT: "OPENED", IP: "10.1.2.3", USERAGENT: "Navigateur test", DETAIL: "v3 · nettoyage.pdf",
+      CREATEDAT: new Date(), PARAMS: JSON.stringify({ VERNUM: null, KIND: "original" }), FILENAME: "nettoyage.pdf", CREATEDBY: 2,
+    };
+    filesServices.listLinkEvents.mockResolvedValue([event]);
+
+    const reader = await request(app).get("/api/files/links/events?ENTITYTYPE=PROCEDURE&ENTITYID=7").set(auth("reader"));
+    expect(filesServices.listLinkEvents).toHaveBeenLastCalledWith(
+      expect.objectContaining({ APPCODE: "PROCS", ENTITYTYPE: "PROCEDURE", ENTITYID: "7", CREATEDBY: 2 }),
+    );
+    expect(reader.body.data[0]).toMatchObject({ EVENT: "OPENED", DETAIL: "v3 · nettoyage.pdf" });
+    expect(reader.body.data[0].IP).toBeUndefined();
+
+    const admin = await request(app).get("/api/files/links/events?LNKID=1").set(auth("admin"));
+    expect(filesServices.listLinkEvents).toHaveBeenLastCalledWith(expect.objectContaining({ LNKID: 1, CREATEDBY: null }));
+    expect(admin.body.data[0]).toMatchObject({ IP: "10.1.2.3", USERAGENT: "Navigateur test" });
   });
 });

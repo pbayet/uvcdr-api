@@ -59,6 +59,8 @@ function authed(method, routePath, handler, status = 200) {
 
 authed("post", "/links", controllers.createFileLink, 201);
 authed("get", "/links", controllers.listFileLinks);
+authed("get", "/links/events", controllers.listFileLinkEvents);
+authed("put", "/links/:lnkid", controllers.updateFileLink);
 authed("delete", "/links/:lnkid", controllers.revokeFileLink);
 
 // Ouverture d'un lien direct : SANS jeton (navigateur, mail, Teams…). Le nom

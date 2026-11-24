@@ -12,6 +12,8 @@ import {
   listFileLinksSchema,
   lnkidParamSchema,
   fileLinkTokenParamSchema,
+  updateFileLinkSchema,
+  listFileLinkEventsSchema,
 } from "./utils.js";
 import * as requestUtils from "../../core/utils/request.utils.js";
 import {
@@ -464,10 +466,38 @@ export async function createFileLink(req) {
   });
   const link = links.formatLink(row);
 
+  logEvent({
+    LNKID: link.LNKID,
+    EVENT: "CREATED",
+    USRID: ctx.USRID,
+    USRNAME: ctx.NAME,
+    DETAIL: `Validité : ${links.describeTtl(TTL)}${input.WITHNAME ? " · nom du fichier dans le lien" : ""}`,
+  });
   logger.info(
-    `[FILES][LINK] #${link.LNKID} ${ctx.APPCODE} ${link.FILECODE ?? `${link.ENTITYTYPE}:${link.ENTITYID}`} par ${ctx.NAME} — ${TTL === null ? "permanent" : `${TTL} s`}`,
+    `[FILES][LINK] #${link.LNKID} ${ctx.APPCODE} ${link.FILECODE ?? `${link.ENTITYTYPE}:${link.ENTITYID}`} par ${ctx.NAME} — ${links.describeTtl(TTL)}`,
   );
   return { ...link, PATH: links.linkPath(token, target.FILENAME, input.WITHNAME) };
+}
+
+/** Journalise un mouvement sans jamais bloquer ni faire échouer l'action. */
+function logEvent(entry) {
+  Promise.resolve()
+    .then(() => services.addLinkEvent(entry))
+    .catch((err) => logger.warn(`[FILES][LINK] mouvement ${entry.EVENT} #${entry.LNKID} non journalisé : ${err.message}`));
+}
+
+/**
+ * Lien de l'application du jeton que l'utilisateur peut gérer : son auteur,
+ * ou un gestionnaire de l'application. 404 / 403 sinon.
+ */
+async function loadManageableLink(req, ctx, lnkid, action) {
+  const row = await services.getLinkById(lnkid);
+  if (!row || row.APPCODE !== ctx.APPCODE) throw httpError(404, "Lien introuvable.");
+  const provider = await links.getProvider(ctx.APPCODE);
+  if (row.CREATEDBY !== ctx.USRID && !(await provider.canManage(req))) {
+    throw httpError(403, `Seul l'auteur du lien ou un gestionnaire peut ${action}.`);
+  }
+  return { row, provider };
 }
 
 /**
@@ -495,16 +525,66 @@ export async function listFileLinks(req) {
 export async function revokeFileLink(req) {
   const ctx = linkContext(req);
   const { lnkid } = lnkidParamSchema.parse(req.params);
-  const row = await services.getLinkById(lnkid);
-  if (!row || row.APPCODE !== ctx.APPCODE) throw httpError(404, "Lien introuvable.");
+  const { row } = await loadManageableLink(req, ctx, lnkid, "le désactiver");
+  if (row.REVOKEDAT) return links.formatLink(row);
 
-  const provider = await links.getProvider(ctx.APPCODE);
-  if (row.CREATEDBY !== ctx.USRID && !(await provider.canManage(req))) {
-    throw httpError(403, "Seul l'auteur du lien ou un gestionnaire peut le désactiver.");
-  }
   const updated = await services.revokeLink(lnkid, ctx.USRID, ctx.NAME);
+  logEvent({ LNKID: lnkid, EVENT: "REVOKED", USRID: ctx.USRID, USRNAME: ctx.NAME });
   logger.info(`[FILES][LINK] #${lnkid} révoqué par ${ctx.NAME}`);
   return links.formatLink(updated);
+}
+
+/**
+ * PUT /api/files/links/:lnkid — nouvelle validité à partir de maintenant
+ * (`EXPIRESIN`) ou lien permanent (`PERMANENT`), selon les droits de
+ * l'utilisateur dans l'application ; un lien expiré redevient actif. Un lien
+ * désactivé ne peut pas être réactivé.
+ */
+export async function updateFileLink(req) {
+  const ctx = linkContext(req);
+  const { lnkid } = lnkidParamSchema.parse(req.params);
+  const input = updateFileLinkSchema.parse((await requestUtils.getRequestParams(req)).params);
+  const { row, provider } = await loadManageableLink(req, ctx, lnkid, "le modifier");
+  if (row.REVOKEDAT) throw httpError(409, "Ce lien est désactivé : créez-en un nouveau.");
+
+  let EXPIRESIN;
+  if (!input.PERMANENT) {
+    EXPIRESIN = links.parseDuration(input.EXPIRESIN);
+    if (EXPIRESIN === null) {
+      throw httpError(400, "Durée illisible : indiquez des secondes ou « 30m », « 12h », « 7j », « 1a ».");
+    }
+  }
+  const TTL = links.effectiveTtl({ PERMANENT: input.PERMANENT, EXPIRESIN }, await provider.policy(req));
+
+  const updated = await services.updateLinkExpiry(lnkid, TTL);
+  logEvent({
+    LNKID: lnkid,
+    EVENT: "UPDATED",
+    USRID: ctx.USRID,
+    USRNAME: ctx.NAME,
+    DETAIL: TTL === null ? "Rendu permanent" : `Nouvelle validité : ${links.describeTtl(TTL)}`,
+  });
+  logger.info(`[FILES][LINK] #${lnkid} modifié par ${ctx.NAME} — ${links.describeTtl(TTL)}`);
+  return links.formatLink(updated);
+}
+
+/**
+ * GET /api/files/links/events — mouvements des liens de l'application
+ * (filtres : `LNKID`, `FILECODE`, `ENTITYTYPE`, `ENTITYID`). Gestionnaires :
+ * tous les liens, avec IP et navigateur des ouvertures ; autres
+ * utilisateurs : leurs liens seulement, sans IP ni navigateur.
+ */
+export async function listFileLinkEvents(req) {
+  const ctx = linkContext(req);
+  const filters = listFileLinkEventsSchema.parse((await requestUtils.getRequestParams(req)).params);
+  const provider = await links.getProvider(ctx.APPCODE);
+  const manager = await provider.canManage(req);
+  const rows = await services.listLinkEvents({
+    APPCODE: ctx.APPCODE,
+    ...filters,
+    CREATEDBY: manager ? null : ctx.USRID,
+  });
+  return rows.map((row) => links.formatLinkEvent(row, { withClient: manager }));
 }
 
 /** Chemin absolu d'un fichier déposé, borné à UPLOAD_PATH. */
@@ -534,28 +614,45 @@ export async function openFileLink(req, res) {
     ? await services.getLinkByTokenHash(links.hashToken(parsed.data.token))
     : null;
   if (!row) throw httpError(404, "Lien invalide : vérifiez qu'il a été copié en entier.");
-  if (row.STATUS === "REVOKED") throw httpError(410, "Ce lien a été désactivé.");
-  if (row.STATUS === "EXPIRED") throw httpError(410, "Ce lien a expiré : demandez-en un nouveau.");
+
+  // Les requêtes HEAD (visionneuse qui sonde le type) ne sont pas journalisées.
+  const counted = req.method !== "HEAD";
+  const client = links.requestClient(req);
+  const refuse = (status, message, reason) => {
+    if (counted) logEvent({ LNKID: row.LNKID, EVENT: "REFUSED", ...client, DETAIL: reason });
+    return httpError(status, message);
+  };
+
+  if (row.STATUS === "REVOKED") throw refuse(410, "Ce lien a été désactivé.", "Lien désactivé");
+  if (row.STATUS === "EXPIRED") {
+    throw refuse(410, "Ce lien a expiré : demandez-en un nouveau.", "Lien expiré");
+  }
 
   const link = links.formatLink(row);
   const provider = await links.getProvider(link.APPCODE);
   const target = await provider.resolve(link, { method: req.method });
-  if (!target?.FILECODE) throw httpError(404, "Ce document n'est plus disponible.");
+  const unavailable = () =>
+    refuse(404, "Ce document n'est plus disponible.", "Document plus disponible (retiré ou dépublié)");
+  if (!target?.FILECODE) throw unavailable();
 
   const [attachment] = await services.getFiles({ FILECODE: target.FILECODE });
-  if (!attachment || attachment.APPCODE !== link.APPCODE) {
-    throw httpError(404, "Ce document n'est plus disponible.");
-  }
+  if (!attachment || attachment.APPCODE !== link.APPCODE) throw unavailable();
   const absPath = resolveStoredPath(attachment.RELATIVEPATH);
   await fs.access(absPath).catch(() => {
-    throw httpError(404, "Ce document n'est plus disponible.");
+    throw unavailable();
   });
 
   const mimetype = attachment.MIMETYPE || "application/octet-stream";
   const disposition = /^(application\/pdf|image\/|text\/plain)/.test(mimetype) ? "inline" : "attachment";
   const filename = target.FILENAME || attachment.ORIGINALNAME || "document";
 
-  if (req.method !== "HEAD") {
+  if (counted) {
+    logEvent({
+      LNKID: link.LNKID,
+      EVENT: disposition === "attachment" ? "DOWNLOADED" : "OPENED",
+      ...client,
+      DETAIL: target.DETAIL ?? filename,
+    });
     services
       .markLinkOpened(link.LNKID)
       .catch((err) => logger.warn(`[FILES][LINK] ouverture #${link.LNKID} non comptée : ${err.message}`));

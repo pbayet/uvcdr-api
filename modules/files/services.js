@@ -540,3 +540,79 @@ export async function markLinkOpened(LNKID) {
     inputs: { LNKID: { type: sql.Int, value: LNKID } },
   });
 }
+
+/**
+ * Nouvelle validité d'un lien non révoqué, à partir de maintenant ;
+ * `TTL` en secondes, `null` = permanent.
+ */
+export async function updateLinkExpiry(LNKID, TTL) {
+  await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `
+    UPDATE FILELINKS
+    SET EXPIRESAT = CASE WHEN @TTL IS NULL THEN NULL ELSE DATEADD(SECOND, @TTL, SYSDATETIME()) END
+    WHERE LNKID = @LNKID AND REVOKEDAT IS NULL
+    `,
+    inputs: {
+      LNKID: { type: sql.Int, value: LNKID },
+      TTL: { type: sql.Int, value: TTL ?? null },
+    },
+  });
+  return getLinkById(LNKID);
+}
+
+/** Journalise un mouvement d'un lien (cf. FILELINKEVENTS). */
+export async function addLinkEvent({ LNKID, EVENT, USRID, USRNAME, IP, USERAGENT, DETAIL }) {
+  await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `
+    INSERT INTO FILELINKEVENTS (LNKID, EVENT, USRID, USRNAME, IP, USERAGENT, DETAIL, CREATEDAT)
+    VALUES (@LNKID, @EVENT, @USRID, @USRNAME, @IP, @USERAGENT, @DETAIL, SYSDATETIME())
+    `,
+    inputs: {
+      LNKID: { type: sql.Int, value: LNKID },
+      EVENT: { type: sql.VarChar(20), value: EVENT },
+      USRID: { type: sql.Int, value: USRID ?? null },
+      USRNAME: { type: sql.NVarChar(200), value: USRNAME ?? null },
+      IP: { type: sql.VarChar(64), value: IP ? String(IP).slice(0, 64) : null },
+      USERAGENT: { type: sql.NVarChar(300), value: USERAGENT ? String(USERAGENT).slice(0, 300) : null },
+      DETAIL: { type: sql.NVarChar(400), value: DETAIL ? String(DETAIL).slice(0, 400) : null },
+    },
+  });
+}
+
+/**
+ * Mouvements des liens d'une application (filtres : lien, cible, auteur du
+ * lien), les plus récents d'abord (1000 maximum).
+ */
+export async function listLinkEvents({ APPCODE, LNKID, FILECODE, ENTITYTYPE, ENTITYID, CREATEDBY }) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `
+    SELECT TOP 1000
+      e.EVTID, e.LNKID, e.EVENT, e.USRID, e.USRNAME, e.IP, e.USERAGENT, e.DETAIL, e.CREATEDAT,
+      l.PARAMS, l.FILENAME, l.CREATEDBY, l.CREATEDBYNAME
+    FROM FILELINKEVENTS AS e
+    INNER JOIN FILELINKS AS l ON l.LNKID = e.LNKID
+    WHERE l.APPCODE = @APPCODE
+      AND (@LNKID IS NULL OR l.LNKID = @LNKID)
+      AND (@FILECODE IS NULL OR l.FILECODE = @FILECODE)
+      AND (@ENTITYTYPE IS NULL OR l.ENTITYTYPE = @ENTITYTYPE)
+      AND (@ENTITYID IS NULL OR l.ENTITYID = @ENTITYID)
+      AND (@CREATEDBY IS NULL OR l.CREATEDBY = @CREATEDBY)
+    ORDER BY e.CREATEDAT DESC, e.EVTID DESC
+    `,
+    inputs: {
+      APPCODE: { type: sql.VarChar(20), value: APPCODE },
+      LNKID: { type: sql.Int, value: LNKID ?? null },
+      FILECODE: { type: sql.VarChar(50), value: FILECODE ?? null },
+      ENTITYTYPE: { type: sql.VarChar(100), value: ENTITYTYPE ?? null },
+      ENTITYID: { type: sql.VarChar(100), value: ENTITYID ?? null },
+      CREATEDBY: { type: sql.Int, value: CREATEDBY ?? null },
+    },
+  });
+  return result.recordset;
+}
