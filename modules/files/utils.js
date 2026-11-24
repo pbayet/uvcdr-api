@@ -86,12 +86,41 @@ export const updateFileLinkSchema = z
     path: ["EXPIRESIN"],
   });
 
-/** GET /api/files/links/events — filtres (lien, fichier, cible). */
-export const listFileLinkEventsSchema = z.object({
+/** Types de mouvement d'un lien (cf. FILELINKEVENTS.EVENT). */
+export const FILE_LINK_EVENT_TYPES = ["CREATED", "UPDATED", "REVOKED", "OPENED", "DOWNLOADED", "REFUSED"];
+
+/** Filtres communs aux mouvements (lien, fichier, cible). */
+const fileLinkEventTargetSchema = z.object({
   LNKID: z.coerce.number().int().positive().optional(),
   FILECODE: z.string().trim().max(50).optional(),
   ENTITYTYPE: z.string().trim().max(100).optional(),
   ENTITYID: z.string().trim().max(100).optional(),
+});
+
+/**
+ * GET /api/files/links/events — filtres (lien, fichier, cible, types
+ * `EVENT=OPENED,DOWNLOADED`, recherche `SEARCH`, depuis `SINCE`) et
+ * pagination (`LIMIT` / `OFFSET` ; sans `LIMIT` : 1000 premiers).
+ */
+export const listFileLinkEventsSchema = fileLinkEventTargetSchema.extend({
+  EVENT: z.preprocess(
+    (value) => {
+      if (value === undefined || value === null || value === "") return undefined;
+      const list = Array.isArray(value) ? value : String(value).split(",");
+      const events = list.map((v) => String(v).trim().toUpperCase()).filter(Boolean);
+      return events.length ? [...new Set(events)] : undefined;
+    },
+    z.array(z.enum(FILE_LINK_EVENT_TYPES)).optional(),
+  ),
+  SEARCH: z.string().trim().max(100).optional().transform((v) => v || undefined),
+  SINCE: z.coerce.date().optional(),
+  LIMIT: z.coerce.number().int().min(1).max(200).optional(),
+  OFFSET: z.coerce.number().int().min(0).default(0),
+});
+
+/** GET /api/files/links/events/summary — nombre de mouvements par type et `PERTYPE` derniers. */
+export const summarizeFileLinkEventsSchema = fileLinkEventTargetSchema.extend({
+  PERTYPE: z.coerce.number().int().min(0).max(50).default(5),
 });
 
 export const fileLinkTokenParamSchema = z.object({

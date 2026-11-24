@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import jwt from "jsonwebtoken";
 import * as services from "./services.js";
 import { isManagerPermission } from "./utils.js";
+import { logger } from "../../config/logger.config.js";
 
 /* ─────────────────────────────────────────────
    FILES — Liens directs vers un fichier (toutes applications)
@@ -213,11 +214,63 @@ export function describeTtl(ttl) {
 
 /** Origine d'une ouverture : IP (premier relais X-Forwarded-For) et navigateur. */
 export function requestClient(req) {
-  const forwarded = String(req?.headers?.["x-forwarded-for"] ?? "").split(",")[0].trim();
+  const peer = normalizeIp(req?.socket?.remoteAddress ?? req?.ip);
+  // Les en-têtes de relais ne sont crus que s'ils viennent du proxy local /
+  // interne (IIS, Apache…) : un client direct pourrait les falsifier.
+  const viaProxy = !peer || isLoopbackIp(peer) || isPrivateIp(peer);
+  const relayed = viaProxy ? forwardedIp(req?.headers ?? {}) : null;
+  const ip = relayed ?? peer;
+  if (viaProxy && !relayed && isLoopbackIp(ip)) logMissingClientIp(req);
   return {
-    IP: forwarded || req?.ip || req?.socket?.remoteAddress || null,
+    // Une IP de bouclage (::1, 127.0.0.1) est celle du proxy, pas du client.
+    IP: ip && !isLoopbackIp(ip) ? ip : null,
     USERAGENT: req?.headers?.["user-agent"] ?? null,
   };
+}
+
+/** « ::ffff:10.1.2.3 » → « 10.1.2.3 » ; « 10.1.2.3:51234 » (IIS ARR) → « 10.1.2.3 » ; « [::1]:80 » → « ::1 ». */
+export function normalizeIp(value) {
+  let ip = String(value ?? "").trim().replace(/^"|"$/g, "");
+  if (!ip || ip.toLowerCase() === "unknown") return null;
+  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(ip);
+  if (bracketed) ip = bracketed[1];
+  else if (/^\d{1,3}(\.\d{1,3}){3}:\d+$/.test(ip)) ip = ip.replace(/:\d+$/, "");
+  ip = ip.replace(/^::ffff:(?=\d{1,3}(\.\d{1,3}){3}$)/i, "");
+  return ip || null;
+}
+
+export const isLoopbackIp = (ip) => ip === "::1" || /^127\./.test(String(ip ?? ""));
+
+export const isPrivateIp = (ip) =>
+  /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.|169\.254\.)/.test(String(ip ?? "")) ||
+  /^f[cd][0-9a-f]{2}:/i.test(String(ip ?? ""));
+
+/**
+ * IP du client transmise par le proxy : `X-Forwarded-For` (premier relais),
+ * `Forwarded: for=…` (RFC 7239), `X-Real-IP`, `X-Client-IP`,
+ * `CF-Connecting-IP`.
+ */
+function forwardedIp(headers) {
+  const xff = String(headers["x-forwarded-for"] ?? "").split(",")[0];
+  const rfc = /for=("?\[?[^;,"\]]+\]?(?::\d+)?"?)/i.exec(String(headers.forwarded ?? ""))?.[1];
+  for (const candidate of [xff, rfc, headers["x-real-ip"], headers["x-client-ip"], headers["cf-connecting-ip"]]) {
+    const ip = normalizeIp(candidate);
+    if (ip) return ip;
+  }
+  return null;
+}
+
+let missingIpLogged = false;
+/** Une seule alerte par process : le proxy ne transmet pas l'IP du client. */
+function logMissingClientIp(req) {
+  if (missingIpLogged) return;
+  missingIpLogged = true;
+  const relayHeaders = Object.keys(req?.headers ?? {}).filter((h) => /forward|real-ip|client-ip|arr/i.test(h));
+  logger.warn(
+    `[FILES][LINK] IP du client inconnue : la requête vient du proxy local sans X-Forwarded-For ` +
+      `(en-têtes de relais reçus : ${relayHeaders.join(", ") || "aucun"}). ` +
+      `Activer la transmission de l'IP sur le serveur web (IIS ARR : « Preserve client IP in X-Forwarded-For »).`,
+  );
 }
 
 /** Préfixe des cookies de session des fronts UNIS (`uvcdr-apps-jwt-<APPCODE>`). */
@@ -294,7 +347,11 @@ export function identifyOpener(req, APPCODE) {
  * Mouvement pour le client. IP et navigateur des ouvertures : gestionnaires
  * seulement (`withClient`).
  */
-export function formatLinkEvent(row, { withClient = false } = {}) {
+/**
+ * Mouvement tel que renvoyé par l'API : navigateur (`USERAGENT`) si
+ * `withClient`, IP si `withIp` (administrateurs seulement).
+ */
+export function formatLinkEvent(row, { withClient = false, withIp = false } = {}) {
   let PARAMS = null;
   try {
     PARAMS = row.PARAMS ? JSON.parse(row.PARAMS) : null;
@@ -310,7 +367,8 @@ export function formatLinkEvent(row, { withClient = false } = {}) {
     DETAIL: row.DETAIL ?? null,
     CREATEDAT: row.CREATEDAT,
     LINK: { PARAMS, FILENAME: row.FILENAME ?? null, CREATEDBY: row.CREATEDBY, CREATEDBYNAME: row.CREATEDBYNAME ?? null },
-    ...(withClient ? { IP: row.IP ?? null, USERAGENT: row.USERAGENT ?? null } : {}),
+    ...(withClient ? { USERAGENT: row.USERAGENT ?? null } : {}),
+    ...(withIp ? { IP: row.IP ?? null } : {}),
   };
 }
 

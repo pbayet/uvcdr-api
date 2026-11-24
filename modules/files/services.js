@@ -584,35 +584,117 @@ export async function addLinkEvent({ LNKID, EVENT, USRID, USRNAME, IP, USERAGENT
   });
 }
 
-/**
- * Mouvements des liens d'une application (filtres : lien, cible, auteur du
- * lien), les plus récents d'abord (1000 maximum).
- */
-export async function listLinkEvents({ APPCODE, LNKID, FILECODE, ENTITYTYPE, ENTITYID, CREATEDBY }) {
-  const result = await runQuery({
-    moduleUrl: import.meta.url,
-    dbConnectionName: "attachments",
-    query: `
-    SELECT TOP 1000
-      e.EVTID, e.LNKID, e.EVENT, e.USRID, e.USRNAME, e.IP, e.USERAGENT, e.DETAIL, e.CREATEDAT,
-      l.PARAMS, l.FILENAME, l.CREATEDBY, l.CREATEDBYNAME
-    FROM FILELINKEVENTS AS e
-    INNER JOIN FILELINKS AS l ON l.LNKID = e.LNKID
-    WHERE l.APPCODE = @APPCODE
+/** Conditions communes aux mouvements (lien, fichier, cible, auteur du lien). */
+const LINK_EVENT_TARGET_WHERE = `
+    l.APPCODE = @APPCODE
       AND (@LNKID IS NULL OR l.LNKID = @LNKID)
       AND (@FILECODE IS NULL OR l.FILECODE = @FILECODE)
       AND (@ENTITYTYPE IS NULL OR l.ENTITYTYPE = @ENTITYTYPE)
       AND (@ENTITYID IS NULL OR l.ENTITYID = @ENTITYID)
-      AND (@CREATEDBY IS NULL OR l.CREATEDBY = @CREATEDBY)
+      AND (@CREATEDBY IS NULL OR l.CREATEDBY = @CREATEDBY)`;
+
+const linkEventTargetInputs = ({ APPCODE, LNKID, FILECODE, ENTITYTYPE, ENTITYID, CREATEDBY }) => ({
+  APPCODE: { type: sql.VarChar(20), value: APPCODE },
+  LNKID: { type: sql.Int, value: LNKID ?? null },
+  FILECODE: { type: sql.VarChar(50), value: FILECODE ?? null },
+  ENTITYTYPE: { type: sql.VarChar(100), value: ENTITYTYPE ?? null },
+  ENTITYID: { type: sql.VarChar(100), value: ENTITYID ?? null },
+  CREATEDBY: { type: sql.Int, value: CREATEDBY ?? null },
+});
+
+/** Échappe les jokers de LIKE (`%`, `_`, `[`) d'une recherche saisie. */
+const likePattern = (text) => `%${String(text).replace(/[[%_]/g, "[$&]")}%`;
+
+/**
+ * Mouvements des liens d'une application (filtres : lien, cible, auteur du
+ * lien, types `EVENTS`, recherche `SEARCH` — auteur, détail, fichier, n° de
+ * lien, et IP si `SEARCHIP` —, depuis `SINCE`), les plus récents d'abord.
+ * Avec `LIMIT` : page `OFFSET`…`OFFSET + LIMIT` ; sans : 1000 premiers.
+ */
+export async function listLinkEvents({
+  APPCODE,
+  LNKID,
+  FILECODE,
+  ENTITYTYPE,
+  ENTITYID,
+  CREATEDBY,
+  EVENTS,
+  SEARCH,
+  SEARCHIP = false,
+  SINCE,
+  LIMIT,
+  OFFSET = 0,
+}) {
+  const paged = Number.isInteger(LIMIT) && LIMIT > 0;
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `
+    SELECT ${paged ? "" : "TOP 1000"}
+      e.EVTID, e.LNKID, e.EVENT, e.USRID, e.USRNAME, e.IP, e.USERAGENT, e.DETAIL, e.CREATEDAT,
+      l.PARAMS, l.FILENAME, l.CREATEDBY, l.CREATEDBYNAME
+    FROM FILELINKEVENTS AS e
+    INNER JOIN FILELINKS AS l ON l.LNKID = e.LNKID
+    WHERE ${LINK_EVENT_TARGET_WHERE}
+      AND (@EVENTS IS NULL OR e.EVENT IN (SELECT LTRIM(RTRIM(value)) FROM STRING_SPLIT(@EVENTS, ',')))
+      AND (@SINCE IS NULL OR e.CREATEDAT >= @SINCE)
+      AND (
+        @SEARCH IS NULL
+        OR e.USRNAME LIKE @SEARCH
+        OR e.DETAIL LIKE @SEARCH
+        OR l.FILENAME LIKE @SEARCH
+        OR l.CREATEDBYNAME LIKE @SEARCH
+        OR CAST(e.LNKID AS VARCHAR(20)) = @SEARCHID
+        OR (@SEARCHIP = 1 AND e.IP LIKE @SEARCH)
+      )
     ORDER BY e.CREATEDAT DESC, e.EVTID DESC
+    ${paged ? "OFFSET @OFFSET ROWS FETCH NEXT @LIMIT ROWS ONLY" : ""}
     `,
     inputs: {
-      APPCODE: { type: sql.VarChar(20), value: APPCODE },
-      LNKID: { type: sql.Int, value: LNKID ?? null },
-      FILECODE: { type: sql.VarChar(50), value: FILECODE ?? null },
-      ENTITYTYPE: { type: sql.VarChar(100), value: ENTITYTYPE ?? null },
-      ENTITYID: { type: sql.VarChar(100), value: ENTITYID ?? null },
-      CREATEDBY: { type: sql.Int, value: CREATEDBY ?? null },
+      ...linkEventTargetInputs({ APPCODE, LNKID, FILECODE, ENTITYTYPE, ENTITYID, CREATEDBY }),
+      EVENTS: { type: sql.VarChar(200), value: EVENTS?.length ? EVENTS.join(",") : null },
+      SINCE: { type: sql.DateTime2, value: SINCE ?? null },
+      SEARCH: { type: sql.NVarChar(310), value: SEARCH ? likePattern(SEARCH) : null },
+      SEARCHID: { type: sql.VarChar(100), value: SEARCH ? String(SEARCH).replace(/^#/, "").trim() : null },
+      SEARCHIP: { type: sql.Bit, value: SEARCHIP ? 1 : 0 },
+      ...(paged
+        ? {
+            OFFSET: { type: sql.Int, value: OFFSET },
+            LIMIT: { type: sql.Int, value: LIMIT },
+          }
+        : {}),
+    },
+  });
+  return result.recordset;
+}
+
+/**
+ * Par type de mouvement : nombre total (`TOTAL`) et `PERTYPE` derniers
+ * mouvements (`RN` = rang, 1 = plus récent), mêmes filtres de cible que
+ * listLinkEvents. Un type sans mouvement n'apparaît pas.
+ */
+export async function summarizeLinkEvents({ APPCODE, LNKID, FILECODE, ENTITYTYPE, ENTITYID, CREATEDBY, PERTYPE = 5 }) {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `
+    WITH ranked AS (
+      SELECT
+        e.EVTID, e.LNKID, e.EVENT, e.USRID, e.USRNAME, e.IP, e.USERAGENT, e.DETAIL, e.CREATEDAT,
+        l.PARAMS, l.FILENAME, l.CREATEDBY, l.CREATEDBYNAME,
+        ROW_NUMBER() OVER (PARTITION BY e.EVENT ORDER BY e.CREATEDAT DESC, e.EVTID DESC) AS RN,
+        COUNT(*) OVER (PARTITION BY e.EVENT) AS TOTAL
+      FROM FILELINKEVENTS AS e
+      INNER JOIN FILELINKS AS l ON l.LNKID = e.LNKID
+      WHERE ${LINK_EVENT_TARGET_WHERE}
+    )
+    SELECT * FROM ranked
+    WHERE RN <= CASE WHEN @PERTYPE < 1 THEN 1 ELSE @PERTYPE END
+    ORDER BY EVENT, RN
+    `,
+    inputs: {
+      ...linkEventTargetInputs({ APPCODE, LNKID, FILECODE, ENTITYTYPE, ENTITYID, CREATEDBY }),
+      PERTYPE: { type: sql.Int, value: PERTYPE },
     },
   });
   return result.recordset;

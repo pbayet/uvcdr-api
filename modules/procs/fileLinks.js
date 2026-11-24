@@ -83,8 +83,10 @@ export async function resolve(link) {
   return {
     FILECODE: code,
     FILENAME,
-    // Mouvements du lien : version effectivement servie.
-    DETAIL: `v${version.VERNUM} · ${FILENAME}`,
+    // Mouvements du lien : version effectivement servie (un lien sans
+    // version sert la version en vigueur au moment de l'ouverture). Le nom
+    // du fichier n'apporte rien : c'est toujours le document de la procédure.
+    DETAIL: `v${version.VERNUM}${KIND === "preview" ? " · aperçu PDF" : ""}`,
     // Consultation attribuée au lecteur s'il est identifié (cookie de
     // session UNIS), à l'auteur du lien à défaut.
     onOpen: ({ disposition, opener } = {}) =>

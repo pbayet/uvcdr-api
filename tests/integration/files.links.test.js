@@ -236,7 +236,7 @@ describe("Intégration :: liens directs /api/files", () => {
         USERAGENT: "Navigateur test",
         USRID: null,
         USRNAME: null,
-        DETAIL: "v3 · nettoyage.pdf",
+        DETAIL: "v3",
       }),
     );
     expect(filesServices.addLinkEvent).toHaveBeenCalledTimes(1);
@@ -309,5 +309,82 @@ describe("Intégration :: liens directs /api/files", () => {
     const admin = await request(app).get("/api/files/links/events?LNKID=1").set(auth("admin"));
     expect(filesServices.listLinkEvents).toHaveBeenLastCalledWith(expect.objectContaining({ LNKID: 1, CREATEDBY: null }));
     expect(admin.body.data[0]).toMatchObject({ IP: "10.1.2.3", USERAGENT: "Navigateur test" });
+  });
+
+  it("mouvements : un rédacteur non administrateur voit le navigateur, pas l'IP", async () => {
+    vi.stubEnv("PROCS_EDITOR_PERMS", "REDACTEUR,ADMIN");
+    try {
+      const editor = await tokenFor({ email: "redac-lnk@union-vignerons.com", permissionName: "REDACTEUR", USRID: 4 });
+      usersmanagerServices.getUserByEmail.mockImplementation(async (email) =>
+        [email === editor.raw.EMAIL ? editor.raw : Object.values(users).find((u) => u.raw.EMAIL === email)?.raw],
+      );
+      filesServices.listLinkEvents.mockResolvedValue([
+        { EVTID: 9, LNKID: 1, EVENT: "OPENED", IP: "10.1.2.3", USERAGENT: "Navigateur test", DETAIL: "v3", CREATEDAT: new Date(), PARAMS: null, FILENAME: null, CREATEDBY: 2 },
+      ]);
+      const res = await request(app).get("/api/files/links/events?SEARCH=10.1").set({ Authorization: `Bearer ${editor.token}` });
+      expect(res.status).toBe(200);
+      // Rédacteur : tous les liens (CREATEDBY null), navigateur, mais ni IP ni recherche par IP.
+      expect(filesServices.listLinkEvents).toHaveBeenLastCalledWith(expect.objectContaining({ CREATEDBY: null, SEARCHIP: false }));
+      expect(res.body.data[0].USERAGENT).toBe("Navigateur test");
+      expect(res.body.data[0].IP).toBeUndefined();
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("mouvements : filtres de type, recherche, période et pagination", async () => {
+    filesServices.listLinkEvents.mockResolvedValue([]);
+
+    const res = await request(app)
+      .get("/api/files/links/events?ENTITYTYPE=PROCEDURE&ENTITYID=7&EVENT=opened,DOWNLOADED&SEARCH=dupont&SINCE=2026-11-01&LIMIT=30&OFFSET=60")
+      .set(auth("reader"));
+    expect(res.status).toBe(200);
+    expect(filesServices.listLinkEvents).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        EVENTS: ["OPENED", "DOWNLOADED"],
+        SEARCH: "dupont",
+        SEARCHIP: false,
+        LIMIT: 30,
+        OFFSET: 60,
+        CREATEDBY: 2,
+        SINCE: expect.any(Date),
+      }),
+    );
+
+    await request(app).get("/api/files/links/events?SEARCH=10.1").set(auth("admin"));
+    expect(filesServices.listLinkEvents).toHaveBeenLastCalledWith(expect.objectContaining({ SEARCHIP: true, OFFSET: 0 }));
+    expect(filesServices.listLinkEvents.mock.lastCall[0].LIMIT).toBeUndefined();
+
+    const bad = await request(app).get("/api/files/links/events?EVENT=HACKED").set(auth("admin"));
+    expect(bad.status).toBe(400);
+    const tooMany = await request(app).get("/api/files/links/events?LIMIT=5000").set(auth("admin"));
+    expect(tooMany.status).toBe(400);
+  });
+
+  it("résumé des mouvements : total et derniers par type, types triés par activité récente", async () => {
+    const row = (over) => ({
+      EVTID: 1, LNKID: 1, EVENT: "OPENED", IP: "10.1.2.3", USERAGENT: "Nav", DETAIL: null, CREATEDAT: new Date("2026-11-20T10:00:00Z"),
+      PARAMS: JSON.stringify({ VERNUM: null, KIND: "original" }), FILENAME: "nettoyage.pdf", CREATEDBY: 2, RN: "1", TOTAL: 1, ...over,
+    });
+    filesServices.summarizeLinkEvents.mockResolvedValue([
+      row({ EVTID: 1, EVENT: "CREATED", CREATEDAT: new Date("2026-11-01T10:00:00Z"), TOTAL: 1 }),
+      row({ EVTID: 5, EVENT: "OPENED", RN: "1", TOTAL: 42 }),
+      row({ EVTID: 4, EVENT: "OPENED", RN: "2", TOTAL: 42, CREATEDAT: new Date("2026-11-19T10:00:00Z") }),
+    ]);
+
+    const reader = await request(app).get("/api/files/links/events/summary?ENTITYTYPE=PROCEDURE&ENTITYID=7&PERTYPE=2").set(auth("reader"));
+    expect(reader.status).toBe(200);
+    expect(filesServices.summarizeLinkEvents).toHaveBeenLastCalledWith(
+      expect.objectContaining({ APPCODE: "PROCS", ENTITYID: "7", PERTYPE: 2, CREATEDBY: 2 }),
+    );
+    expect(reader.body.data.map((g) => [g.EVENT, g.TOTAL, g.LATEST.length])).toEqual([
+      ["OPENED", 42, 2],
+      ["CREATED", 1, 1],
+    ]);
+    expect(reader.body.data[0].LATEST[0].IP).toBeUndefined();
+
+    const countsOnly = await request(app).get("/api/files/links/events/summary?PERTYPE=0").set(auth("admin"));
+    expect(filesServices.summarizeLinkEvents).toHaveBeenLastCalledWith(expect.objectContaining({ CREATEDBY: null, PERTYPE: 0 }));
+    expect(countsOnly.body.data.every((g) => g.LATEST.length === 0)).toBe(true);
   });
 });

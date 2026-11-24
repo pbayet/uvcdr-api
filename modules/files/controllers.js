@@ -14,6 +14,7 @@ import {
   fileLinkTokenParamSchema,
   updateFileLinkSchema,
   listFileLinkEventsSchema,
+  summarizeFileLinkEventsSchema,
 } from "./utils.js";
 import * as requestUtils from "../../core/utils/request.utils.js";
 import {
@@ -572,21 +573,57 @@ export async function updateFileLink(req) {
 
 /**
  * GET /api/files/links/events — mouvements des liens de l'application
- * (filtres : `LNKID`, `FILECODE`, `ENTITYTYPE`, `ENTITYID`). Gestionnaires :
- * tous les liens, avec IP et navigateur des ouvertures ; autres
- * utilisateurs : leurs liens seulement, sans IP ni navigateur.
+ * (filtres : `LNKID`, `FILECODE`, `ENTITYTYPE`, `ENTITYID`). Gestionnaires
+ * de l'application (ex. rédacteurs) : tous les liens ; autres utilisateurs :
+ * leurs liens seulement. Navigateur des ouvertures : gestionnaires ; IP :
+ * administrateurs (MODIFY_PERMS) seulement.
  */
 export async function listFileLinkEvents(req) {
   const ctx = linkContext(req);
   const filters = listFileLinkEventsSchema.parse((await requestUtils.getRequestParams(req)).params);
   const provider = await links.getProvider(ctx.APPCODE);
   const manager = await provider.canManage(req);
+  const admin = isManagerPermission(req.payload?.permission);
+  const { EVENT, ...rest } = filters;
   const rows = await services.listLinkEvents({
+    APPCODE: ctx.APPCODE,
+    ...rest,
+    EVENTS: EVENT,
+    // L'IP n'est montrée (donc cherchable) qu'aux administrateurs.
+    SEARCHIP: admin,
+    CREATEDBY: manager ? null : ctx.USRID,
+  });
+  return rows.map((row) => links.formatLinkEvent(row, { withClient: manager, withIp: admin }));
+}
+
+/**
+ * GET /api/files/links/events/summary — par type de mouvement : nombre total
+ * et `PERTYPE` (défaut 5) derniers mouvements, mêmes filtres de cible et
+ * mêmes droits que GET /api/files/links/events. Types triés par mouvement le
+ * plus récent ; un type sans mouvement n'apparaît pas.
+ */
+export async function summarizeFileLinkEvents(req) {
+  const ctx = linkContext(req);
+  const filters = summarizeFileLinkEventsSchema.parse((await requestUtils.getRequestParams(req)).params);
+  const provider = await links.getProvider(ctx.APPCODE);
+  const manager = await provider.canManage(req);
+  const admin = isManagerPermission(req.payload?.permission);
+  const rows = await services.summarizeLinkEvents({
     APPCODE: ctx.APPCODE,
     ...filters,
     CREATEDBY: manager ? null : ctx.USRID,
   });
-  return rows.map((row) => links.formatLinkEvent(row, { withClient: manager }));
+  // Lignes triées par type puis rang : la première d'un type est la plus récente.
+  const groups = new Map();
+  const lastAt = new Map();
+  for (const row of rows) {
+    if (!groups.has(row.EVENT)) {
+      groups.set(row.EVENT, { EVENT: row.EVENT, TOTAL: Number(row.TOTAL), LATEST: [] });
+      lastAt.set(row.EVENT, new Date(row.CREATEDAT).getTime() || 0);
+    }
+    if (filters.PERTYPE > 0) groups.get(row.EVENT).LATEST.push(links.formatLinkEvent(row, { withClient: manager, withIp: admin }));
+  }
+  return [...groups.values()].sort((a, b) => lastAt.get(b.EVENT) - lastAt.get(a.EVENT));
 }
 
 /** Chemin absolu d'un fichier déposé, borné à UPLOAD_PATH. */
