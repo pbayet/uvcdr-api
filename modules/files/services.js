@@ -412,7 +412,7 @@ export async function markPurgedAttachment(id) {
 ───────────────────────────────────────────── */
 
 const LINK_COLUMNS = `
-  LNKID, APPCODE, FILECODE, ENTITYTYPE, ENTITYID, PARAMS, FILENAME, LABEL,
+  LNKID, APPCODE, FILECODE, ENTITYTYPE, ENTITYID, PARAMS, FILENAME, LABEL, TOKENENC,
   WITHNAME, EXPIRESAT, CREATEDBY, CREATEDBYNAME, CREATEDAT, REVOKEDAT,
   REVOKEDBY, REVOKEDBYNAME, OPENCOUNT, LASTOPENEDAT,
   CASE
@@ -429,12 +429,12 @@ export async function insertLink(link) {
     dbConnectionName: "attachments",
     query: `
     INSERT INTO FILELINKS (
-      TOKENHASH, APPCODE, FILECODE, ENTITYTYPE, ENTITYID, PARAMS, FILENAME,
+      TOKENHASH, TOKENENC, APPCODE, FILECODE, ENTITYTYPE, ENTITYID, PARAMS, FILENAME,
       LABEL, WITHNAME, EXPIRESAT, CREATEDBY, CREATEDBYNAME, CREATEDAT
     )
     OUTPUT INSERTED.LNKID
     VALUES (
-      @TOKENHASH, @APPCODE, @FILECODE, @ENTITYTYPE, @ENTITYID, @PARAMS, @FILENAME,
+      @TOKENHASH, @TOKENENC, @APPCODE, @FILECODE, @ENTITYTYPE, @ENTITYID, @PARAMS, @FILENAME,
       @LABEL, @WITHNAME,
       CASE WHEN @TTL IS NULL THEN NULL ELSE DATEADD(SECOND, @TTL, SYSDATETIME()) END,
       @CREATEDBY, @CREATEDBYNAME, SYSDATETIME()
@@ -442,6 +442,7 @@ export async function insertLink(link) {
     `,
     inputs: {
       TOKENHASH: { type: sql.Char(64), value: link.TOKENHASH },
+      TOKENENC: { type: sql.VarChar(200), value: link.TOKENENC ?? null },
       APPCODE: { type: sql.VarChar(20), value: link.APPCODE },
       FILECODE: { type: sql.VarChar(50), value: link.FILECODE ?? null },
       ENTITYTYPE: { type: sql.VarChar(100), value: link.ENTITYTYPE ?? null },

@@ -177,6 +177,22 @@ describe("Intégration :: liens directs /api/files", () => {
     expect(filesServices.getLinkByTokenHash).not.toHaveBeenCalled();
   });
 
+  it("création : jeton stocké chiffré, recopiable depuis la liste", async () => {
+    const created = await request(app)
+      .post("/api/files/links")
+      .set(auth("reader"))
+      .send({ TARGET: { PRCID: 7 }, WITHNAME: false });
+    const stored = filesServices.insertLink.mock.calls[0][0];
+    expect(stored.TOKENENC).toMatch(/^v1\./);
+    expect(stored).not.toHaveProperty("TOKEN");
+
+    filesServices.listLinks.mockResolvedValue([linkRow({ TOKENENC: stored.TOKENENC, WITHNAME: 0 })]);
+    const list = await request(app).get("/api/files/links?ENTITYTYPE=PROCEDURE&ENTITYID=7").set(auth("reader"));
+    expect(created.body.data.PATH).toMatch(/^\/files\/open\/[A-Za-z0-9_-]{32}$/);
+    expect(list.body.data[0].PATH).toBe(created.body.data.PATH);
+    expect(list.body.data[0]).not.toHaveProperty("TOKENENC");
+  });
+
   it("liste : un lecteur ne voit que ses liens, un rédacteur tous", async () => {
     filesServices.listLinks.mockResolvedValue([linkRow()]);
     await request(app).get("/api/files/links?ENTITYTYPE=PROCEDURE&ENTITYID=7").set(auth("reader"));

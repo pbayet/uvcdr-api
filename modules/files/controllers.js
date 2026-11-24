@@ -452,6 +452,7 @@ export async function createFileLink(req) {
   const { token, hash } = links.newToken();
   const row = await services.insertLink({
     TOKENHASH: hash,
+    TOKENENC: links.encryptToken(token),
     APPCODE: ctx.APPCODE,
     FILECODE: target.FILECODE ?? null,
     ENTITYTYPE: target.ENTITYTYPE ?? null,
@@ -518,7 +519,8 @@ export async function listFileLinks(req) {
     ACTIVEONLY: filters.ACTIVE,
     CREATEDBY: manager ? null : ctx.USRID,
   });
-  return rows.map(links.formatLink);
+  // Liste déjà restreinte à ce que l'utilisateur peut gérer : chemins inclus.
+  return rows.map((row) => links.formatLink(row, { withPath: true }));
 }
 
 /** DELETE /api/files/links/:lnkid — révoque un lien (son auteur ou un gestionnaire). */
@@ -526,12 +528,12 @@ export async function revokeFileLink(req) {
   const ctx = linkContext(req);
   const { lnkid } = lnkidParamSchema.parse(req.params);
   const { row } = await loadManageableLink(req, ctx, lnkid, "le désactiver");
-  if (row.REVOKEDAT) return links.formatLink(row);
+  if (row.REVOKEDAT) return links.formatLink(row, { withPath: true });
 
   const updated = await services.revokeLink(lnkid, ctx.USRID, ctx.NAME);
   logEvent({ LNKID: lnkid, EVENT: "REVOKED", USRID: ctx.USRID, USRNAME: ctx.NAME });
   logger.info(`[FILES][LINK] #${lnkid} révoqué par ${ctx.NAME}`);
-  return links.formatLink(updated);
+  return links.formatLink(updated, { withPath: true });
 }
 
 /**
@@ -565,7 +567,7 @@ export async function updateFileLink(req) {
     DETAIL: TTL === null ? "Rendu permanent" : `Nouvelle validité : ${links.describeTtl(TTL)}`,
   });
   logger.info(`[FILES][LINK] #${lnkid} modifié par ${ctx.NAME} — ${links.describeTtl(TTL)}`);
-  return links.formatLink(updated);
+  return links.formatLink(updated, { withPath: true });
 }
 
 /**

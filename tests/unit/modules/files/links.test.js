@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
+  decryptToken,
   describeTtl,
+  encryptToken,
+  formatLink,
   effectiveTtl,
   hashToken,
   isTokenShape,
@@ -72,5 +75,34 @@ describe("liens directs — libellé de validité (journal)", () => {
     expect(describeTtl(365 * DAY)).toBe("1 an");
     expect(describeTtl(36 * 3600)).toBe("36 heures");
     expect(describeTtl(90)).toBe("90 secondes");
+  });
+});
+
+describe("liens directs — jeton chiffré (recopie depuis la liste)", () => {
+  it("aller-retour, valeur courte, chiffrement différent à chaque fois", () => {
+    const { token } = newToken();
+    const enc = encryptToken(token);
+    expect(enc).toMatch(/^v1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+    expect(enc.length).toBeLessThanOrEqual(200);
+    expect(decryptToken(enc)).toBe(token);
+    expect(encryptToken(token)).not.toBe(enc);
+  });
+
+  it("valeur altérée ou absente → null", () => {
+    const enc = encryptToken(newToken().token);
+    const [v, iv, tag, data] = enc.split(".");
+    const altered = `${v}.${iv}.${tag}.${data.slice(0, -2)}${data.endsWith("AA") ? "BB" : "AA"}`;
+    expect(decryptToken(altered)).toBeNull();
+    expect(decryptToken(null)).toBeNull();
+    expect(decryptToken("n'importe quoi")).toBeNull();
+  });
+
+  it("PATH seulement sur demande, jamais le jeton chiffré", () => {
+    const token = "t".repeat(32);
+    const row = { LNKID: 1, TOKENENC: encryptToken(token), FILENAME: "a.pdf", WITHNAME: 1, STATUS: "ACTIVE" };
+    expect(formatLink(row, { withPath: true }).PATH).toBe(`/files/open/${token}/a.pdf`);
+    expect(formatLink(row)).not.toHaveProperty("PATH");
+    expect(formatLink(row, { withPath: true })).not.toHaveProperty("TOKENENC");
+    expect(formatLink({ ...row, TOKENENC: null }, { withPath: true }).PATH).toBeNull();
   });
 });

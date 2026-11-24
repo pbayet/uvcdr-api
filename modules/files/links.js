@@ -82,6 +82,45 @@ export function hashToken(token) {
   return crypto.createHash("sha256").update(String(token)).digest("hex");
 }
 
+/**
+ * Clé de chiffrement des jetons (AES-256) : FILES_LINK_SECRET, à défaut
+ * dérivée de JWT_SECRET. Une clé dédiée : un jeton chiffré ne sert à rien
+ * d'autre. `null` si aucun secret n'est configuré.
+ */
+function tokenKey() {
+  const secret = process.env.FILES_LINK_SECRET || process.env.JWT_SECRET;
+  if (!secret) return null;
+  return crypto.createHash("sha256").update(`files:link-token:v1:${secret}`).digest();
+}
+
+/**
+ * Jeton chiffré pour la base (AES-256-GCM) : `v1.<iv>.<tag>.<chiffré>` en
+ * base64url (≤ 100 caractères). `null` sans clé : le lien fonctionne, mais
+ * ne pourra pas être recopié depuis la liste.
+ */
+export function encryptToken(token) {
+  const key = tokenKey();
+  if (!key) return null;
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv("aes-256-gcm", key, iv);
+  const data = Buffer.concat([cipher.update(String(token), "utf8"), cipher.final()]);
+  return ["v1", iv, cipher.getAuthTag(), data].map((p) => (typeof p === "string" ? p : p.toString("base64url"))).join(".");
+}
+
+/** Jeton en clair, ou `null` (absent, clé changée, valeur altérée). */
+export function decryptToken(value) {
+  const key = tokenKey();
+  const [version, iv, tag, data] = String(value ?? "").split(".");
+  if (!key || version !== "v1" || !iv || !tag || !data) return null;
+  try {
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(iv, "base64url"));
+    decipher.setAuthTag(Buffer.from(tag, "base64url"));
+    return Buffer.concat([decipher.update(Buffer.from(data, "base64url")), decipher.final()]).toString("utf8");
+  } catch {
+    return null;
+  }
+}
+
 /** Jeton bien formé (32 caractères base64url) : évite une requête inutile. */
 export function isTokenShape(token) {
   return /^[A-Za-z0-9_-]{32}$/.test(String(token ?? ""));
@@ -223,9 +262,16 @@ export function effectiveTtl({ PERMANENT, EXPIRESIN }, POLICY) {
   return ttl;
 }
 
-/** Ligne FILELINKS pour le client (PARAMS désérialisé, booléens). */
-export function formatLink(row) {
+/**
+ * Ligne FILELINKS pour le client (PARAMS désérialisé, booléens). `withPath` :
+ * ajoute `PATH`, le chemin du lien à recopier ou ouvrir (auteur du lien et
+ * gestionnaires seulement ; `null` pour un lien créé avant le stockage du
+ * jeton chiffré, ou si la clé a changé). Le jeton chiffré n'est jamais
+ * renvoyé.
+ */
+export function formatLink(row, { withPath = false } = {}) {
   if (!row) return null;
+  const token = withPath ? decryptToken(row.TOKENENC) : null;
   let PARAMS = null;
   try {
     PARAMS = row.PARAMS ? JSON.parse(row.PARAMS) : null;
@@ -252,5 +298,6 @@ export function formatLink(row) {
     REVOKEDBYNAME: row.REVOKEDBYNAME ?? null,
     OPENCOUNT: row.OPENCOUNT ?? 0,
     LASTOPENEDAT: row.LASTOPENEDAT ?? null,
+    ...(withPath ? { PATH: token ? linkPath(token, row.FILENAME, !!row.WITHNAME) : null } : {}),
   };
 }

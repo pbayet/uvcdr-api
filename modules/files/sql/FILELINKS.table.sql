@@ -4,9 +4,11 @@
 
    Un lien direct ouvre un fichier SANS connexion :
      GET /api/files/open/<jeton>[/<nom du fichier>]
-   Le jeton (aléatoire, 192 bits) n'est jamais stocké : seule son empreinte
-   SHA-256 (TOKENHASH) l'est. Un lien perdu ne peut donc pas être recopié
-   depuis la liste : on en crée un nouveau (et on révoque l'ancien).
+   Le jeton (aléatoire, 192 bits) est retrouvé par son empreinte SHA-256
+   (TOKENHASH). Il est aussi conservé CHIFFRÉ (TOKENENC, AES-256-GCM, clé
+   FILES_LINK_SECRET ou dérivée de JWT_SECRET) pour que l'auteur du lien et
+   les gestionnaires puissent le recopier ou l'ouvrir depuis la liste.
+   Changer la clé : les liens s'ouvrent toujours, mais ne se recopient plus.
 
    Cible du lien :
      - FILECODE : un fichier précis (ATTACHMENTS.FILECODE) ;
@@ -33,6 +35,7 @@ BEGIN
     CREATE TABLE dbo.FILELINKS (
         LNKID          INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_FILELINKS PRIMARY KEY,
         TOKENHASH      CHAR(64)       NOT NULL,
+        TOKENENC       VARCHAR(200)   NULL,
         APPCODE        VARCHAR(20)    NOT NULL,
         FILECODE       VARCHAR(50)    NULL,
         ENTITYTYPE     VARCHAR(100)   NULL,
@@ -54,6 +57,11 @@ BEGIN
         CONSTRAINT CK_FILELINKS_TARGET CHECK (FILECODE IS NOT NULL OR (ENTITYTYPE IS NOT NULL AND ENTITYID IS NOT NULL))
     );
 END
+GO
+
+-- Tables créées avant l'ajout du jeton chiffré.
+IF COL_LENGTH(N'dbo.FILELINKS', N'TOKENENC') IS NULL
+    ALTER TABLE dbo.FILELINKS ADD TOKENENC VARCHAR(200) NULL;
 GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_FILELINKS_ENTITY' AND object_id = OBJECT_ID(N'dbo.FILELINKS'))
