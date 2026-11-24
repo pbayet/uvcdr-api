@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import jwt from "jsonwebtoken";
 import * as services from "./services.js";
 import { isManagerPermission } from "./utils.js";
 
@@ -28,8 +29,10 @@ import { isManagerPermission } from "./utils.js";
      }
      resolve(link, { method }) → { FILECODE, FILENAME?, onOpen? } | null
        appelé à CHAQUE ouverture : null = cible plus disponible ;
-       onOpen({ disposition }) : traçabilité propre à l'application
-       (jamais appelé pour une requête HEAD).
+       onOpen({ disposition, opener }) : traçabilité propre à l'application
+       (jamais appelé pour une requête HEAD) ; `opener` = { USRID, USRNAME }
+       si le navigateur a envoyé un jeton UNIS valide (cf. identifyOpener),
+       null sinon.
      canManage(req) → bool : voir, modifier et révoquer tous les liens de
        l'application, et voir l'IP / le navigateur des ouvertures.
      policy(req) → POLICY : validité qu'un utilisateur peut donner à un lien
@@ -215,6 +218,76 @@ export function requestClient(req) {
     IP: forwarded || req?.ip || req?.socket?.remoteAddress || null,
     USERAGENT: req?.headers?.["user-agent"] ?? null,
   };
+}
+
+/** Préfixe des cookies de session des fronts UNIS (`uvcdr-apps-jwt-<APPCODE>`). */
+export const SESSION_COOKIE_PREFIX = "uvcdr-apps-jwt-";
+
+/** Cookies de la requête (en-tête `Cookie`, sans dépendance à cookie-parser). */
+function parseCookies(header) {
+  const cookies = [];
+  for (const part of String(header ?? "").split(";")) {
+    const eq = part.indexOf("=");
+    if (eq < 1) continue;
+    const name = part.slice(0, eq).trim();
+    let value = part.slice(eq + 1).trim().replace(/^"(.*)"$/, "$1");
+    try {
+      value = decodeURIComponent(value);
+    } catch {
+      /* valeur laissée telle quelle */
+    }
+    cookies.push({ name, value });
+  }
+  return cookies;
+}
+
+/**
+ * Personne qui ouvre un lien direct, d'après les jetons UNIS qu'envoie son
+ * navigateur (cookies `uvcdr-apps-jwt-*` posés par les fronts sur le même
+ * domaine, ou en-tête Authorization si présent). Sert UNIQUEMENT à
+ * l'attribution dans le journal : l'ouverture reste publique.
+ *
+ * - signature vérifiée (JWT_SECRET) : un cookie forgé n'identifie personne ;
+ * - un jeton expiré est accepté (il prouve toujours qui est l'utilisateur),
+ *   mais un jeton valide passe avant ; puis celui de l'application du lien,
+ *   puis le plus récent ;
+ * - caves (DCLING) : leur id n'est pas un USRID → USRID null, nom seul ;
+ * - impersonation (`devToken === "true"`) : compte simulé, dev en clair.
+ *
+ * @returns {{ USRID: number|null, USRNAME: string|null } | null}
+ */
+export function identifyOpener(req, APPCODE) {
+  const candidates = parseCookies(req?.headers?.cookie)
+    .filter((c) => c.name.startsWith(SESSION_COOKIE_PREFIX) && c.value)
+    .map((c) => c.value);
+  const auth = String(req?.headers?.authorization ?? "");
+  if (auth.startsWith("Bearer ")) candidates.unshift(auth.slice(7).trim());
+  if (!candidates.length || !process.env.JWT_SECRET) return null;
+
+  const now = Math.floor(Date.now() / 1000);
+  const app = String(APPCODE ?? "").toUpperCase();
+  const payloads = [];
+  for (const token of new Set(candidates)) {
+    try {
+      const payload = jwt.verify(token, process.env.JWT_SECRET, { ignoreExpiration: true });
+      if (payload?.data && payload.permissionLevel !== -1) payloads.push(payload);
+    } catch {
+      /* jeton invalide ou forgé : ignoré */
+    }
+  }
+  if (!payloads.length) return null;
+
+  const score = (p) =>
+    (!p.exp || p.exp > now ? 4 : 0) + (String(p.application ?? "").toUpperCase() === app ? 2 : 0);
+  payloads.sort((a, b) => score(b) - score(a) || (b.iat ?? 0) - (a.iat ?? 0));
+  const { data, isCave, devToken, devEmail } = payloads[0];
+
+  const id = Number(data.id);
+  const USRID = !isCave && Number.isInteger(id) && id > 0 ? id : null;
+  let name = `${data.FirstName ?? ""} ${data.LastName ?? ""}`.trim() || data.email || null;
+  if (devToken === "true" && devEmail && name) name = `${name} (simulé par ${devEmail})`;
+  if (!USRID && !name) return null;
+  return { USRID, USRNAME: name ? name.slice(0, 200) : null };
 }
 
 /**

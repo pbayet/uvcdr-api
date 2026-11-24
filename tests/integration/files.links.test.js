@@ -234,10 +234,23 @@ describe("Intégration :: liens directs /api/files", () => {
         EVENT: "OPENED",
         IP: "10.1.2.3",
         USERAGENT: "Navigateur test",
+        USRID: null,
+        USRNAME: null,
         DETAIL: "v3 · nettoyage.pdf",
       }),
     );
     expect(filesServices.addLinkEvent).toHaveBeenCalledTimes(1);
+
+    // Lecteur identifié par le cookie de session UNIS de son navigateur.
+    filesServices.addLinkEvent.mockClear();
+    await request(app)
+      .get(`/api/files/open/${token}`)
+      .set("Cookie", `theme=dark; uvcdr-apps-jwt-PROCS=${users.reader.token}`);
+    await vi.waitFor(() =>
+      expect(filesServices.addLinkEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ EVENT: "OPENED", USRID: 2 }),
+      ),
+    );
 
     filesServices.getLinkByTokenHash.mockResolvedValue(linkRow({ STATUS: "EXPIRED" }));
     await request(app).get(`/api/files/open/${token}`);

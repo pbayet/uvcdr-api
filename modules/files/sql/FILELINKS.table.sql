@@ -80,9 +80,10 @@ GO
      OPENED      fichier affiché (navigateur, liseuse)
      DOWNLOADED  fichier téléchargé
      REFUSED     ouverture refusée (lien expiré, désactivé, document retiré)
-   Les ouvertures sont anonymes : IP et navigateur (USERAGENT) seulement,
-   visibles des gestionnaires uniquement. Les requêtes HEAD ne sont pas
-   journalisées.
+   Ouvertures : IP et navigateur (USERAGENT), visibles des gestionnaires
+   uniquement ; USRID / USRNAME renseignés si le navigateur envoie un cookie
+   de session UNIS valide (uvcdr-apps-jwt-*), NULL sinon (lecteur anonyme).
+   Les requêtes HEAD ne sont pas journalisées.
 ─────────────────────────────────────────── */
 IF OBJECT_ID(N'dbo.FILELINKEVENTS', N'U') IS NULL
 BEGIN

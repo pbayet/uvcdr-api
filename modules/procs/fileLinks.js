@@ -85,12 +85,14 @@ export async function resolve(link) {
     FILENAME,
     // Mouvements du lien : version effectivement servie.
     DETAIL: `v${version.VERNUM} · ${FILENAME}`,
-    onOpen: ({ disposition }) =>
+    // Consultation attribuée au lecteur s'il est identifié (cookie de
+    // session UNIS), à l'auteur du lien à défaut.
+    onOpen: ({ disposition, opener } = {}) =>
       services
         .addConsult({
           PRCID,
           VERID: version.VERID,
-          USRID: link.CREATEDBY,
+          USRID: opener?.USRID ?? link.CREATEDBY,
           KIND: disposition === "attachment" ? "DOWNLOAD" : "VIEW",
         })
         .catch((err) => logger.warn(`[PROCS][CONSULT] lien #${link.LNKID} non tracé : ${err.message}`)),

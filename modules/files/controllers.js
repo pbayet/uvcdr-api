@@ -619,7 +619,10 @@ export async function openFileLink(req, res) {
 
   // Les requêtes HEAD (visionneuse qui sonde le type) ne sont pas journalisées.
   const counted = req.method !== "HEAD";
-  const client = links.requestClient(req);
+  // Lecteur identifié si son navigateur envoie un cookie de session UNIS
+  // (uvcdr-apps-jwt-*) : attribution seulement, l'ouverture reste publique.
+  const opener = counted ? links.identifyOpener(req, row.APPCODE) : null;
+  const client = { ...links.requestClient(req), USRID: opener?.USRID ?? null, USRNAME: opener?.USRNAME ?? null };
   const refuse = (status, message, reason) => {
     if (counted) logEvent({ LNKID: row.LNKID, EVENT: "REFUSED", ...client, DETAIL: reason });
     return httpError(status, message);
@@ -659,7 +662,7 @@ export async function openFileLink(req, res) {
       .markLinkOpened(link.LNKID)
       .catch((err) => logger.warn(`[FILES][LINK] ouverture #${link.LNKID} non comptée : ${err.message}`));
     Promise.resolve()
-      .then(() => target.onOpen?.({ disposition }))
+      .then(() => target.onOpen?.({ disposition, opener }))
       .catch((err) => logger.warn(`[FILES][LINK] traçabilité #${link.LNKID} : ${err.message}`));
   }
 
