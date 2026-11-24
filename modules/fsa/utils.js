@@ -250,6 +250,8 @@ function mapValidationRow(row) {
       VALTYPNOM: row.VAL_TYP_VALTYPNOM,
     },
     VALNOT: row.VAL_VALNOT,
+    // Validation en alerte (commentaire à lire impérativement).
+    VALALERT: toBool(row.VAL_VALALERT),
     CREDAT: utcToParisIso(row.VAL_CREDAT),
     CREUSR: row.VAL_CREUSR,
     // PJS toujours vide : FSAPJ n'a pas de colonne pour rattacher une pièce
@@ -386,6 +388,9 @@ function mapFolderListItem(row, mustValidateMap) {
     VALIDATED_SERVICES: (row.ENT_VALIDATED_SERVICES || "")
       .split(",")
       .filter(Boolean),
+
+    // Services dont la validation est en alerte (badge FolderCard)
+    ALERT_SERVICES: (row.ENT_ALERT_SERVICES || "").split(",").filter(Boolean),
 
     // Nécessaire pour reconstruire le vrai statut quand CODETA = 'ARC'
     // (cf. setRelEtaDos côté front) : Refusé si une validation REF existe

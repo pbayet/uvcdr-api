@@ -36,6 +36,17 @@ function jsonObject(objSchema) {
   return z.preprocess(toParsed, objSchema).optional();
 }
 
+/** Booléen strict : contrairement à z.coerce.boolean(), "false" / "0" -> false. */
+const bool = z.preprocess(
+  (val) =>
+    typeof val === "string"
+      ? ["true", "1"].includes(val.trim().toLowerCase())
+      : typeof val === "number"
+        ? val === 1
+        : val,
+  z.boolean(),
+);
+
 /* ─────────────────────────────────────────────
    GETS
 ───────────────────────────────────────────── */
@@ -146,12 +157,27 @@ const lienLineSchema = z.object({
   LIENNOM: z.string().trim().max(255).nullish(),
 });
 
-export const validationCreateSchema = z.object({
+export const validationCreateSchema = z
+  .object({
+    NUMDOS: z.string().trim().min(1, "NUMDOS est obligatoire."),
+    VALTYPCOD: z.string().trim().min(1, "VALTYPCOD est obligatoire.").max(15),
+    VALNOT: z.string().trim().nullish(),
+    /** Validation en alerte (commentaire important à lire). */
+    VALALERT: bool.optional().default(false),
+    /** Liste COMPLÈTE des liens de cette pré-validation (remplace l'existant). */
+    LIENS_STRINGIFY: jsonArray(lienLineSchema),
+  })
+  // Une validation en alerte doit comporter un commentaire (c'est lui qui
+  // doit être lu et pris en compte).
+  .refine((data) => !data.VALALERT || !!data.VALNOT, {
+    message: "Une validation en alerte doit comporter un commentaire.",
+    path: ["VALNOT"],
+  });
+
+export const validationAlertPatchSchema = z.object({
   NUMDOS: z.string().trim().min(1, "NUMDOS est obligatoire."),
-  VALTYPCOD: z.string().trim().min(1, "VALTYPCOD est obligatoire.").max(15),
-  VALNOT: z.string().trim().nullish(),
-  /** Liste COMPLÈTE des liens de cette pré-validation (remplace l'existant). */
-  LIENS_STRINGIFY: jsonArray(lienLineSchema),
+  VALIDID: z.coerce.number().int().positive("VALIDID est obligatoire."),
+  VALALERT: bool,
 });
 
 export const validationDeleteSchema = z.object({

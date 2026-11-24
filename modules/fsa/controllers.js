@@ -1082,6 +1082,7 @@ export async function postValidation(req) {
     NUMDOS,
     VALTYPCOD,
     VALNOT,
+    VALALERT,
     LIENS_STRINGIFY: LIENS,
   } = v.validationCreateSchema.parse(
     (await requestUtils.getRequestParams(req)).params,
@@ -1089,7 +1090,14 @@ export async function postValidation(req) {
 
   const { CREUSR, NUMGES } = getUserIdentity(req);
 
-  await services.postValidation(NUMDOS, VALTYPCOD, VALNOT, NUMGES, CREUSR);
+  await services.postValidation(
+    NUMDOS,
+    VALTYPCOD,
+    VALNOT,
+    NUMGES,
+    CREUSR,
+    VALALERT,
+  );
 
   // Liens de la pré-validation, rattachés au gestionnaire (même clé que ses
   // fichiers) ; absents de la requête = inchangés.
@@ -1184,6 +1192,9 @@ export async function postValidation(req) {
         items: [
           { label: "Validation", value: valid.VALTYP.VALTYPNOM },
           { label: "Pièces jointe", value: valid.PJS.length },
+          ...(VALALERT
+            ? [{ label: "Alerte", value: "Oui — commentaire à prendre en compte" }]
+            : []),
         ],
       },
     ],
@@ -1199,6 +1210,44 @@ export async function postValidation(req) {
   });
 
   return newFormattedFsa;
+}
+
+/**
+ * Bascule l'état "alerte" de la validation de mon service (toggle sur la
+ * ValidationCard). Renvoie le dossier à jour, comme postValidation.
+ */
+export async function patchValidationAlert(req) {
+  const { NUMDOS, VALIDID, VALALERT } = v.validationAlertPatchSchema.parse(
+    (await requestUtils.getRequestParams(req)).params,
+  );
+
+  const { NUMGES } = getUserIdentity(req);
+
+  const updated = await services.patchValidationAlert(
+    NUMDOS,
+    VALIDID,
+    VALALERT,
+    NUMGES,
+  );
+
+  if (!updated) {
+    const err = new Error(
+      "Modification de l'alerte impossible : seule la dernière validation de votre service peut être modifiée, et une mise en alerte nécessite un commentaire.",
+    );
+    err.status = 403;
+    throw err;
+  }
+
+  const gestsMustValidate = await services.getGestsMustValidateByNumDos(NUMDOS);
+  const formattedGests = utils.formatGestsMustValidate(gestsMustValidate);
+  const rawFsa = await services.getFsa(NUMDOS);
+  const formattedFsa = utils.formatFsasJson(rawFsa, formattedGests)[0];
+
+  if (!formattedFsa) throw new Error("DATA_NOT_FOUND");
+
+  broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
+
+  return formattedFsa;
 }
 
 export async function postGestionnaire(req) {

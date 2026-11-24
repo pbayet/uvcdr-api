@@ -344,6 +344,9 @@ function buildFolderListQuery(extraWhere = "") {
         f.ENT_MY_VALIDATION_CODE,
         ISNULL(pj.PJ_COUNT, 0)       AS ENT_PJ_COUNT,
         f.ENT_VALIDATED_SERVICES,
+        -- Services dont la validation est "en alerte" (badge sur FolderCard,
+        -- cf. sql/07_FSAVALID_VALALERT.alter.sql)
+        ISNULL(alr.SERVICES, '')     AS ENT_ALERT_SERVICES,
         CAST(CASE WHEN refval.NUMDOS IS NOT NULL OR f.F_LEGACY_REF = 1 THEN 1 ELSE 0 END AS BIT) AS ENT_IS_REF
 
     FROM (
@@ -375,6 +378,16 @@ function buildFolderListQuery(extraWhere = "") {
         FROM dbo.FSAVALID v4
         WHERE v4.NUMDOS = f.ENT_NUMDOS AND v4.VALTYPCOD = 'REF'
     ) refval
+    -- Mêmes validations que le détail (vw_FsaValidations), VALALERT lu
+    -- dans FSAVALID par VALIDID.
+    OUTER APPLY (
+        SELECT STRING_AGG(vw.GES_SERVGES, ',') AS SERVICES
+        FROM dbo.vw_FsaValidations vw
+        INNER JOIN dbo.FSAVALID fv ON fv.VALIDID = vw.VALIDID
+        WHERE vw.NUMDOS = f.ENT_NUMDOS
+          AND fv.VALALERT = 1
+          AND vw.VALTYPCOD NOT IN ('NONE', 'DEL')
+    ) alr
     ORDER BY f.F_SORTDAT DESC, f.ENT_NUMDOS DESC;
 
     -- Compteurs : après filtres / onglet entier
@@ -842,8 +855,15 @@ const FOLDER_VALIDATIONS_QUERY = `
         VALTYPNOM   AS VAL_TYP_VALTYPNOM,
         VALNOT      AS VAL_VALNOT,
         CREDAT      AS VAL_CREDAT,
-        CREUSR      AS VAL_CREUSR
-    FROM dbo.vw_FsaValidations
+        CREUSR      AS VAL_CREUSR,
+        -- Validation en alerte (sql/07_FSAVALID_VALALERT.alter.sql) : lue
+        -- directement dans FSAVALID pour ne pas modifier la vue.
+        ISNULL((
+            SELECT fv.VALALERT
+            FROM dbo.FSAVALID AS fv
+            WHERE fv.VALIDID = vw.VALIDID
+        ), 0)       AS VAL_VALALERT
+    FROM dbo.vw_FsaValidations AS vw
     WHERE NUMDOS = @NUMDOS
     ORDER BY CREDAT;
 `;
@@ -1594,6 +1614,7 @@ export async function postValidation(
   VALNOT,
   NUMGES,
   CREUSR,
+  VALALERT = false,
 ) {
   await runQuery({
     moduleUrl: import.meta.url,
@@ -1604,6 +1625,7 @@ export async function postValidation(
         NUMGES,
         VALTYPCOD,
         VALNOT,
+        VALALERT,
         CREDAT,
         CREUSR
       )
@@ -1613,6 +1635,7 @@ export async function postValidation(
         @NUMGES,
         @VALTYPCOD,
         @VALNOT,
+        @VALALERT,
         SYSUTCDATETIME(),
         @CREUSR
       )
@@ -1621,12 +1644,57 @@ export async function postValidation(
       NUMDOS: { type: sql.VarChar(50), value: NUMDOS },
       VALTYPCOD: { type: sql.VarChar(15), value: VALTYPCOD },
       VALNOT: { type: sql.NVarChar(4000), value: VALNOT },
+      VALALERT: { type: sql.Bit, value: VALALERT ? 1 : 0 },
       NUMGES: { type: sql.VarChar(15), value: NUMGES },
       CREUSR: { type: sql.NVarChar(250), value: CREUSR },
     },
   });
 
   return true;
+}
+
+/**
+ * Bascule l'état "alerte" d'une validation (sql/07_FSAVALID_VALALERT.alter.sql).
+ * Seul un gestionnaire du même service que le valideur peut la modifier (même
+ * règle que `canEdit` sur la ValidationCard côté front), et uniquement sur la
+ * DERNIÈRE validation de ce service pour le dossier (celle affichée).
+ * Renvoie false si rien n'a été mis à jour (droits / validation obsolète).
+ */
+export async function patchValidationAlert(NUMDOS, VALIDID, VALALERT, NUMGES) {
+  if (!NUMDOS || !VALIDID || !NUMGES) throw new Error("MISSING_PARAMETERS");
+
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+      UPDATE v
+         SET v.VALALERT = @VALALERT
+        FROM dbo.FSAVALID AS v
+       INNER JOIN dbo.FSAGES AS gv ON gv.NUMGES = v.NUMGES
+       INNER JOIN dbo.FSAGES AS gu ON gu.NUMGES = @NUMGES
+                                  AND gu.SERVGES = gv.SERVGES
+       WHERE v.VALIDID = @VALIDID
+         AND v.NUMDOS = @NUMDOS
+         AND v.VALTYPCOD NOT IN ('DEL', 'NONE')
+         -- Mise en alerte : commentaire obligatoire (retrait toujours permis)
+         AND (@VALALERT = 0 OR NULLIF(LTRIM(RTRIM(v.VALNOT)), '') IS NOT NULL)
+         AND NOT EXISTS (
+             SELECT 1
+               FROM dbo.FSAVALID AS newer
+              INNER JOIN dbo.FSAGES AS gn ON gn.NUMGES = newer.NUMGES
+              WHERE newer.NUMDOS = v.NUMDOS
+                AND gn.SERVGES = gv.SERVGES
+                AND newer.VALIDID > v.VALIDID
+         );
+    `,
+    inputs: {
+      NUMDOS: { type: sql.VarChar(50), value: NUMDOS },
+      VALIDID: { type: sql.Int, value: VALIDID },
+      VALALERT: { type: sql.Bit, value: VALALERT ? 1 : 0 },
+      NUMGES: { type: sql.VarChar(15), value: NUMGES },
+    },
+  });
+
+  return (result?.rowsAffected?.[0] ?? 0) > 0;
 }
 
 /**

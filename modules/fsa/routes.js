@@ -386,6 +386,20 @@ router.patch(
   },
 );
 
+// Bascule "alerte" de la validation de mon service — cf.
+// sql/07_FSAVALID_VALALERT.alter.sql.
+router.patch(
+  "/validation/alert",
+  authMiddlewares.authVerifyMiddleware,
+  async (req, res, next) => {
+    try {
+      res.json(await controllers.patchValidationAlert(req));
+    } catch (err) {
+      next(err);
+    }
+  },
+);
+
 router.patch(
   "/gestionnaires",
   authMiddlewares.authVerifyMiddleware,
