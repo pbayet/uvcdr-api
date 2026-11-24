@@ -461,6 +461,7 @@ export async function createFileLink(req) {
     PARAMS: target.PARAMS ? JSON.stringify(target.PARAMS) : null,
     FILENAME: target.FILENAME ?? null,
     LABEL: target.LABEL ?? null,
+    NAME: input.NAME ?? null,
     WITHNAME: input.WITHNAME,
     TTL,
     CREATEDBY: ctx.USRID,
@@ -473,7 +474,13 @@ export async function createFileLink(req) {
     EVENT: "CREATED",
     USRID: ctx.USRID,
     USRNAME: ctx.NAME,
-    DETAIL: `Validité : ${links.describeTtl(TTL)}${input.WITHNAME ? " · nom du fichier dans le lien" : ""}`,
+    DETAIL: [
+      input.NAME ? `« ${input.NAME} »` : null,
+      `Validité : ${links.describeTtl(TTL)}`,
+      input.WITHNAME ? "nom du fichier dans le lien" : null,
+    ]
+      .filter(Boolean)
+      .join(" · "),
   });
   logger.info(
     `[FILES][LINK] #${link.LNKID} ${ctx.APPCODE} ${link.FILECODE ?? `${link.ENTITYTYPE}:${link.ENTITYID}`} par ${ctx.NAME} — ${links.describeTtl(TTL)}`,
@@ -541,13 +548,29 @@ export async function revokeFileLink(req) {
  * PUT /api/files/links/:lnkid — nouvelle validité à partir de maintenant
  * (`EXPIRESIN`) ou lien permanent (`PERMANENT`), selon les droits de
  * l'utilisateur dans l'application ; un lien expiré redevient actif. Un lien
- * désactivé ne peut pas être réactivé.
+ * désactivé ne peut pas être réactivé, mais peut être renommé (`NAME`, vide :
+ * nom retiré).
  */
 export async function updateFileLink(req) {
   const ctx = linkContext(req);
   const { lnkid } = lnkidParamSchema.parse(req.params);
   const input = updateFileLinkSchema.parse((await requestUtils.getRequestParams(req)).params);
   const { row, provider } = await loadManageableLink(req, ctx, lnkid, "le modifier");
+
+  let updated = row;
+  if (input.NAME !== undefined && (input.NAME ?? null) !== (row.NAME ?? null)) {
+    updated = await services.renameLink(lnkid, input.NAME);
+    logEvent({
+      LNKID: lnkid,
+      EVENT: "UPDATED",
+      USRID: ctx.USRID,
+      USRNAME: ctx.NAME,
+      DETAIL: input.NAME ? `Renommé : « ${input.NAME} »` : "Nom retiré",
+    });
+    logger.info(`[FILES][LINK] #${lnkid} renommé par ${ctx.NAME}`);
+  }
+  const changesValidity = input.PERMANENT || (input.EXPIRESIN !== undefined && input.EXPIRESIN !== "");
+  if (!changesValidity) return links.formatLink(updated, { withPath: true });
   if (row.REVOKEDAT) throw httpError(409, "Ce lien est désactivé : créez-en un nouveau.");
 
   let EXPIRESIN;
@@ -559,7 +582,7 @@ export async function updateFileLink(req) {
   }
   const TTL = links.effectiveTtl({ PERMANENT: input.PERMANENT, EXPIRESIN }, await provider.policy(req));
 
-  const updated = await services.updateLinkExpiry(lnkid, TTL);
+  updated = await services.updateLinkExpiry(lnkid, TTL);
   logEvent({
     LNKID: lnkid,
     EVENT: "UPDATED",

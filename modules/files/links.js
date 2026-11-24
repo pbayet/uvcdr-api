@@ -366,7 +366,7 @@ export function formatLinkEvent(row, { withClient = false, withIp = false } = {}
     USRNAME: row.USRNAME ?? null,
     DETAIL: row.DETAIL ?? null,
     CREATEDAT: row.CREATEDAT,
-    LINK: { PARAMS, FILENAME: row.FILENAME ?? null, CREATEDBY: row.CREATEDBY, CREATEDBYNAME: row.CREATEDBYNAME ?? null },
+    LINK: { PARAMS, FILENAME: row.FILENAME ?? null, NAME: row.NAME ?? null, CREATEDBY: row.CREATEDBY, CREATEDBYNAME: row.CREATEDBYNAME ?? null },
     ...(withClient ? { USERAGENT: row.USERAGENT ?? null } : {}),
     ...(withIp ? { IP: row.IP ?? null } : {}),
   };
@@ -418,6 +418,7 @@ export function formatLink(row, { withPath = false } = {}) {
     PARAMS,
     FILENAME: row.FILENAME ?? null,
     LABEL: row.LABEL ?? null,
+    NAME: row.NAME ?? null,
     WITHNAME: !!row.WITHNAME,
     PERMANENT: row.EXPIRESAT == null,
     EXPIRESAT: row.EXPIRESAT ?? null,

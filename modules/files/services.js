@@ -412,7 +412,7 @@ export async function markPurgedAttachment(id) {
 ───────────────────────────────────────────── */
 
 const LINK_COLUMNS = `
-  LNKID, APPCODE, FILECODE, ENTITYTYPE, ENTITYID, PARAMS, FILENAME, LABEL, TOKENENC,
+  LNKID, APPCODE, FILECODE, ENTITYTYPE, ENTITYID, PARAMS, FILENAME, LABEL, NAME, TOKENENC,
   WITHNAME, EXPIRESAT, CREATEDBY, CREATEDBYNAME, CREATEDAT, REVOKEDAT,
   REVOKEDBY, REVOKEDBYNAME, OPENCOUNT, LASTOPENEDAT,
   CASE
@@ -430,12 +430,12 @@ export async function insertLink(link) {
     query: `
     INSERT INTO FILELINKS (
       TOKENHASH, TOKENENC, APPCODE, FILECODE, ENTITYTYPE, ENTITYID, PARAMS, FILENAME,
-      LABEL, WITHNAME, EXPIRESAT, CREATEDBY, CREATEDBYNAME, CREATEDAT
+      LABEL, NAME, WITHNAME, EXPIRESAT, CREATEDBY, CREATEDBYNAME, CREATEDAT
     )
     OUTPUT INSERTED.LNKID
     VALUES (
       @TOKENHASH, @TOKENENC, @APPCODE, @FILECODE, @ENTITYTYPE, @ENTITYID, @PARAMS, @FILENAME,
-      @LABEL, @WITHNAME,
+      @LABEL, @NAME, @WITHNAME,
       CASE WHEN @TTL IS NULL THEN NULL ELSE DATEADD(SECOND, @TTL, SYSDATETIME()) END,
       @CREATEDBY, @CREATEDBYNAME, SYSDATETIME()
     );
@@ -450,6 +450,7 @@ export async function insertLink(link) {
       PARAMS: { type: sql.NVarChar(400), value: link.PARAMS ?? null },
       FILENAME: { type: sql.NVarChar(255), value: link.FILENAME ?? null },
       LABEL: { type: sql.NVarChar(300), value: link.LABEL ?? null },
+      NAME: { type: sql.NVarChar(100), value: link.NAME ?? null },
       WITHNAME: { type: sql.Bit, value: link.WITHNAME ? 1 : 0 },
       TTL: { type: sql.Int, value: link.TTL ?? null },
       CREATEDBY: { type: sql.Int, value: link.CREATEDBY },
@@ -524,6 +525,20 @@ export async function revokeLink(LNKID, REVOKEDBY, REVOKEDBYNAME) {
       LNKID: { type: sql.Int, value: LNKID },
       REVOKEDBY: { type: sql.Int, value: REVOKEDBY },
       REVOKEDBYNAME: { type: sql.NVarChar(200), value: REVOKEDBYNAME ?? null },
+    },
+  });
+  return getLinkById(LNKID);
+}
+
+/** Nouveau nom d'un lien (`null` : retiré). */
+export async function renameLink(LNKID, NAME) {
+  await runQuery({
+    moduleUrl: import.meta.url,
+    dbConnectionName: "attachments",
+    query: `UPDATE FILELINKS SET NAME = @NAME WHERE LNKID = @LNKID`,
+    inputs: {
+      LNKID: { type: sql.Int, value: LNKID },
+      NAME: { type: sql.NVarChar(100), value: NAME ?? null },
     },
   });
   return getLinkById(LNKID);
@@ -632,7 +647,7 @@ export async function listLinkEvents({
     query: `
     SELECT ${paged ? "" : "TOP 1000"}
       e.EVTID, e.LNKID, e.EVENT, e.USRID, e.USRNAME, e.IP, e.USERAGENT, e.DETAIL, e.CREATEDAT,
-      l.PARAMS, l.FILENAME, l.CREATEDBY, l.CREATEDBYNAME
+      l.PARAMS, l.FILENAME, l.NAME, l.CREATEDBY, l.CREATEDBYNAME
     FROM FILELINKEVENTS AS e
     INNER JOIN FILELINKS AS l ON l.LNKID = e.LNKID
     WHERE ${LINK_EVENT_TARGET_WHERE}
@@ -643,6 +658,7 @@ export async function listLinkEvents({
         OR e.USRNAME LIKE @SEARCH
         OR e.DETAIL LIKE @SEARCH
         OR l.FILENAME LIKE @SEARCH
+        OR l.NAME LIKE @SEARCH
         OR l.CREATEDBYNAME LIKE @SEARCH
         OR CAST(e.LNKID AS VARCHAR(20)) = @SEARCHID
         OR (@SEARCHIP = 1 AND e.IP LIKE @SEARCH)
@@ -681,7 +697,7 @@ export async function summarizeLinkEvents({ APPCODE, LNKID, FILECODE, ENTITYTYPE
     WITH ranked AS (
       SELECT
         e.EVTID, e.LNKID, e.EVENT, e.USRID, e.USRNAME, e.IP, e.USERAGENT, e.DETAIL, e.CREATEDAT,
-        l.PARAMS, l.FILENAME, l.CREATEDBY, l.CREATEDBYNAME,
+        l.PARAMS, l.FILENAME, l.NAME, l.CREATEDBY, l.CREATEDBYNAME,
         ROW_NUMBER() OVER (PARTITION BY e.EVENT ORDER BY e.CREATEDAT DESC, e.EVTID DESC) AS RN,
         COUNT(*) OVER (PARTITION BY e.EVENT) AS TOTAL
       FROM FILELINKEVENTS AS e

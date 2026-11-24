@@ -43,6 +43,7 @@ BEGIN
         PARAMS         NVARCHAR(400)  NULL,
         FILENAME       NVARCHAR(255)  NULL,
         LABEL          NVARCHAR(300)  NULL,
+        NAME           NVARCHAR(100)  NULL,
         WITHNAME       BIT            NOT NULL CONSTRAINT DF_FILELINKS_WITHNAME DEFAULT (1),
         EXPIRESAT      DATETIME2(0)   NULL,
         CREATEDBY      INT            NOT NULL,
@@ -62,6 +63,12 @@ GO
 -- Tables créées avant l'ajout du jeton chiffré.
 IF COL_LENGTH(N'dbo.FILELINKS', N'TOKENENC') IS NULL
     ALTER TABLE dbo.FILELINKS ADD TOKENENC VARCHAR(200) NULL;
+GO
+
+-- Nom donné au lien par son auteur (« Envoi fournisseur X »…), modifiable.
+-- LABEL reste le libellé de la cible, fixé par l'application.
+IF COL_LENGTH(N'dbo.FILELINKS', N'NAME') IS NULL
+    ALTER TABLE dbo.FILELINKS ADD NAME NVARCHAR(100) NULL;
 GO
 
 IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_FILELINKS_ENTITY' AND object_id = OBJECT_ID(N'dbo.FILELINKS'))

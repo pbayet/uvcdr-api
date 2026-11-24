@@ -49,6 +49,12 @@ const jsonObject = z.preprocess((value) => {
   }
 }, z.record(z.string(), z.unknown()));
 
+/** Nom d'un lien : texte libre (100 caractères) ; vide ou null : pas de nom. */
+const linkName = z.preprocess(
+  (value) => (value === null ? null : typeof value === "string" ? value.trim() || null : value),
+  z.string().max(100, "Le nom du lien ne doit pas dépasser 100 caractères.").nullable(),
+);
+
 /**
  * POST /api/files/links — `EXPIRESIN` : secondes, ou « 30m », « 12h »,
  * « 7d » / « 7j », « 2w », « 1y » (cf. links.parseDuration).
@@ -60,6 +66,7 @@ export const createFileLinkSchema = z
     EXPIRESIN: z.union([z.number(), z.string().trim().max(20)]).optional(),
     PERMANENT: bool(false),
     WITHNAME: bool(true),
+    NAME: linkName.optional(),
   })
   .refine((d) => !(d.PERMANENT && d.EXPIRESIN !== undefined && d.EXPIRESIN !== ""), {
     message: "PERMANENT et EXPIRESIN sont incompatibles.",
@@ -75,14 +82,22 @@ export const listFileLinksSchema = z.object({
 
 export const lnkidParamSchema = z.object({ lnkid: z.coerce.number().int().positive() });
 
-/** PUT /api/files/links/:lnkid — nouvelle validité, à partir de maintenant. */
+/**
+ * PUT /api/files/links/:lnkid — nouvelle validité à partir de maintenant
+ * (`EXPIRESIN` ou `PERMANENT`) et/ou nouveau nom (`NAME`, vide : retiré).
+ */
 export const updateFileLinkSchema = z
   .object({
     EXPIRESIN: z.union([z.number(), z.string().trim().max(20)]).optional(),
     PERMANENT: bool(false),
+    NAME: linkName.optional(),
   })
-  .refine((d) => d.PERMANENT !== (d.EXPIRESIN !== undefined && d.EXPIRESIN !== ""), {
+  .refine((d) => !(d.PERMANENT && d.EXPIRESIN !== undefined && d.EXPIRESIN !== ""), {
     message: "Indiquez soit EXPIRESIN, soit PERMANENT.",
+    path: ["EXPIRESIN"],
+  })
+  .refine((d) => d.PERMANENT || (d.EXPIRESIN !== undefined && d.EXPIRESIN !== "") || d.NAME !== undefined, {
+    message: "Indiquez une nouvelle validité (EXPIRESIN ou PERMANENT) ou un nom (NAME).",
     path: ["EXPIRESIN"],
   });
 

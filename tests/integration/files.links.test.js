@@ -292,6 +292,49 @@ describe("Intégration :: liens directs /api/files", () => {
     expect(filesServices.updateLinkExpiry).not.toHaveBeenCalled();
   });
 
+  it("nom du lien : donné à la création, renommé ou retiré, même désactivé ; 100 caractères", async () => {
+    const created = await request(app)
+      .post("/api/files/links")
+      .set(auth("reader"))
+      .send({ TARGET: { PRCID: 7 }, NAME: "  Envoi fournisseur  " });
+    expect(created.status).toBe(201);
+    expect(filesServices.insertLink).toHaveBeenLastCalledWith(expect.objectContaining({ NAME: "Envoi fournisseur" }));
+    await vi.waitFor(() =>
+      expect(filesServices.addLinkEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ EVENT: "CREATED", DETAIL: expect.stringMatching(/^« Envoi fournisseur » · Validité/) }),
+      ),
+    );
+
+    filesServices.renameLink.mockImplementation(async (LNKID, NAME) => linkRow({ LNKID, NAME }));
+    // Lien désactivé : renommage permis (pas de nouvelle validité).
+    filesServices.getLinkById.mockResolvedValue(linkRow({ CREATEDBY: 2, NAME: null, REVOKEDAT: new Date(), STATUS: "REVOKED" }));
+    filesServices.addLinkEvent.mockClear();
+    const renamed = await request(app).put("/api/files/links/1").set(auth("reader")).send({ NAME: "Audit 2026" });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.data.NAME).toBe("Audit 2026");
+    expect(filesServices.renameLink).toHaveBeenLastCalledWith(1, "Audit 2026");
+    expect(filesServices.updateLinkExpiry).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(filesServices.addLinkEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ EVENT: "UPDATED", DETAIL: "Renommé : « Audit 2026 »" }),
+      ),
+    );
+
+    // Nom vide : retiré ; même nom : rien n'est fait.
+    filesServices.getLinkById.mockResolvedValue(linkRow({ CREATEDBY: 2, NAME: "Audit 2026" }));
+    await request(app).put("/api/files/links/1").set(auth("reader")).send({ NAME: "" });
+    expect(filesServices.renameLink).toHaveBeenLastCalledWith(1, null);
+    filesServices.renameLink.mockClear();
+    const same = await request(app).put("/api/files/links/1").set(auth("reader")).send({ NAME: "Audit 2026" });
+    expect(same.status).toBe(200);
+    expect(filesServices.renameLink).not.toHaveBeenCalled();
+
+    const tooLong = await request(app).put("/api/files/links/1").set(auth("reader")).send({ NAME: "x".repeat(101) });
+    const nothing = await request(app).put("/api/files/links/1").set(auth("reader")).send({});
+    expect(tooLong.status).toBe(400);
+    expect(nothing.status).toBe(400);
+  });
+
   it("mouvements : le lecteur voit ceux de ses liens sans IP, le rédacteur tous avec IP", async () => {
     const event = {
       EVTID: 9, LNKID: 1, EVENT: "OPENED", IP: "10.1.2.3", USERAGENT: "Navigateur test", DETAIL: "v3 · nettoyage.pdf",
