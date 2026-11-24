@@ -303,6 +303,49 @@ describe("Intégration :: /api/procs", () => {
     expect(services.addConsult).not.toHaveBeenCalled();
   });
 
+  it("GET /procedures/:prcid/file-link : lien signé, puis ouverture sans jeton", async () => {
+    services.getProcedure.mockResolvedValue(PROC_ROW);
+    services.getVersion.mockResolvedValue({ VERID: 11, PRCID: 7, VERNUM: 3, FILECODE: "F11", ORIGINALNAME: "nettoyage.pdf" });
+    services.getAttachment.mockResolvedValue(null); // fichier absent : on s'arrête à "introuvable"
+
+    const created = await request(app).get("/api/procs/procedures/7/file-link").set(auth("reader"));
+    expect(created.status).toBe(200);
+    expect(created.body.data.PATH).toMatch(/^\/procs\/files\/[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\/nettoyage\.pdf$/);
+
+    const opened = await request(app).get(`/api${created.body.data.PATH}`);
+    expect(services.getProcedure).toHaveBeenLastCalledWith({ USRID: expect.any(Number), ISEDITOR: false }, 7);
+    expect(services.getAttachment).toHaveBeenCalledWith("F11");
+    expect(opened.status).toBe(404);
+    expect(opened.text).toBe("Document introuvable.");
+
+    // Lien sans nom de fichier (copié avant l'ajout du nom) : toujours accepté.
+    const bare = await request(app).get(`/api${created.body.data.PATH.replace(/\/[^/]+$/, "")}`);
+    expect(bare.text).toBe("Document introuvable.");
+    expect(services.getAttachment).toHaveBeenCalledTimes(2);
+  });
+
+  it("GET /procedures/:prcid/file-link : aperçu PDF d'un Word → nom en .pdf, encodé", async () => {
+    services.getProcedure.mockResolvedValue({ ...PROC_ROW, EXTENSION: "docx" });
+    services.getVersion.mockResolvedValue({
+      VERID: 11, PRCID: 7, VERNUM: 3, FILECODE: "F11", PREVIEWCODE: "P11", ORIGINALNAME: "Procédure cuves.docx",
+    });
+    const res = await request(app).get("/api/procs/procedures/7/file-link?KIND=preview").set(auth("reader"));
+    expect(res.body.data.PATH).toMatch(/\/Proc%C3%A9dure%20cuves\.pdf$/);
+  });
+
+  it("GET /procedures/:prcid/file-link : procédure non publiée → 409", async () => {
+    services.getProcedure.mockImplementation(async (ctx) => (ctx.ISEDITOR ? { ...PROC_ROW, STATUS: "DRAFT" } : null));
+    const res = await request(app).get("/api/procs/procedures/7/file-link").set(auth("admin"));
+    expect(res.status).toBe(409);
+  });
+
+  it("GET /files/:token : lien altéré → 404 en texte, sans accès aux données", async () => {
+    const res = await request(app).get("/api/procs/files/abc.def");
+    expect(res.status).toBe(404);
+    expect(res.headers["content-type"]).toMatch(/text\/plain/);
+    expect(services.getProcedure).not.toHaveBeenCalled();
+  });
+
   it("PUT /procedures/:prcid/acknowledge : accusé de lecture sur la version courante", async () => {
     services.getProcedure.mockResolvedValue(PROC_ROW);
     services.acknowledge.mockResolvedValue(undefined);

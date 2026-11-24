@@ -14,6 +14,7 @@ versions et traçabilité.
 2. Variables d'env (`config/env/*.env`) : `DB_APP_CODE_PROCS="PROCS"`,
    `DB_NAME_PROCS="PROCS"`. Optionnelles (`.env`) : `PROCS_EDITOR_PERMS`,
    `PROCS_MAX_FILE_MB`, `PROCS_PREVIEW`, `PROCS_SOFFICE_TIMEOUT_MS`,
+   `PROCS_LINK_TTL_DAYS`, `PROCS_LINK_SECRET`,
    `SOFFICE_PATH` (cf. `.env.example`).
 3. Dans users-manager, donner une permission sur l'application `PROCS` :
    - `DEV`, `SUPERADMIN`, `ADMIN` (= `MODIFY_PERMS`, ou `PROCS_EDITOR_PERMS`)
@@ -100,7 +101,20 @@ n'en ont pas.
 | POST | `/procedures/:prcid/versions` (multipart `file`, `COMMENT`, `PUBLISH`) | rédacteurs |
 | PUT | `/versions/:verid/restore`, `/versions/:verid/reindex` | rédacteurs |
 | GET | `/versions/:verid/file` (`KIND=original|preview`, `DISPOSITION=inline|attachment`) | tous (toutes les versions d'une procédure visible) |
+| GET | `/procedures/:prcid/file-link` (`KIND=original|preview`, `VERNUM` ; absent = version en vigueur) → `{ PATH, EXPIRES, TTLDAYS }` | tous (procédure publiée seulement) |
+| GET | `/files/:token{/:filename}` — **sans jeton** : ouvre le fichier d'un lien direct signé | lien valide et non expiré, procédure toujours publiée |
 | GET | `/history`, `/stats` | rédacteurs |
+
+Liens directs (`links.js`) : l'URL `/api/procs/files/<charge>.<signature>/<nom du fichier>`
+(le nom final est indicatif, pour que les visionneuses reconnaissent le
+type ; seul le jeton est vérifié) est signée en HMAC-SHA256 (`PROCS_LINK_SECRET`, à défaut dérivée de
+`JWT_SECRET`) et expire après `PROCS_LINK_TTL_DAYS` jours (7 par défaut).
+Elle ouvre le fichier sans connexion : toute personne qui a le lien peut
+l'ouvrir jusqu'à son expiration. À l'ouverture, la procédure doit toujours
+être visible pour un lecteur (publiée, catégorie active). Sans `VERNUM`, le
+lien sert la version en vigueur au moment de l'ouverture. Le PDF s'affiche
+dans le navigateur, le Word se télécharge, et la consultation est tracée au
+nom de l'auteur du lien. Changer la clé invalide tous les liens distribués.
 
 Temps réel : `procs.procedure.created|updated|deleted|acknowledged`,
 `procs.categories.updated` (préfixe `procs` → application `PROCS`).

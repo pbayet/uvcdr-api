@@ -4,6 +4,7 @@ import express from "express";
 import multer from "multer";
 import * as authMiddlewares from "../../core/middlewares/auth.middleware.js";
 import * as controllers from "./controllers.js";
+import { logger } from "../../config/logger.config.js";
 
 /* ─────────────────────────────────────────────
    PROCS — Routes (/api/procs) — Procédures UVCDR
@@ -114,5 +115,31 @@ router.get(
     }
   },
 );
+
+// Lien direct signé vers le document (cf. links.js) : généré avec le jeton…
+route("get", "/procedures/:prcid/file-link", controllers.createFileLink);
+
+// …puis ouvert SANS jeton (navigateur, mail, Teams). Erreurs en texte brut :
+// c'est une personne qui lit la réponse, pas l'application.
+// Le nom de fichier final (`/files/<jeton>/procedure.pdf`) est facultatif et
+// ignoré : il sert à la reconnaissance du type par les visionneuses.
+router.get("/files/:token{/:filename}", async (req, res) => {
+  try {
+    await controllers.sendSharedFile(req, res);
+  } catch (err) {
+    if (res.headersSent) return res.end();
+    let status = 500;
+    let message = "Le document ne peut pas être ouvert pour le moment.";
+    if (typeof err?.status === "number" && err.status < 500) {
+      ({ status, message } = err);
+    } else if (err?.message === "DATA_NOT_FOUND" || err?.name === "ZodError") {
+      status = 404;
+      message = "Document introuvable.";
+    } else {
+      logger.error(`[PROCS][LINK] ouverture impossible : ${err?.message}`);
+    }
+    res.status(status).type("text/plain; charset=utf-8").send(message);
+  }
+});
 
 export default router;

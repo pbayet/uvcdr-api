@@ -173,6 +173,17 @@ export const fileQuerySchema = z.object({
   KIND: z.enum(["original", "preview"]).default("original"),
 });
 
+/** Lien direct signé : document visé (version en vigueur si VERNUM absent). */
+export const fileLinkQuerySchema = z.object({
+  KIND: z.enum(["original", "preview"]).default("original"),
+  VERNUM: id.optional(),
+});
+
+/** Jeton d'un lien direct signé (charge utile.signature, base64url). */
+export const fileTokenParamSchema = z.object({
+  token: z.string().max(300).regex(/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/),
+});
+
 /* ─────────────────────────────────────────────
    Journal / consultations
 ───────────────────────────────────────────── */
