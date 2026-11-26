@@ -138,6 +138,38 @@ const EFFECTIVE_CODETA_SQL = `
             ELSE 'VAL'
         END`;
 
+// Validations partielles : services dont le DERNIER avis sur le dossier est
+// une VAP, matérialisés une fois dans #VAP (NUMDOS, SERVGES). Une VAP ne
+// compte pas comme validé dans vw_FsaCurrentStatus : le dossier reste "En
+// attente". Sert à la carte (segments orange, badge) et au pseudo-statut
+// "Validé partiellement" (code VAP) du filtre Statut.
+const PARTIAL_VALIDATIONS_SQL = `
+    SELECT NUMDOS, SERVGES
+    INTO #VAP
+    FROM (
+        SELECT
+            vw.NUMDOS,
+            vw.GES_SERVGES AS SERVGES,
+            vw.VALTYPCOD,
+            ROW_NUMBER() OVER (
+                PARTITION BY vw.NUMDOS, vw.GES_SERVGES
+                ORDER BY vw.CREDAT DESC, vw.VALIDID DESC
+            ) AS RN
+        FROM dbo.vw_FsaValidations vw
+        WHERE vw.VALTYPCOD NOT IN ('NONE', 'DEL')
+    ) p
+    WHERE p.RN = 1 AND p.VALTYPCOD = 'VAP';
+
+    CREATE CLUSTERED INDEX IX_VAP ON #VAP (NUMDOS);`;
+
+// Dossier "validé partiellement" (pseudo-statut VAP du filtre Statut) : au
+// moins une validation partielle, ni brouillon ni validé — comme le badge
+// de FolderCard. numdos / codeta : expressions SQL du dossier ; nécessite
+// #VAP dans le même lot.
+const hasPartialSql = (numdos, codeta) => `(
+        ${codeta} NOT IN ('BRO', 'VAL')
+        AND EXISTS (SELECT 1 FROM #VAP vp WHERE vp.NUMDOS = ${numdos}))`;
+
 // Alertes et utilisateur courant @USRID_VAL (sql/08_FSAVALID_VALALERT_TARGET).
 // Sans @USRID_VAL (liste en lecture seule), seules les alertes "tout le
 // monde" le concernent.
@@ -190,7 +222,12 @@ const FOLDER_LIST_FILTERS = `
             f.CLI_CLINAM      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
             f.CLI_CLIACT      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL OR
             f.ENT_DESETA      COLLATE Latin1_General_CI_AI LIKE @SEARCH_VAL)
-    AND (@STATUS_VAL IS NULL OR f.F_CODETA IN (SELECT value FROM OPENJSON(@STATUS_VAL)))
+    -- VAP : pseudo-statut "Validé partiellement" (cf. PARTIAL_VALIDATIONS_SQL),
+    -- en plus des statuts réels (un tel dossier est aussi "En attente")
+    AND (@STATUS_VAL IS NULL
+         OR f.F_CODETA IN (SELECT value FROM OPENJSON(@STATUS_VAL))
+         OR (EXISTS (SELECT 1 FROM OPENJSON(@STATUS_VAL) WHERE value = 'VAP')
+             AND ${hasPartialSql("f.ENT_NUMDOS", "f.F_CODETA")}))
     AND (@CLIENTS_VAL IS NULL OR f.CLI_BPCNUM IN (SELECT value FROM OPENJSON(@CLIENTS_VAL)))
     AND (@DEMS_VAL IS NULL OR f.ENT_DEM_NUMDEM IN (SELECT value FROM OPENJSON(@DEMS_VAL)))
     AND (@MYVAL_VAL IS NULL OR (
@@ -245,6 +282,7 @@ function buildFolderListQuery(extraWhere = "") {
 
     CREATE CLUSTERED INDEX IX_MSV ON #MSV (NUMDOS);
     CREATE CLUSTERED INDEX IX_VS ON #VS (NUMDOS);
+    ${PARTIAL_VALIDATIONS_SQL}
     ${LEGACY_STATUS_SQL}
 
     SELECT
@@ -399,6 +437,9 @@ function buildFolderListQuery(extraWhere = "") {
         -- alertes envoyées par le service de l'utilisateur
         ISNULL(alr.SERVICES, '')     AS ENT_ALERT_SERVICES,
         ISNULL(alr.SENT, '')         AS ENT_ALERT_SENT_SERVICES,
+        -- Services dont le dernier avis est une validation partielle (VAP) :
+        -- segments orange + badge "Validation partielle" sur FolderCard
+        ISNULL(vap.SERVICES, '')     AS ENT_PARTIAL_SERVICES,
         CAST(CASE WHEN refval.NUMDOS IS NOT NULL OR f.F_LEGACY_REF = 1 THEN 1 ELSE 0 END AS BIT) AS ENT_IS_REF
 
     FROM (
@@ -448,6 +489,11 @@ function buildFolderListQuery(extraWhere = "") {
               AND ${alertForMeSql("fv")}
         ) a
     ) alr
+    OUTER APPLY (
+        SELECT STRING_AGG(vp.SERVGES, ',') AS SERVICES
+        FROM #VAP vp
+        WHERE vp.NUMDOS = f.ENT_NUMDOS
+    ) vap
     ORDER BY f.F_SORTDAT DESC, f.ENT_NUMDOS DESC;
 
     -- Compteurs : après filtres / onglet entier
@@ -618,6 +664,7 @@ export async function getFolderFilters(
     query: `
       SET NOCOUNT ON;
       ${LEGACY_STATUS_SQL}
+      ${PARTIAL_VALIDATIONS_SQL}
 
       SELECT e.NUMDOS, e.NUMDEM, ${EFFECTIVE_CODETA_SQL} AS CODETA,
              COALESCE(lg.DESETA, cs.DESETA) AS DESETA
@@ -633,12 +680,24 @@ export async function getFolderFilters(
             );
 
       -- Un libellé par CODETA (statut effectif : un archivé est REF/VAL),
-      -- celui de FSASTA en priorité
-      SELECT t.CODETA, COALESCE(MAX(s.DESETA), MAX(t.DESETA)) AS DESETA
-      FROM #TAB t
-      LEFT JOIN dbo.FSASTA s ON s.CODETA = t.CODETA
-      GROUP BY t.CODETA
-      ORDER BY DESETA;
+      -- celui de FSASTA en priorité ; plus le pseudo-statut VAP "Validé
+      -- partiellement" s'il concerne au moins un dossier de l'onglet
+      SELECT st.CODETA, st.DESETA
+      FROM (
+          SELECT t.CODETA, COALESCE(MAX(s.DESETA), MAX(t.DESETA)) AS DESETA
+          FROM #TAB t
+          LEFT JOIN dbo.FSASTA s ON s.CODETA = t.CODETA
+          GROUP BY t.CODETA
+
+          UNION ALL
+
+          SELECT 'VAP', N'Validé partiellement'
+          WHERE EXISTS (
+              SELECT 1 FROM #TAB t
+              WHERE ${hasPartialSql("t.NUMDOS", "t.CODETA")}
+          )
+      ) st
+      ORDER BY st.DESETA;
 
       -- Un libellé par code client (le plus fréquent)
       SELECT c.BPCNUM, MAX(c.BPCNAM) AS BPCNAM

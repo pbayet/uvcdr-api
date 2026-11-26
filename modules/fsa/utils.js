@@ -402,6 +402,11 @@ function mapFolderListItem(row, mustValidateMap) {
       .split(",")
       .filter(Boolean),
 
+    // Services dont le dernier avis est une validation partielle (VAP)
+    PARTIAL_SERVICES: (row.ENT_PARTIAL_SERVICES || "")
+      .split(",")
+      .filter(Boolean),
+
     // Nécessaire pour reconstruire le vrai statut quand CODETA = 'ARC'
     // (cf. setRelEtaDos côté front) : Refusé si une validation REF existe
     // pour ce dossier, Validé sinon.
