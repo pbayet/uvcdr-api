@@ -747,6 +747,7 @@ export async function getFsas(req) {
     dems,
     myval,
     myserv,
+    alert,
   } = v.foldersQuerySchema.parse(
     (await requestUtils.getRequestParams(req)).params,
   );
@@ -777,6 +778,7 @@ export async function getFsas(req) {
     dems,
     myval,
     myserv,
+    alert,
   };
 
   const { rows, total, totalAll } =

@@ -90,6 +90,11 @@ export const foldersQuerySchema = z.object({
   dems: queryList,
   myval: queryList,
   myserv: z.string().trim().max(50).nullish(),
+  // "1" / "true" : seulement les dossiers ayant une validation en alerte
+  alert: z.preprocess(
+    (value) => value === true || value === "1" || value === "true",
+    z.boolean(),
+  ),
 });
 
 export const folderFiltersQuerySchema = z.object({

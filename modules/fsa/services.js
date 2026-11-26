@@ -162,6 +162,8 @@ const FOLDER_LIST_FILTERS = `
                 OR (f.F_ONLY_ME = 1 AND EXISTS (
                     SELECT 1 FROM OPENJSON(@MYVAL_VAL) WHERE value = 'ONLY_ME'))
             )))
+    -- "En alerte" : comme le badge de FolderCard, ni brouillon ni validé
+    AND (@ALERT_VAL = 0 OR (f.F_HAS_ALERT = 1 AND f.F_CODETA NOT IN ('BRO', 'VAL')))
 `;
 
 /**
@@ -255,7 +257,16 @@ function buildFolderListQuery(extraWhere = "") {
              AND ISNULL(myval.VALTYPCOD, 'NONE') NOT IN ('VAL', 'REF')
              AND msv.DONE_COUNT = msv.REQ_COUNT - 1
             THEN 1 ELSE 0
-        END AS BIT) AS F_ONLY_ME
+        END AS BIT) AS F_ONLY_ME,
+        -- Filtre "En alerte" : même règle que ENT_ALERT_SERVICES (page)
+        CAST(CASE WHEN EXISTS (
+            SELECT 1
+            FROM dbo.vw_FsaValidations vw
+            INNER JOIN dbo.FSAVALID fv ON fv.VALIDID = vw.VALIDID
+            WHERE vw.NUMDOS = e.NUMDOS
+              AND fv.VALALERT = 1
+              AND vw.VALTYPCOD NOT IN ('NONE', 'DEL')
+        ) THEN 1 ELSE 0 END AS BIT) AS F_HAS_ALERT
 
     INTO #FOLDERS
     FROM dbo.FSAENT e
@@ -409,9 +420,11 @@ function buildFolderListQuery(extraWhere = "") {
  * @param {string[]} [filters.dems]    - NUMGES du demandeur
  * @param {string[]} [filters.myval]   - NONE / VAL / REF / ONLY_ME
  * @param {string} [filters.myserv]  - SERVGES de l'utilisateur (filtre "Mes validations")
+ * @param {boolean} [filters.alert]  - seulement les dossiers ayant une validation en alerte
  */
 function folderListInputs(filters = {}) {
-  const { page, limit, search, status, clients, dems, myval, myserv } = filters;
+  const { page, limit, search, status, clients, dems, myval, myserv, alert } =
+    filters;
   const toJson = (list) => (list?.length ? JSON.stringify(list) : null);
 
   return {
@@ -425,6 +438,7 @@ function folderListInputs(filters = {}) {
     DEMS_VAL: { type: sql.NVarChar(sql.MAX), value: toJson(dems) },
     MYVAL_VAL: { type: sql.NVarChar(sql.MAX), value: toJson(myval) },
     MYSERVGES_VAL: { type: sql.VarChar(50), value: myserv ?? null },
+    ALERT_VAL: { type: sql.Bit, value: alert ? 1 : 0 },
     OFFSET_VAL: {
       type: sql.Int,
       value: limit ? (Math.max(page ?? 1, 1) - 1) * limit : null,
