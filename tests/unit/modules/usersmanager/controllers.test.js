@@ -413,3 +413,51 @@ describe("modules/usersmanager/controllers :: temps réel (broadcastUsersManager
     expect(broadcastToAll).not.toHaveBeenCalled();
   });
 });
+
+describe("modules/usersmanager/controllers :: thèmes en impersonation", () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  const devPayload = {
+    data: { id: 42 },
+    application: "TICKETING",
+    devToken: "true",
+    devEmail: "dev@test.com",
+  };
+
+  it("hors impersonation : thèmes de l'utilisateur du token", async () => {
+    services.getUserThemes.mockResolvedValue([{ APPID: null, THEME: "dark" }]);
+
+    const result = await controllers.getThemes(buildReq());
+
+    expect(services.getUserByEmail).not.toHaveBeenCalled();
+    expect(services.getUserThemes).toHaveBeenCalledWith(1);
+    expect(result.DEFAULT).toBe("dark");
+  });
+
+  it("GET : en impersonation, thèmes du dev et non du compte simulé", async () => {
+    services.getUserByEmail.mockResolvedValue([
+      buildRawUserRow({ USRID: 7, EMAIL: "dev@test.com" }),
+    ]);
+    services.getUserThemes.mockResolvedValue([]);
+
+    await controllers.getThemes(buildReq({ payload: devPayload }));
+
+    expect(services.getUserByEmail).toHaveBeenCalledWith("dev@test.com");
+    expect(services.getUserThemes).toHaveBeenCalledWith(7);
+  });
+
+  it("POST : en impersonation, la modification s'applique au dev", async () => {
+    services.getUserByEmail.mockResolvedValue([
+      buildRawUserRow({ USRID: 7, EMAIL: "dev@test.com" }),
+    ]);
+    services.setUserTheme.mockResolvedValue(true);
+    services.getUserThemes.mockResolvedValue([]);
+
+    await controllers.setTheme(
+      buildReq({ payload: devPayload, body: { THEME: "dark" } }),
+    );
+
+    expect(services.setUserTheme).toHaveBeenCalledWith(7, null, "dark");
+    expect(services.getUserThemes).toHaveBeenCalledWith(7);
+  });
+});

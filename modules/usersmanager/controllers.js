@@ -672,12 +672,33 @@ export async function patchServicePosition(req) {
 export const FALLBACK_THEME = "light";
 
 /**
- * GET /themes — préférences de l'utilisateur connecté : thème par défaut
- * (DEFAULT, FALLBACK_THEME si non défini) et thèmes spécifiques par
- * application (seules les applications personnalisées sont listées).
+ * Utilisateur dont on lit/écrit les thèmes. En impersonation (token simulé
+ * issu de GET /auth/dev : devToken "true" + devEmail), c'est le vrai
+ * utilisateur (le dev) qui prime, pas le compte simulé : le dev garde son
+ * propre thème et ses modifications s'appliquent à ses préférences.
+ */
+async function getThemeOwnerId(req) {
+  const devEmail =
+    req?.payload?.devToken === "true" ? req?.payload?.devEmail : null;
+
+  if (devEmail) {
+    const [dev] = await utils.formatUsers(
+      await services.getUserByEmail(devEmail),
+    );
+    if (dev?.USRID) return dev.USRID;
+  }
+
+  return req?.payload?.data?.id;
+}
+
+/**
+ * GET /themes — préférences de l'utilisateur connecté (le dev en
+ * impersonation, cf. getThemeOwnerId) : thème par défaut (DEFAULT,
+ * FALLBACK_THEME si non défini) et thèmes spécifiques par application
+ * (seules les applications personnalisées sont listées).
  */
 export async function getThemes(req) {
-  const USRID = req?.payload?.data?.id;
+  const USRID = await getThemeOwnerId(req);
   if (!USRID) throw new Error("MISSING_PARAMETERS");
 
   const rows = await services.getUserThemes(USRID);
@@ -724,7 +745,7 @@ export async function setTheme(req) {
     (await requestUtils.getRequestParams(req)).params,
   );
 
-  const USRID = req?.payload?.data?.id;
+  const USRID = await getThemeOwnerId(req);
   if (!USRID) throw new Error("MISSING_PARAMETERS");
 
   const done = await services.setUserTheme(
