@@ -162,6 +162,23 @@ const lienLineSchema = z.object({
   LIENNOM: z.string().trim().max(255).nullish(),
 });
 
+/* Destinataire d'une alerte (sql/08_FSAVALID_VALALERT_TARGET.alter.sql) :
+   tout le monde, le gestionnaire du dossier, un service, ou soi-même. */
+export const ALERT_TARGETS = ["ALL", "GES", "SERV", "SELF"];
+
+const alertTargetFields = {
+  VALALERTTGT: z.enum(ALERT_TARGETS).optional().default("ALL"),
+  VALALERTSRV: z.string().trim().max(50).nullish(),
+};
+
+const alertServiceRequired = (data) =>
+  !data.VALALERT || data.VALALERTTGT !== "SERV" || !!data.VALALERTSRV;
+
+const ALERT_SERVICE_REQUIRED_ERROR = {
+  message: "Choisissez le service destinataire de l'alerte.",
+  path: ["VALALERTSRV"],
+};
+
 export const validationCreateSchema = z
   .object({
     NUMDOS: z.string().trim().min(1, "NUMDOS est obligatoire."),
@@ -169,6 +186,7 @@ export const validationCreateSchema = z
     VALNOT: z.string().trim().nullish(),
     /** Validation en alerte (commentaire important à lire). */
     VALALERT: bool.optional().default(false),
+    ...alertTargetFields,
     /** Liste COMPLÈTE des liens de cette pré-validation (remplace l'existant). */
     LIENS_STRINGIFY: jsonArray(lienLineSchema),
   })
@@ -177,13 +195,17 @@ export const validationCreateSchema = z
   .refine((data) => !data.VALALERT || !!data.VALNOT, {
     message: "Une validation en alerte doit comporter un commentaire.",
     path: ["VALNOT"],
-  });
+  })
+  .refine(alertServiceRequired, ALERT_SERVICE_REQUIRED_ERROR);
 
-export const validationAlertPatchSchema = z.object({
-  NUMDOS: z.string().trim().min(1, "NUMDOS est obligatoire."),
-  VALIDID: z.coerce.number().int().positive("VALIDID est obligatoire."),
-  VALALERT: bool,
-});
+export const validationAlertPatchSchema = z
+  .object({
+    NUMDOS: z.string().trim().min(1, "NUMDOS est obligatoire."),
+    VALIDID: z.coerce.number().int().positive("VALIDID est obligatoire."),
+    VALALERT: bool,
+    ...alertTargetFields,
+  })
+  .refine(alertServiceRequired, ALERT_SERVICE_REQUIRED_ERROR);
 
 export const validationDeleteSchema = z.object({
   NUMDOS: z.string().trim().min(1, "NUMDOS est obligatoire."),

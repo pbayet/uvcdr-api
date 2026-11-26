@@ -138,6 +138,43 @@ const EFFECTIVE_CODETA_SQL = `
             ELSE 'VAL'
         END`;
 
+// Alertes et utilisateur courant @USRID_VAL (sql/08_FSAVALID_VALALERT_TARGET).
+// Sans @USRID_VAL (liste en lecture seule), seules les alertes "tout le
+// monde" le concernent.
+//
+// alertToMeSql : la validation FSAVALID `fv` en alerte lui est adressée.
+function alertToMeSql(fv) {
+  return `(
+        ISNULL(${fv}.VALALERTTGT, 'ALL') = 'ALL'
+        OR (${fv}.VALALERTTGT = 'SELF' AND ${fv}.VALALERTUSR = @USRID_VAL)
+        OR (${fv}.VALALERTTGT = 'GES' AND EXISTS (
+                SELECT 1 FROM dbo.FSAENT ae
+                WHERE ae.NUMDOS = ${fv}.NUMDOS AND ae.GESUSRID = @USRID_VAL))
+        OR (${fv}.VALALERTTGT = 'SERV' AND EXISTS (
+                SELECT 1
+                FROM dbo.FSAGES_UTILISATEURS agu
+                INNER JOIN dbo.FSAGES ag ON ag.GESID = agu.GESID
+                WHERE agu.USRID = @USRID_VAL AND ag.SERVGES = ${fv}.VALALERTSRV))
+    )`;
+}
+
+// alertFromMySql : il est membre du service à l'origine de l'alerte (celui
+// de la validation, FSAVALID.NUMGES) — alerte "envoyée" côté front.
+function alertFromMySql(fv) {
+  return `EXISTS (
+        SELECT 1
+        FROM dbo.FSAGES og
+        INNER JOIN dbo.FSAGES sg ON sg.SERVGES = og.SERVGES
+        INNER JOIN dbo.FSAGES_UTILISATEURS sgu ON sgu.GESID = sg.GESID
+        WHERE og.NUMGES = ${fv}.NUMGES AND sgu.USRID = @USRID_VAL)`;
+}
+
+// alertForMeSql : l'alerte est visible pour lui (destinataire ou service
+// à l'origine de l'alerte).
+function alertForMeSql(fv) {
+  return `(${alertToMeSql(fv)} OR ${alertFromMySql(fv)})`;
+}
+
 // Filtres de la liste (recherche + selects), appliqués sur #FOLDERS (alias f).
 // Chaque paramètre NULL désactive son filtre. Les listes sont des tableaux
 // JSON (OPENJSON) plutôt que du CSV : un code client peut contenir une virgule.
@@ -258,7 +295,8 @@ function buildFolderListQuery(extraWhere = "") {
              AND msv.DONE_COUNT = msv.REQ_COUNT - 1
             THEN 1 ELSE 0
         END AS BIT) AS F_ONLY_ME,
-        -- Filtre "En alerte" : même règle que ENT_ALERT_SERVICES (page)
+        -- Filtre "En alerte" : même règle que ENT_ALERT_SERVICES (page),
+        -- seulement les alertes adressées à l'utilisateur
         CAST(CASE WHEN EXISTS (
             SELECT 1
             FROM dbo.vw_FsaValidations vw
@@ -266,6 +304,7 @@ function buildFolderListQuery(extraWhere = "") {
             WHERE vw.NUMDOS = e.NUMDOS
               AND fv.VALALERT = 1
               AND vw.VALTYPCOD NOT IN ('NONE', 'DEL')
+              AND ${alertForMeSql("fv")}
         ) THEN 1 ELSE 0 END AS BIT) AS F_HAS_ALERT
 
     INTO #FOLDERS
@@ -356,8 +395,10 @@ function buildFolderListQuery(extraWhere = "") {
         ISNULL(pj.PJ_COUNT, 0)       AS ENT_PJ_COUNT,
         f.ENT_VALIDATED_SERVICES,
         -- Services dont la validation est "en alerte" (badge sur FolderCard,
-        -- cf. sql/07_FSAVALID_VALALERT.alter.sql)
+        -- cf. sql/07_FSAVALID_VALALERT.alter.sql) : alertes reçues, puis
+        -- alertes envoyées par le service de l'utilisateur
         ISNULL(alr.SERVICES, '')     AS ENT_ALERT_SERVICES,
+        ISNULL(alr.SENT, '')         AS ENT_ALERT_SENT_SERVICES,
         CAST(CASE WHEN refval.NUMDOS IS NOT NULL OR f.F_LEGACY_REF = 1 THEN 1 ELSE 0 END AS BIT) AS ENT_IS_REF
 
     FROM (
@@ -392,12 +433,20 @@ function buildFolderListQuery(extraWhere = "") {
     -- Mêmes validations que le détail (vw_FsaValidations), VALALERT lu
     -- dans FSAVALID par VALIDID.
     OUTER APPLY (
-        SELECT STRING_AGG(vw.GES_SERVGES, ',') AS SERVICES
-        FROM dbo.vw_FsaValidations vw
-        INNER JOIN dbo.FSAVALID fv ON fv.VALIDID = vw.VALIDID
-        WHERE vw.NUMDOS = f.ENT_NUMDOS
-          AND fv.VALALERT = 1
-          AND vw.VALTYPCOD NOT IN ('NONE', 'DEL')
+        SELECT
+            STRING_AGG(CASE WHEN a.FROM_ME = 0 THEN a.SERVGES END, ',') AS SERVICES,
+            STRING_AGG(CASE WHEN a.FROM_ME = 1 THEN a.SERVGES END, ',') AS SENT
+        FROM (
+            SELECT
+                vw.GES_SERVGES AS SERVGES,
+                CASE WHEN ${alertFromMySql("fv")} THEN 1 ELSE 0 END AS FROM_ME
+            FROM dbo.vw_FsaValidations vw
+            INNER JOIN dbo.FSAVALID fv ON fv.VALIDID = vw.VALIDID
+            WHERE vw.NUMDOS = f.ENT_NUMDOS
+              AND fv.VALALERT = 1
+              AND vw.VALTYPCOD NOT IN ('NONE', 'DEL')
+              AND ${alertForMeSql("fv")}
+        ) a
     ) alr
     ORDER BY f.F_SORTDAT DESC, f.ENT_NUMDOS DESC;
 
@@ -872,12 +921,21 @@ const FOLDER_VALIDATIONS_QUERY = `
         CREUSR      AS VAL_CREUSR,
         -- Validation en alerte (sql/07_FSAVALID_VALALERT.alter.sql) : lue
         -- directement dans FSAVALID pour ne pas modifier la vue.
-        ISNULL((
-            SELECT fv.VALALERT
-            FROM dbo.FSAVALID AS fv
-            WHERE fv.VALIDID = vw.VALIDID
-        ), 0)       AS VAL_VALALERT
+        ISNULL(alt.VALALERT, 0) AS VAL_VALALERT,
+        -- Destinataire de l'alerte (sql/08_FSAVALID_VALALERT_TARGET.alter.sql)
+        ISNULL(alt.VALALERTTGT, 'ALL') AS VAL_VALALERTTGT,
+        alt.VALALERTSRV AS VAL_VALALERTSRV,
+        ISNULL(alt.FOR_ME, 0) AS VAL_VALALERT_FORME,
+        ISNULL(alt.FROM_ME, 0) AS VAL_VALALERT_FROMME
     FROM dbo.vw_FsaValidations AS vw
+    OUTER APPLY (
+        SELECT
+            fv.VALALERT, fv.VALALERTTGT, fv.VALALERTSRV,
+            CAST(CASE WHEN ${alertForMeSql("fv")} THEN 1 ELSE 0 END AS BIT) AS FOR_ME,
+            CAST(CASE WHEN ${alertFromMySql("fv")} THEN 1 ELSE 0 END AS BIT) AS FROM_ME
+        FROM dbo.FSAVALID AS fv
+        WHERE fv.VALIDID = vw.VALIDID
+    ) alt
     WHERE NUMDOS = @NUMDOS
     ORDER BY CREDAT;
 `;
@@ -920,7 +978,13 @@ const FOLDER_VALIDATIONS_FILES_QUERY = `
  * toujours PJS: [] — FSAPJ n'a pas de colonne pour rattacher une pièce
  * jointe à une validation précise dans le schéma fourni.
  */
-export async function getFsa(NUMDOS) {
+/**
+ * @param {string} NUMDOS
+ * @param {number|null} [USRID] - utilisateur courant : sert à savoir quelles
+ *   alertes lui sont adressées (VAL_VALALERT_FORME). Sans lui, seules les
+ *   alertes "tout le monde" le concernent.
+ */
+export async function getFsa(NUMDOS, USRID = null) {
   const inputs = { NUMDOS: { type: sql.VarChar(50), value: NUMDOS } };
 
   const [
@@ -961,7 +1025,10 @@ export async function getFsa(NUMDOS) {
       moduleUrl: import.meta.url,
       key: "fsa.getFsa.validations",
       query: FOLDER_VALIDATIONS_QUERY,
-      inputs,
+      inputs: {
+        ...inputs,
+        USRID_VAL: { type: sql.Int, value: USRID ?? null },
+      },
     }),
     runQuery({
       moduleUrl: import.meta.url,
@@ -1629,7 +1696,9 @@ export async function postValidation(
   NUMGES,
   CREUSR,
   VALALERT = false,
+  alertTarget = {},
 ) {
+  const target = alertTargetInputs(VALALERT, alertTarget);
   await runQuery({
     moduleUrl: import.meta.url,
     query: `
@@ -1640,6 +1709,9 @@ export async function postValidation(
         VALTYPCOD,
         VALNOT,
         VALALERT,
+        VALALERTTGT,
+        VALALERTSRV,
+        VALALERTUSR,
         CREDAT,
         CREUSR
       )
@@ -1650,6 +1722,9 @@ export async function postValidation(
         @VALTYPCOD,
         @VALNOT,
         @VALALERT,
+        @VALALERTTGT,
+        @VALALERTSRV,
+        @VALALERTUSR,
         SYSUTCDATETIME(),
         @CREUSR
       )
@@ -1659,6 +1734,7 @@ export async function postValidation(
       VALTYPCOD: { type: sql.VarChar(15), value: VALTYPCOD },
       VALNOT: { type: sql.NVarChar(4000), value: VALNOT },
       VALALERT: { type: sql.Bit, value: VALALERT ? 1 : 0 },
+      ...target,
       NUMGES: { type: sql.VarChar(15), value: NUMGES },
       CREUSR: { type: sql.NVarChar(250), value: CREUSR },
     },
@@ -1668,20 +1744,87 @@ export async function postValidation(
 }
 
 /**
+ * Colonnes "destinataire" d'une alerte (sql/08_FSAVALID_VALALERT_TARGET) :
+ * remises à NULL quand la validation n'est pas (plus) en alerte.
+ * @param {boolean} VALALERT
+ * @param {{ VALALERTTGT?: string, VALALERTSRV?: string|null, USRID?: number }} alertTarget
+ */
+function alertTargetInputs(VALALERT, { VALALERTTGT, VALALERTSRV, USRID } = {}) {
+  const tgt = VALALERT ? VALALERTTGT || "ALL" : null;
+  return {
+    VALALERTTGT: { type: sql.VarChar(10), value: tgt },
+    VALALERTSRV: {
+      type: sql.VarChar(50),
+      value: tgt === "SERV" ? VALALERTSRV || null : null,
+    },
+    VALALERTUSR: { type: sql.Int, value: VALALERT ? (USRID ?? null) : null },
+  };
+}
+
+/**
+ * Adresses e-mail des membres de tous les services valideurs (FSAGES.VALGES),
+ * requis ou non sur le dossier : alerte adressée à "tout le monde".
+ */
+export async function getValidatorServicesEmails() {
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+      SELECT DISTINCT u.EMAIL
+      FROM dbo.FSAGES g
+      INNER JOIN dbo.FSAGES_UTILISATEURS gu ON gu.GESID = g.GESID
+      INNER JOIN USERSMANAGER.dbo.V_Users u ON u.USRID = gu.USRID
+      WHERE g.VALGES = 1
+        AND NULLIF(LTRIM(RTRIM(u.EMAIL)), '') IS NOT NULL;
+    `,
+  });
+  return (result.recordset ?? []).map((r) => r.EMAIL);
+}
+
+/**
+ * Adresses e-mail des membres d'un service (FSAGES.SERVGES), pour prévenir
+ * les destinataires d'une alerte. Même source que getValEmails (V_Users).
+ */
+export async function getServiceEmails(SERVGES) {
+  if (!SERVGES) return [];
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+      SELECT DISTINCT u.EMAIL
+      FROM dbo.FSAGES g
+      INNER JOIN dbo.FSAGES_UTILISATEURS gu ON gu.GESID = g.GESID
+      INNER JOIN USERSMANAGER.dbo.V_Users u ON u.USRID = gu.USRID
+      WHERE g.SERVGES = @SERVGES
+        AND NULLIF(LTRIM(RTRIM(u.EMAIL)), '') IS NOT NULL;
+    `,
+    inputs: { SERVGES: { type: sql.VarChar(50), value: SERVGES } },
+  });
+  return (result.recordset ?? []).map((r) => r.EMAIL);
+}
+
+/**
  * Bascule l'état "alerte" d'une validation (sql/07_FSAVALID_VALALERT.alter.sql).
  * Seul un gestionnaire du même service que le valideur peut la modifier (même
  * règle que `canEdit` sur la ValidationCard côté front), et uniquement sur la
  * DERNIÈRE validation de ce service pour le dossier (celle affichée).
  * Renvoie false si rien n'a été mis à jour (droits / validation obsolète).
  */
-export async function patchValidationAlert(NUMDOS, VALIDID, VALALERT, NUMGES) {
+export async function patchValidationAlert(
+  NUMDOS,
+  VALIDID,
+  VALALERT,
+  NUMGES,
+  alertTarget = {},
+) {
   if (!NUMDOS || !VALIDID || !NUMGES) throw new Error("MISSING_PARAMETERS");
 
   const result = await runQuery({
     moduleUrl: import.meta.url,
     query: `
       UPDATE v
-         SET v.VALALERT = @VALALERT
+         SET v.VALALERT = @VALALERT,
+             v.VALALERTTGT = @VALALERTTGT,
+             v.VALALERTSRV = @VALALERTSRV,
+             v.VALALERTUSR = @VALALERTUSR
         FROM dbo.FSAVALID AS v
        INNER JOIN dbo.FSAGES AS gv ON gv.NUMGES = v.NUMGES
        INNER JOIN dbo.FSAGES AS gu ON gu.NUMGES = @NUMGES
@@ -1704,6 +1847,7 @@ export async function patchValidationAlert(NUMDOS, VALIDID, VALALERT, NUMGES) {
       NUMDOS: { type: sql.VarChar(50), value: NUMDOS },
       VALIDID: { type: sql.Int, value: VALIDID },
       VALALERT: { type: sql.Bit, value: VALALERT ? 1 : 0 },
+      ...alertTargetInputs(VALALERT, alertTarget),
       NUMGES: { type: sql.VarChar(15), value: NUMGES },
     },
   });

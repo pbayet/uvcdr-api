@@ -252,6 +252,13 @@ function mapValidationRow(row) {
     VALNOT: row.VAL_VALNOT,
     // Validation en alerte (commentaire à lire impérativement).
     VALALERT: toBool(row.VAL_VALALERT),
+    // Destinataire de l'alerte : ALL / GES / SERV (VALALERTSRV) / SELF, et
+    // si elle concerne l'utilisateur courant (sql/08_FSAVALID_VALALERT_TARGET).
+    VALALERTTGT: row.VAL_VALALERTTGT || "ALL",
+    VALALERTSRV: row.VAL_VALALERTSRV || null,
+    VALALERT_FORME: toBool(row.VAL_VALALERT_FORME),
+    // Alerte posée par le service de l'utilisateur courant ("envoyée")
+    VALALERT_FROMME: toBool(row.VAL_VALALERT_FROMME),
     CREDAT: utcToParisIso(row.VAL_CREDAT),
     CREUSR: row.VAL_CREUSR,
     // PJS toujours vide : FSAPJ n'a pas de colonne pour rattacher une pièce
@@ -391,6 +398,9 @@ function mapFolderListItem(row, mustValidateMap) {
 
     // Services dont la validation est en alerte (badge FolderCard)
     ALERT_SERVICES: (row.ENT_ALERT_SERVICES || "").split(",").filter(Boolean),
+    ALERT_SENT_SERVICES: (row.ENT_ALERT_SENT_SERVICES || "")
+      .split(",")
+      .filter(Boolean),
 
     // Nécessaire pour reconstruire le vrai statut quand CODETA = 'ARC'
     // (cf. setRelEtaDos côté front) : Refusé si une validation REF existe

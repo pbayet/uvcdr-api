@@ -18,6 +18,7 @@ import {
   resolveMailCopies,
 } from "../../core/services/mail.service.js";
 import { logger } from "../../config/logger.config.js";
+import { debounceCollect } from "../../core/utils/debounce.utils.js";
 import { broadcastToAll } from "../../config/websocket/wsManager.js";
 
 /* ─────────────────────────────────────────────
@@ -761,7 +762,7 @@ export async function getFsas(req) {
   const formattedGests = utils.formatGestsMustValidate(gestsMustValidate);
 
   if (numdos) {
-    const rawFsa = await services.getFsa(numdos);
+    const rawFsa = await services.getFsa(numdos, getUserIdentity(req).USRID);
     return utils.formatFsasJson(rawFsa, formattedGests)[0];
   }
 
@@ -989,7 +990,7 @@ export async function postFsa(req) {
   const formattedGestsMustValidate =
     utils.formatGestsMustValidate(gestsMustValidate);
 
-  const newRawsFsa = await services.getFsa(newNumDos);
+  const newRawsFsa = await services.getFsa(newNumDos, getUserIdentity(req).USRID);
   const newFormattedFsa = utils.formatFsasJson(
     newRawsFsa,
     formattedGestsMustValidate,
@@ -1012,7 +1013,7 @@ export async function duplicateFsa(req) {
   let NOMENCLATURE = [];
   let PRODUCT = undefined;
 
-  const baseFsaData = await services.getFsa(NUMDOS);
+  const baseFsaData = await services.getFsa(NUMDOS, getUserIdentity(req).USRID);
   const formattedBaseFsa = utils.formatFsasJson(baseFsaData);
 
   if (!formattedBaseFsa.length || !formattedBaseFsa[0])
@@ -1085,12 +1086,14 @@ export async function postValidation(req) {
     VALTYPCOD,
     VALNOT,
     VALALERT,
+    VALALERTTGT,
+    VALALERTSRV,
     LIENS_STRINGIFY: LIENS,
   } = v.validationCreateSchema.parse(
     (await requestUtils.getRequestParams(req)).params,
   );
 
-  const { CREUSR, NUMGES } = getUserIdentity(req);
+  const { CREUSR, NUMGES, USRID } = getUserIdentity(req);
 
   await services.postValidation(
     NUMDOS,
@@ -1099,6 +1102,7 @@ export async function postValidation(req) {
     NUMGES,
     CREUSR,
     VALALERT,
+    { VALALERTTGT, VALALERTSRV, USRID },
   );
 
   // Liens de la pré-validation, rattachés au gestionnaire (même clé que ses
@@ -1111,7 +1115,7 @@ export async function postValidation(req) {
   const formattedGestsMustValidate =
     utils.formatGestsMustValidate(gestsMustValidate);
 
-  const baseFsaData = await services.getFsa(NUMDOS);
+  const baseFsaData = await services.getFsa(NUMDOS, getUserIdentity(req).USRID);
   const formattedBaseFsa = utils.formatFsasJson(
     baseFsaData,
     formattedGestsMustValidate,
@@ -1195,7 +1199,12 @@ export async function postValidation(req) {
           { label: "Validation", value: valid.VALTYP.VALTYPNOM },
           { label: "Pièces jointe", value: valid.PJS.length },
           ...(VALALERT
-            ? [{ label: "Alerte", value: "Oui — commentaire à prendre en compte" }]
+            ? [
+                {
+                  label: "Alerte",
+                  value: `Oui — pour ${alertTargetLabel(VALALERTTGT, VALALERTSRV)}`,
+                },
+              ]
             : []),
         ],
       },
@@ -1211,7 +1220,175 @@ export async function postValidation(req) {
     actionUrl: `${DOMAIN}/fsa/folders/${NUMDOS}/0`,
   });
 
+  // Mail d'alerte aux personnes concernées : différé et regroupé (cf.
+  // scheduleAlertNotification)
+  if (VALALERT) {
+    scheduleAlertNotification(NUMDOS, valid.GEST?.SERVGES, USRID);
+  }
+
   return newFormattedFsa;
+}
+
+/** Libellé du destinataire d'une alerte (mails). */
+function alertTargetLabel(VALALERTTGT, VALALERTSRV) {
+  switch (VALALERTTGT) {
+    case "GES":
+      return "le gestionnaire du dossier";
+    case "SERV":
+      return `le service ${VALALERTSRV}`;
+    case "SELF":
+      return "son auteur";
+    default:
+      return "tout le monde";
+  }
+}
+
+// Anti-spam des mails d'alerte (même mécanisme que ticketing, cf.
+// debounceCollect) : délai de silence avant l'envoi, et latence max depuis la
+// première action du lot.
+const ALERT_MAIL_DEBOUNCE_MS =
+  Number(process.env.FSA_ALERT_MAIL_DEBOUNCE_MS) || 2 * 60 * 1000;
+const ALERT_MAIL_DEBOUNCE_MAX_MS =
+  Number(process.env.FSA_ALERT_MAIL_DEBOUNCE_MAX_MS) || 15 * 60 * 1000;
+
+/**
+ * Planifie le mail d'une alerte posée ou modifiée sur la validation du
+ * service SERVGES (pose, retrait, remise, changement de destinataire...).
+ * Les actions rapprochées sur la même alerte (même dossier, même service)
+ * sont regroupées : à l'envoi, l'état ACTUEL est relu en base — un seul mail
+ * avec le destinataire final, et aucun si l'alerte a été retirée entre-temps.
+ */
+function scheduleAlertNotification(NUMDOS, SERVGES, authorUsrId) {
+  if (!NUMDOS || !SERVGES) return;
+
+  debounceCollect(
+    `fsa-alert:${NUMDOS}:${SERVGES}`,
+    { authorUsrId },
+    {
+      delayMs: ALERT_MAIL_DEBOUNCE_MS,
+      maxWaitMs: ALERT_MAIL_DEBOUNCE_MAX_MS,
+      onFlush: async (items) => {
+        try {
+          const rawFsa = await services.getFsa(NUMDOS);
+          const gests = utils.formatGestsMustValidate(
+            await services.getGestsMustValidateByNumDos(NUMDOS),
+          );
+          const folder = utils.formatFsasJson(rawFsa, gests)[0];
+          if (!folder) return;
+
+          // Dernière validation (non supprimée) du service
+          const valid = (folder.FSAVALIDS ?? [])
+            .filter(
+              (val) =>
+                val.GEST?.SERVGES === SERVGES &&
+                !["NONE", "DEL"].includes(val.VALTYP?.VALTYPCOD),
+            )
+            .sort((a, b) => b.VALIDID - a.VALIDID)[0];
+          if (!valid?.VALALERT) return; // alerte retirée entre-temps
+
+          await notifyAlertRecipients({
+            NUMDOS,
+            folder,
+            valid,
+            VALALERTTGT: valid.VALALERTTGT,
+            VALALERTSRV: valid.VALALERTSRV,
+            gestUsrId: rawFsa.header?.[0]?.ENT_GES_USRID,
+            // Auteur de la dernière action du lot
+            authorUsrId: items[items.length - 1]?.authorUsrId,
+          });
+        } catch (err) {
+          logger.error(
+            `[FSA][MAIL] Échec du mail d'alerte différé (${NUMDOS} / ${SERVGES}) : ${err.message}`,
+          );
+        }
+      },
+    },
+  );
+}
+
+/** E-mail d'un utilisateur (USERSMANAGER), ou undefined. */
+async function getUserEmail(USRID) {
+  if (!USRID) return undefined;
+  const user = await usersmanagerService.getUserById(USRID);
+  const formatted = await usersmanagerUtils.formatUsers(user);
+  return formatted[0]?.EMAIL;
+}
+
+/**
+ * Prévient par mail les personnes concernées par une alerte (sql/08_FSAVALID_
+ * VALALERT_TARGET), à chaque pose ou changement de destinataire :
+ *   - ALL  : gestionnaire du dossier + membres de tous les services
+ *            valideurs (FSAGES.VALGES), requis ou non sur le dossier ;
+ *   - GES  : gestionnaire du dossier ;
+ *   - SERV : membres du service visé ;
+ *   - SELF : l'auteur de l'alerte.
+ * L'auteur n'est pas prévenu de sa propre alerte (sauf SELF).
+ * Les erreurs sont journalisées sans faire échouer la requête.
+ */
+async function notifyAlertRecipients({
+  NUMDOS,
+  folder,
+  valid,
+  VALALERTTGT,
+  VALALERTSRV,
+  gestUsrId,
+  authorUsrId,
+}) {
+  try {
+    const authorEmail = await getUserEmail(authorUsrId);
+    let emails = [];
+    switch (VALALERTTGT) {
+      case "SELF":
+        emails = [authorEmail];
+        break;
+      case "GES":
+        emails = [await getUserEmail(gestUsrId)];
+        break;
+      case "SERV":
+        emails = await services.getServiceEmails(VALALERTSRV);
+        break;
+      default:
+        emails = [
+          await getUserEmail(gestUsrId),
+          ...(await services.getValidatorServicesEmails()),
+        ];
+    }
+
+    const recipients = [...new Set(emails.filter(Boolean))].filter(
+      (email) => VALALERTTGT === "SELF" || email !== authorEmail,
+    );
+    if (!recipients.length) return;
+
+    await notifyFsaEvent({
+      template: "fsa/validation",
+      subject: "Alerte sur un dossier FSA",
+      message: `Une validation en alerte vous est adressée (${alertTargetLabel(
+        VALALERTTGT,
+        VALALERTSRV,
+      )}) : son commentaire est à lire et à prendre en compte.`,
+      recipient: recipients.join(","),
+      dossierCode: NUMDOS,
+      nomdos: folder?.FSAENT?.NOMDOS,
+      detailGroups: [
+        {
+          title: "Alerte",
+          items: [
+            { label: "Service", value: valid?.GEST?.SERVGES },
+            { label: "Utilisateur", value: valid?.GEST?.GESNAM },
+            { label: "Validation", value: valid?.VALTYP?.VALTYPNOM },
+          ],
+        },
+      ],
+      comment: valid?.VALNOT
+        ? { author: valid.GEST?.GESNAM, content: valid.VALNOT }
+        : undefined,
+      actionUrl: `${DOMAIN}/fsa/folders/${NUMDOS}/0`,
+    });
+  } catch (err) {
+    logger.error(
+      `[FSA][MAIL] Échec du mail d'alerte (${NUMDOS}) : ${err.message}`,
+    );
+  }
 }
 
 /**
@@ -1219,17 +1396,19 @@ export async function postValidation(req) {
  * ValidationCard). Renvoie le dossier à jour, comme postValidation.
  */
 export async function patchValidationAlert(req) {
-  const { NUMDOS, VALIDID, VALALERT } = v.validationAlertPatchSchema.parse(
-    (await requestUtils.getRequestParams(req)).params,
-  );
+  const { NUMDOS, VALIDID, VALALERT, VALALERTTGT, VALALERTSRV } =
+    v.validationAlertPatchSchema.parse(
+      (await requestUtils.getRequestParams(req)).params,
+    );
 
-  const { NUMGES } = getUserIdentity(req);
+  const { NUMGES, USRID } = getUserIdentity(req);
 
   const updated = await services.patchValidationAlert(
     NUMDOS,
     VALIDID,
     VALALERT,
     NUMGES,
+    { VALALERTTGT, VALALERTSRV, USRID },
   );
 
   if (!updated) {
@@ -1242,12 +1421,21 @@ export async function patchValidationAlert(req) {
 
   const gestsMustValidate = await services.getGestsMustValidateByNumDos(NUMDOS);
   const formattedGests = utils.formatGestsMustValidate(gestsMustValidate);
-  const rawFsa = await services.getFsa(NUMDOS);
+  const rawFsa = await services.getFsa(NUMDOS, getUserIdentity(req).USRID);
   const formattedFsa = utils.formatFsasJson(rawFsa, formattedGests)[0];
 
   if (!formattedFsa) throw new Error("DATA_NOT_FOUND");
 
   broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
+
+  // Pose ou changement de destinataire : mail différé et regroupé (un
+  // retrait n'a rien à planifier, l'état est relu à l'envoi)
+  if (VALALERT) {
+    const SERVGES = formattedFsa.FSAVALIDS?.find(
+      (val) => val.VALIDID === VALIDID,
+    )?.GEST?.SERVGES;
+    scheduleAlertNotification(NUMDOS, SERVGES, USRID);
+  }
 
   return formattedFsa;
 }
@@ -1346,7 +1534,7 @@ export async function patchFsa(req) {
   const formattedGests = utils.formatGestsMustValidate(gestsMustValidate);
 
   if (EAV) {
-    const newFsa = await services.getFsa(NUMDOS);
+    const newFsa = await services.getFsa(NUMDOS, getUserIdentity(req).USRID);
     const newFormattedFsas = utils.formatFsasJson(newFsa, formattedGests);
 
     const valEmails = await services.getValEmails(NUMDOS);
@@ -1403,7 +1591,7 @@ export async function patchFsa(req) {
     });
   }
 
-  const rawFsa = await services.getFsa(NUMDOS);
+  const rawFsa = await services.getFsa(NUMDOS, getUserIdentity(req).USRID);
   const formattedFsas = utils.formatFsasJson(rawFsa, formattedGests);
 
   broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
@@ -1451,7 +1639,7 @@ export async function patchFsaPrixRevise(req) {
 
   const gestsMustValidate = await services.getGestsMustValidate();
   const formattedGests = utils.formatGestsMustValidate(gestsMustValidate);
-  const rawFsa = await services.getFsa(NUMDOS);
+  const rawFsa = await services.getFsa(NUMDOS, getUserIdentity(req).USRID);
   const formattedFsa = utils.formatFsasJson(rawFsa, formattedGests)[0];
 
   broadcastFsaFolder("fsa.folder.updated", { NUMDOS });
