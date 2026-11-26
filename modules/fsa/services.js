@@ -605,7 +605,11 @@ export async function getMyFsas(NUMGES, type = "default", filters = {}) {
  * MYVAL_COUNT : nombre de dossiers de l'onglet que le service `myserv` doit
  * valider (affichage du filtre "Mes validations").
  */
-export async function getFolderFilters(type = "default", myserv = null) {
+export async function getFolderFilters(
+  type = "default",
+  myserv = null,
+  USRID = null,
+) {
   const filter = getTypeFilter(type);
 
   const result = await runQuery({
@@ -662,19 +666,41 @@ export async function getFolderFilters(type = "default", myserv = null) {
       FROM dbo.vw_FsaServicesMustValidate mv
       INNER JOIN #TAB t ON t.NUMDOS = mv.NUMDOS
       WHERE mv.SERVGES = @MYSERVGES_VAL;
+
+      -- Dossiers en alerte pour l'utilisateur : même règle que le filtre
+      -- "En alerte" (FOLDER_LIST_FILTERS / F_HAS_ALERT), ni brouillon ni validé
+      SELECT COUNT(*) AS ALERT_COUNT
+      FROM #TAB t
+      WHERE t.CODETA NOT IN ('BRO', 'VAL')
+        AND EXISTS (
+            SELECT 1
+            FROM dbo.vw_FsaValidations vw
+            INNER JOIN dbo.FSAVALID fv ON fv.VALIDID = vw.VALIDID
+            WHERE vw.NUMDOS = t.NUMDOS
+              AND fv.VALALERT = 1
+              AND vw.VALTYPCOD NOT IN ('NONE', 'DEL')
+              AND ${alertForMeSql("fv")}
+        );
     `,
     inputs: {
       CODETA_VAL: { type: sql.VarChar(15), value: filter.CODETA_VAL },
       INVERT_CODETA_VAL: { type: sql.Bit, value: filter.INVERT_CODETA_VAL },
       DELETED_VAL: { type: sql.Bit, value: filter.DELETED_VAL },
       MYSERVGES_VAL: { type: sql.VarChar(50), value: myserv ?? null },
+      USRID_VAL: { type: sql.Int, value: USRID ?? null },
     },
   });
 
-  const [STATUS = [], CLIENTS = [], DEMS = [], counts = []] =
+  const [STATUS = [], CLIENTS = [], DEMS = [], counts = [], alerts = []] =
     result.recordsets ?? [];
 
-  return { STATUS, CLIENTS, DEMS, MYVAL_COUNT: counts[0]?.MYVAL_COUNT ?? 0 };
+  return {
+    STATUS,
+    CLIENTS,
+    DEMS,
+    MYVAL_COUNT: counts[0]?.MYVAL_COUNT ?? 0,
+    ALERT_COUNT: alerts[0]?.ALERT_COUNT ?? 0,
+  };
 }
 
 /* -------------------------------------------------------------------------- */

@@ -809,8 +809,8 @@ export async function getFolderFilters(req) {
     (await requestUtils.getRequestParams(req)).params,
   );
 
-  const { STATUS, CLIENTS, DEMS, MYVAL_COUNT } =
-    await services.getFolderFilters(type, myserv);
+  const { STATUS, CLIENTS, DEMS, MYVAL_COUNT, ALERT_COUNT } =
+    await services.getFolderFilters(type, myserv, getUserIdentity(req).USRID);
 
   return {
     STATUS,
@@ -819,6 +819,8 @@ export async function getFolderFilters(req) {
     // Le filtre "Mes validations" n'a de sens que si le service de
     // l'utilisateur doit valider au moins un dossier de l'onglet
     CAN_VALIDATE: MYVAL_COUNT > 0,
+    // Bouton "En alerte" affiché seulement s'il y a des dossiers en alerte
+    ALERT_COUNT,
   };
 }
 
