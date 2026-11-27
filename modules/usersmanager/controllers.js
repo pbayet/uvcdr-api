@@ -153,7 +153,46 @@ export async function getHomeApplications(req) {
     : await services.getUserById(getUserIdentity(req).USRID);
   const formattedUsers = await utils.formatUsers(rawUsers);
 
-  return services.getHomeApplications(formattedUsers[0]);
+  const applications = await services.getHomeApplications(formattedUsers[0]);
+  return withHomeDocuments(applications);
+}
+
+/**
+ * Documentation des applications de l'accueil : modes opératoires de la
+ * dernière version qui en a de visibles pour le statut de l'utilisateur sur
+ * l'application (DOCUMENTS), sinon l'ancien lien de l'application. DOCLNK
+ * (lu par le portail et les anciennes versions d'app-shell) = le premier.
+ * En cas d'erreur, les applications sont renvoyées telles quelles.
+ */
+async function withHomeDocuments(applications) {
+  if (!Array.isArray(applications) || applications.length === 0) {
+    return applications;
+  }
+
+  try {
+    const { rows } = await services.getAppVersionDocuments(
+      applications.map((app) => app.APPCOD),
+    );
+
+    const docsByApp = new Map();
+    for (const version of utils.groupVersionDocuments(rows).values()) {
+      if (!docsByApp.has(version.APPCOD)) docsByApp.set(version.APPCOD, []);
+      docsByApp.get(version.APPCOD).push(version);
+    }
+
+    return applications.map((app) => {
+      const level = Number(app.PERMISSION?.PRMLVL ?? app.PRMLVL);
+      const { DOCUMENTS } = utils.resolveLatestDocuments(
+        docsByApp.get(app.APPCOD) ?? [],
+        app.DOCLNK,
+        { level: Number.isFinite(level) ? level : null },
+      );
+      return { ...app, DOCLNK: DOCUMENTS[0]?.DOCLNK ?? "", DOCUMENTS };
+    });
+  } catch (err) {
+    logger.warn(`[usersmanager] Modes opératoires de l'accueil : ${err.message}`);
+    return applications;
+  }
 }
 
 /**
@@ -365,7 +404,20 @@ export async function getAppVersions(req) {
     (await requestUtils.getRequestParams(req)).params,
   );
 
-  return utils.formatAppVersions(await services.getAppVersions(APPCOD), "VID");
+  const [rows, { rows: docRows, appDocLinks }] = await Promise.all([
+    services.getAppVersions(APPCOD),
+    services.getAppVersionDocuments([APPCOD]),
+  ]);
+
+  // Modes opératoires : filtrés selon le statut du token (tous pour
+  // users-manager), avec repli sur la version antérieure puis sur l'ancien
+  // lien de l'application (cf. utils.attachVersionDocuments).
+  return utils.attachVersionDocuments(
+    utils.formatAppVersions(rows, "VID"),
+    utils.groupVersionDocuments(docRows),
+    appDocLinks.get(APPCOD),
+    utils.getDocumentViewer(req?.payload, APPCOD),
+  );
 }
 
 /* -------------------------------------------------------------------------- */
@@ -595,7 +647,7 @@ export async function upsertApplication(req) {
 }
 
 export async function setLastVersion(req) {
-  const { VID, APPCOD, VNUM, RELEASEDTE, SUMMARY, CHANGES } =
+  const { VID, APPCOD, VNUM, RELEASEDTE, SUMMARY, CHANGES, DOCUMENTS } =
     v.lastVersionSchema.parse(
       (await requestUtils.getRequestParams(req)).params,
     );
@@ -611,6 +663,7 @@ export async function setLastVersion(req) {
     SUMMARY ?? null,
     CHANGES ?? [],
     VID ?? null,
+    DOCUMENTS ?? null,
   );
 
   if (!version) throw new Error("DATA_NOT_FOUND");

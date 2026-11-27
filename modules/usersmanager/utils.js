@@ -193,6 +193,153 @@ export function formatAppVersions(rows, groupBy = "APPCOD") {
   return Array.from(appMap.values());
 }
 
+/* ─────────────────────────────────────────────
+   MODES OPÉRATOIRES PAR VERSION (APPVERSIONDOCS)
+───────────────────────────────────────────── */
+
+/** Code de users-manager : ses tokens voient tous les modes opératoires. */
+export const MANAGER_APPCOD = "USRMAN";
+
+/**
+ * Lecteur des modes opératoires, déduit du token :
+ * - token users-manager (gestion) : tout ;
+ * - token de l'application APPCOD : statut du token (permissionLevel, y
+ *   compris un niveau simulé) ;
+ * - autre token : statut inconnu, modes opératoires sans restriction seuls.
+ */
+export function getDocumentViewer(payload, APPCOD) {
+  if (payload?.application === MANAGER_APPCOD) return { all: true };
+  if (APPCOD && payload?.application === APPCOD) {
+    const level = Number(payload?.permissionLevel);
+    return { level: Number.isFinite(level) && level !== -1 ? level : null };
+  }
+  return { level: null };
+}
+
+/** Vrai si `viewer` peut voir `doc` (aucun statut = visible par tous). */
+export function isDocumentVisible(doc, viewer) {
+  if (viewer?.all) return true;
+  if (!doc.PERMISSIONS?.length) return true;
+  return (
+    viewer?.level != null &&
+    doc.PERMISSIONS.some((p) => Number(p.PRMLVL) === Number(viewer.level))
+  );
+}
+
+/**
+ * Regroupe les lignes de services.getAppVersionDocuments (une par statut)
+ * en Map VID -> { VID, APPCOD, VNUM, DOCUMENTS }, dans l'ordre des lignes
+ * (version la plus récente d'abord).
+ */
+export function groupVersionDocuments(rows = []) {
+  const versions = new Map();
+  const docs = new Map();
+
+  for (const row of rows) {
+    let version = versions.get(row.VID);
+    if (!version) {
+      version = {
+        VID: row.VID,
+        APPCOD: row.APPCOD,
+        VNUM: row.VNUM,
+        DOCUMENTS: [],
+      };
+      versions.set(row.VID, version);
+    }
+
+    let doc = docs.get(row.DID);
+    if (!doc) {
+      doc = {
+        DID: row.DID,
+        DOCNAM: row.DOCNAM,
+        DOCLNK: row.DOCLNK,
+        ORDNUM: row.ORDNUM,
+        PERMISSIONS: [],
+      };
+      docs.set(row.DID, doc);
+      version.DOCUMENTS.push(doc);
+    }
+
+    if (row.PRMID != null) {
+      doc.PERMISSIONS.push({
+        PRMID: row.PRMID,
+        PRMNAM: row.PRMNAM,
+        PRMLVL: row.PRMLVL,
+      });
+    }
+  }
+
+  return versions;
+}
+
+/** Ancien lien de documentation de l'application, au format mode opératoire. */
+function legacyDocuments(appDocLink) {
+  return appDocLink
+    ? [
+        {
+          DID: null,
+          DOCNAM: "Mode opératoire",
+          DOCLNK: appDocLink,
+          ORDNUM: 0,
+          PERMISSIONS: [],
+        },
+      ]
+    : [];
+}
+
+/**
+ * Ajoute à chaque version (historique formatAppVersions, plus récente
+ * d'abord) :
+ * - DOCUMENTS : ses propres modes opératoires visibles par `viewer` ;
+ * - EFFECTIVE_DOCUMENTS : ceux à afficher — les siens, sinon ceux de la
+ *   version antérieure la plus proche qui en a (visibles par `viewer`),
+ *   sinon l'ancien lien de l'application (`appDocLink`) ;
+ * - EFFECTIVE_DOCS_VNUM : version d'où viennent EFFECTIVE_DOCUMENTS (null
+ *   = ancien lien de l'application, ou aucun).
+ */
+export function attachVersionDocuments(
+  versions,
+  documentsByVID,
+  appDocLink,
+  viewer,
+) {
+  const legacy = legacyDocuments(appDocLink);
+  let current = null;
+
+  // Parcours de la plus ancienne à la plus récente.
+  for (let i = versions.length - 1; i >= 0; i--) {
+    const version = versions[i];
+    const own = (documentsByVID.get(version.VID)?.DOCUMENTS ?? []).filter(
+      (doc) => isDocumentVisible(doc, viewer),
+    );
+
+    if (own.length > 0) current = { VNUM: version.VNUM, DOCUMENTS: own };
+
+    version.DOCUMENTS = own;
+    version.EFFECTIVE_DOCUMENTS = current?.DOCUMENTS ?? legacy;
+    version.EFFECTIVE_DOCS_VNUM = current?.VNUM ?? null;
+  }
+
+  return versions;
+}
+
+/**
+ * Modes opératoires à afficher pour la dernière version d'une application
+ * (portail) : ceux de la version la plus récente qui en a de visibles par
+ * `viewer`, sinon l'ancien lien de l'application.
+ */
+export function resolveLatestDocuments(appVersionDocs, appDocLink, viewer) {
+  for (const version of appVersionDocs) {
+    const visible = version.DOCUMENTS.filter((doc) =>
+      isDocumentVisible(doc, viewer),
+    );
+    if (visible.length > 0) {
+      return { VNUM: version.VNUM, DOCUMENTS: visible };
+    }
+  }
+  return { VNUM: null, DOCUMENTS: legacyDocuments(appDocLink) };
+}
+
 /**
  * Transforme le résultat SQL V_GroupsPermission en structure
  * Group -> Applications -> Permission.

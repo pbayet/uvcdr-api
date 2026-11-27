@@ -231,6 +231,30 @@ export const lastVersionSchema = z.object({
       ),
     )
     .nullish(),
+  // Modes opératoires : absent = conservés, tableau (même vide) = remplacés.
+  DOCUMENTS: z
+    .preprocess(
+      (val) => (typeof val === "string" ? JSON.parse(val) : val),
+      z
+        .array(
+          z.object({
+            DOCNAM: z
+              .string()
+              .trim()
+              .min(1, "Le nom du mode opératoire est obligatoire.")
+              .max(200),
+            DOCLNK: z
+              .string()
+              .trim()
+              .min(1, "Le lien du mode opératoire est obligatoire.")
+              .max(500),
+            // Statuts autorisés (PERMISSIONS.PRMID) ; vide = tous.
+            PRMIDS: z.array(z.coerce.number().int().positive()).max(50).nullish(),
+          }),
+        )
+        .max(50),
+    )
+    .nullish(),
 });
 
 export const THEMES =["light", "dark", "system"];

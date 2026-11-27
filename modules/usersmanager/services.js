@@ -1347,6 +1347,12 @@ export async function delsertUserMailCopies(USRID, SRCUSRIDS) {
  *   DATA_NOT_FOUND si elle n'existe pas pour APPCOD, et
  *   APP_VERSION_ALREADY_EXISTS si le nouveau VNUM est pris par une autre.
  *
+ * - DOCUMENTS (modes opératoires, [{ DOCNAM, DOCLNK, PRMIDS }]) : `null` =
+ *   modes opératoires existants conservés (publication par les scripts de
+ *   release, qui ne les envoient pas) ; tableau (même vide) = remplacement
+ *   intégral (APPVERSIONDOCS + APPVERSIONDOCPRMS), ORDNUM = rang dans le
+ *   tableau. PRMIDS vide = visible par tous ; PRMID inconnu ignoré.
+ *
  * Retourne la version (+ UPDATED = 1 si elle existait déjà) et ses CHANGES.
  */
 export async function insertAppVersion(
@@ -1357,6 +1363,7 @@ export async function insertAppVersion(
   SUMMARY,
   CHANGES,
   VID = null,
+  DOCUMENTS = null,
 ) {
   let result;
   try {
@@ -1433,6 +1440,39 @@ export async function insertAppVersion(
         ) AS j;
       END;
 
+      IF @DOCUMENTS IS NOT NULL AND ISJSON(@DOCUMENTS) = 1
+      BEGIN
+        -- Statuts supprimés en cascade (FK APPVERSIONDOCPRMS).
+        DELETE FROM dbo.APPVERSIONDOCS WHERE VID = @VID;
+
+        DECLARE @DOCMAP TABLE (DID INT, ORDNUM INT);
+
+        -- MERGE (et non INSERT) pour récupérer le rang source avec le DID.
+        MERGE INTO dbo.APPVERSIONDOCS AS t
+        USING (
+          SELECT CAST(d.[key] AS INT) AS ORDNUM, j.DOCNAM, j.DOCLNK
+          FROM OPENJSON(@DOCUMENTS) AS d
+          CROSS APPLY OPENJSON(d.[value])
+          WITH (
+            DOCNAM NVARCHAR(200) '$.DOCNAM',
+            DOCLNK NVARCHAR(500) '$.DOCLNK'
+          ) AS j
+        ) AS s
+        ON 1 = 0
+        WHEN NOT MATCHED THEN
+          INSERT (VID, DOCNAM, DOCLNK, ORDNUM, CREUSR)
+          VALUES (@VID, s.DOCNAM, s.DOCLNK, s.ORDNUM, @CREUSR)
+        OUTPUT INSERTED.DID, s.ORDNUM INTO @DOCMAP;
+
+        INSERT INTO dbo.APPVERSIONDOCPRMS (DID, PRMID)
+        -- Alias distincts : SQL Server ne distingue pas la casse (p / P).
+        SELECT DISTINCT m.DID, PRM.PRMID
+        FROM OPENJSON(@DOCUMENTS) AS d
+        INNER JOIN @DOCMAP AS m ON m.ORDNUM = CAST(d.[key] AS INT)
+        CROSS APPLY OPENJSON(d.[value], '$.PRMIDS') AS ids
+        INNER JOIN dbo.PERMISSIONS AS PRM ON PRM.PRMID = TRY_CAST(ids.[value] AS INT);
+      END;
+
       COMMIT TRAN;
 
       SELECT VID, APPCOD, VNUM, RELEASEDTE, CREUSR, SUMMARY, @UPDATED AS UPDATED
@@ -1458,6 +1498,10 @@ export async function insertAppVersion(
         CHANGES: {
           type: sql.NVarChar(sql.MAX),
           value: CHANGES?.length ? JSON.stringify(CHANGES) : null,
+        },
+        DOCUMENTS: {
+          type: sql.NVarChar(sql.MAX),
+          value: Array.isArray(DOCUMENTS) ? JSON.stringify(DOCUMENTS) : null,
         },
       },
     });
@@ -1505,8 +1549,55 @@ export async function getAppVersions(APPCOD) {
 }
 
 /**
- * Supprime une version, ses changements (APPCHANGES) et les notifications
- * de lecture associées (USERAPPNOTIF), dans une transaction. Erreur
+ * Modes opératoires (APPVERSIONDOCS) de toutes les versions des applications
+ * `APPCODS`, avec leurs statuts autorisés (une ligne par statut, PRMID NULL
+ * = visible par tous), de la version la plus récente à la plus ancienne —
+ * à regrouper avec utils.groupVersionDocuments. `appDocLinks` : ancien lien
+ * de documentation de chaque application (APPLICATIONS.DOCLNK, repli).
+ */
+export async function getAppVersionDocuments(APPCODS) {
+  const codes = [...new Set((APPCODS ?? []).filter(Boolean).map(String))];
+  if (codes.length === 0) return { rows: [], appDocLinks: new Map() };
+
+  const result = await runQuery({
+    moduleUrl: import.meta.url,
+    query: `
+    DECLARE @CODES TABLE (APPCOD NVARCHAR(20) PRIMARY KEY);
+    INSERT INTO @CODES (APPCOD)
+    SELECT DISTINCT CAST([value] AS NVARCHAR(20)) FROM OPENJSON(@APPCODS);
+
+    SELECT V.VID, V.APPCOD, V.VNUM, V.RELEASEDTE,
+           D.DID, D.DOCNAM, D.DOCLNK, D.ORDNUM,
+           P.PRMID, P.PRMNAM, P.PRMLVL
+    FROM dbo.APPVERSIONDOCS AS D
+    INNER JOIN dbo.APPSVERSIONS AS V ON V.VID = D.VID
+    INNER JOIN @CODES AS C ON C.APPCOD = V.APPCOD
+    LEFT JOIN dbo.APPVERSIONDOCPRMS AS DP ON DP.DID = D.DID
+    LEFT JOIN dbo.PERMISSIONS AS P ON P.PRMID = DP.PRMID
+    ORDER BY V.APPCOD, V.RELEASEDTE DESC, V.VID DESC, D.ORDNUM ASC, D.DID ASC;
+
+    SELECT A.APPCOD, A.DOCLNK
+    FROM dbo.APPLICATIONS AS A
+    INNER JOIN @CODES AS C ON C.APPCOD = A.APPCOD
+    WHERE NULLIF(LTRIM(RTRIM(A.DOCLNK)), N'') IS NOT NULL;
+    `,
+    inputs: {
+      APPCODS: { type: sql.NVarChar(sql.MAX), value: JSON.stringify(codes) },
+    },
+  });
+
+  return {
+    rows: result?.recordsets?.[0] ?? [],
+    appDocLinks: new Map(
+      (result?.recordsets?.[1] ?? []).map((r) => [r.APPCOD, r.DOCLNK]),
+    ),
+  };
+}
+
+/**
+ * Supprime une version, ses changements (APPCHANGES), ses modes opératoires
+ * (APPVERSIONDOCS, en cascade) et les notifications de lecture associées
+ * (USERAPPNOTIF), dans une transaction. Erreur
  * DATA_NOT_FOUND si la version n'existe pas.
  */
 export async function deleteAppVersion(VID) {

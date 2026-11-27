@@ -186,6 +186,7 @@ describe("modules/usersmanager/controllers :: getAppVersions", () => {
       { ...base, VID: 2, VNUM: "1.3.1", CID: 11, CTYPE: "FIX", CTITLE: "b" },
       { ...base, VID: 1, VNUM: "1.3.0", CID: null },
     ]);
+    services.getAppVersionDocuments.mockResolvedValue({ rows: [], appDocLinks: new Map() });
 
     const result = await controllers.getAppVersions(buildReq({ query: { APPCOD: "USRMAN" } }));
 
@@ -193,6 +194,28 @@ describe("modules/usersmanager/controllers :: getAppVersions", () => {
     expect(result.map((v) => v.VID)).toEqual([2, 1]);
     expect(result[0].CHANGES).toHaveLength(2);
     expect(result[1].CHANGES).toHaveLength(0);
+    expect(result[0].EFFECTIVE_DOCUMENTS).toEqual([]);
+  });
+
+  it("ajoute les modes opératoires (repli sur la version antérieure)", async () => {
+    const base = { APPCOD: "USRMAN", CREUSR_ID: 1, CID: null };
+    services.getAppVersions.mockResolvedValue([
+      { ...base, VID: 2, VNUM: "1.3.1" },
+      { ...base, VID: 1, VNUM: "1.3.0" },
+    ]);
+    services.getAppVersionDocuments.mockResolvedValue({
+      rows: [
+        { VID: 1, APPCOD: "USRMAN", VNUM: "1.3.0", DID: 9, DOCNAM: "Guide", DOCLNK: "g.pdf", ORDNUM: 0, PRMID: null },
+      ],
+      appDocLinks: new Map(),
+    });
+
+    const result = await controllers.getAppVersions(buildReq({ query: { APPCOD: "USRMAN" } }));
+
+    expect(services.getAppVersionDocuments).toHaveBeenCalledWith(["USRMAN"]);
+    expect(result[0].DOCUMENTS).toEqual([]);
+    expect(result[0].EFFECTIVE_DOCS_VNUM).toBe("1.3.0");
+    expect(result[0].EFFECTIVE_DOCUMENTS[0].DOCNAM).toBe("Guide");
   });
 });
 
@@ -206,7 +229,7 @@ describe("modules/usersmanager/controllers :: setLastVersion / deleteAppVersion"
       buildReq({ body: { VID: "5", APPCOD: "USRMAN", VNUM: "1.0.1", CHANGES: "[]" } }),
     );
 
-    expect(services.insertAppVersion).toHaveBeenCalledWith(1, "USRMAN", "1.0.1", null, null, [], 5);
+    expect(services.insertAppVersion).toHaveBeenCalledWith(1, "USRMAN", "1.0.1", null, null, [], 5, null);
   });
 
   it("VID absent : création / mise à jour par APPCOD + VNUM (comportement historique)", async () => {
@@ -214,7 +237,29 @@ describe("modules/usersmanager/controllers :: setLastVersion / deleteAppVersion"
 
     await controllers.setLastVersion(buildReq({ body: { APPCOD: "USRMAN", VNUM: "2.0.0" } }));
 
-    expect(services.insertAppVersion).toHaveBeenCalledWith(1, "USRMAN", "2.0.0", null, null, [], null);
+    expect(services.insertAppVersion).toHaveBeenCalledWith(1, "USRMAN", "2.0.0", null, null, [], null, null);
+  });
+
+  it("transmet les modes opératoires (tableau vide = suppression)", async () => {
+    services.insertAppVersion.mockResolvedValue({ VID: 6, VNUM: "2.0.0", CHANGES: [] });
+
+    await controllers.setLastVersion(
+      buildReq({
+        body: {
+          APPCOD: "USRMAN",
+          VNUM: "2.0.0",
+          DOCUMENTS: JSON.stringify([{ DOCNAM: " Guide ", DOCLNK: "g.pdf", PRMIDS: ["2"] }]),
+        },
+      }),
+    );
+    expect(services.insertAppVersion.mock.calls[0][7]).toEqual([
+      { DOCNAM: "Guide", DOCLNK: "g.pdf", PRMIDS: [2] },
+    ]);
+
+    await controllers.setLastVersion(
+      buildReq({ body: { APPCOD: "USRMAN", VNUM: "2.0.0", DOCUMENTS: "[]" } }),
+    );
+    expect(services.insertAppVersion.mock.calls[1][7]).toEqual([]);
   });
 
   it("supprime la version demandée", async () => {
